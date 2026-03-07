@@ -1,0 +1,80 @@
+/*
+ * =============================================================================
+ * VARIABLES.CSS — Theme & Design Token Definitions
+ * =============================================================================
+ * This file holds all the CSS custom properties (variables) that control the
+ * visual appearance of Folio. There are three themes: Day (default), Warm (dark),
+ * and Night. Switching themes means changing the data-theme attribute on <html>,
+ * which swaps all these variable values at once.
+ *
+ * FONT FAMILIES:
+ * - --font-body: "Lora" — a serif font used for reading content
+ * - --font-ui: "DM Sans" — a clean sans-serif used for buttons, labels, UI chrome
+ * =============================================================================
+ */
+
+/* Day theme (default) — warm paper tones */
+:root {
+  --bg: #f5f0e8;
+  --paper: #fdfaf4;
+  --ink: #2c2416;
+  --ink-soft: #5c5040;
+  --ink-faint: #9c8e7a;
+  --accent: #8b4513;
+  --accent-light: #c4763a;
+  --line: #e0d8c8;
+  --progress-bg: #e0d8c8;
+  --progress-fill: #8b4513;
+  --shadow: rgba(44, 36, 22, 0.08);
+  --font-body: "Lora", Georgia, serif;
+  --font-ui: "DM Sans", sans-serif;
+}
+
+/* Warm dark theme — rich sepia tones */
+[data-theme="dark"] {
+  --bg: #1a1610;
+  --paper: #221e16;
+  --ink: #ede5d4;
+  --ink-soft: #b8a88e;
+  --ink-faint: #6e6050;
+  --accent: #c4763a;
+  --accent-light: #e09050;
+  --line: #332e24;
+  --progress-bg: #332e24;
+  --progress-fill: #c4763a;
+  --shadow: rgba(0, 0, 0, 0.3);
+}
+
+/* Night theme — cool blue tones for late-night reading */
+[data-theme="night"] {
+  --bg: #0d1b2a;
+  --paper: #112031;
+  --ink: #d4e8f5;
+  --ink-soft: #8ab4cc;
+  --ink-faint: #406070;
+  --accent: #4a9fcc;
+  --accent-light: #7ac0e0;
+  --line: #1a3040;
+  --progress-bg: #1a3040;
+  --progress-fill: #4a9fcc;
+  --shadow: rgba(0, 0, 0, 0.4);
+}
+
+/* Global reset */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  transition: background 0.4s, color 0.4s;
+}

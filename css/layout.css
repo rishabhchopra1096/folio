@@ -1,0 +1,174 @@
+/*
+ * =============================================================================
+ * LAYOUT.CSS — Top Bar, Stats Bar, Main Area, Sidebar/Home Layout
+ * =============================================================================
+ * Controls the structural layout of the app: the fixed top navigation bar,
+ * the stats bar that shows document info, and the main content area.
+ * =============================================================================
+ */
+
+/* ── TOP BAR — fixed header with logo, progress, and controls ── */
+#topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 16px;
+  z-index: 100;
+  box-shadow: 0 2px 12px var(--shadow);
+}
+
+#logo {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  font-size: 15px;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+/* The thin reading-progress bar in the top bar */
+#progress-bar-wrap {
+  flex: 1;
+  height: 4px;
+  background: var(--progress-bg);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+#progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--progress-fill), var(--accent-light));
+  border-radius: 2px;
+  width: 0%;
+  transition: width 0.15s ease;
+}
+#progress-label {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-faint);
+  min-width: 38px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* Vertical divider between topbar items */
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex-shrink: 0;
+}
+
+/* Small icon buttons in the top bar (settings, edit, etc.) */
+.ctrl-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-soft);
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.2s, color 0.2s;
+  flex-shrink: 0;
+}
+.ctrl-btn:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+.ctrl-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── STATS BAR — shows doc title, word count, read time ── */
+#stats-bar {
+  display: none;
+  align-items: center;
+  gap: 20px;
+  padding: 0 24px;
+  height: 36px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-faint);
+  position: fixed;
+  top: 52px;
+  left: 0;
+  right: 0;
+  z-index: 98;
+}
+#stats-bar.visible {
+  display: flex;
+}
+.stat-item strong {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+#eta-display {
+  margin-left: auto;
+}
+
+/* Save indicator in the stats bar */
+#save-indicator {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-left: 12px;
+  transition: opacity 0.3s;
+}
+
+/* ── MAIN CONTENT AREA ── */
+#main {
+  padding-top: 52px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* When stats bar is visible, push content down */
+#main.has-stats {
+  padding-top: 88px;
+}
+
+/* ── VIEWS — only one visible at a time ── */
+.view {
+  display: none;
+  width: 100%;
+}
+.view.active {
+  display: block;
+}
+
+/* ── RESPONSIVE ── */
+@media (max-width: 700px) {
+  #topbar {
+    padding: 0 14px;
+    gap: 10px;
+  }
+  #stats-bar {
+    gap: 10px;
+    padding: 0 14px;
+  }
+}

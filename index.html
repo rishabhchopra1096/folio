@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Folio</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/layout.css" />
+    <link rel="stylesheet" href="css/typography.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <link rel="stylesheet" href="css/editor.css" />
+    <link rel="stylesheet" href="css/highlights.css" />
+  </head>
+  <body>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- TOP BAR — Fixed header with logo, progress bar, and action buttons -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="topbar">
+      <a id="logo" href="#/">Folio</a>
+      <div class="topbar-divider"></div>
+
+      <!-- Reading progress bar (only visible in reader mode) -->
+      <div id="progress-bar-wrap" title="Reading progress" style="display:none">
+        <div id="progress-bar"></div>
+      </div>
+      <span id="progress-label" style="display:none">0%</span>
+
+      <!-- Save indicator (only visible in editor mode) -->
+      <span id="save-indicator" style="display:none">Saved</span>
+
+      <div style="flex:1"></div>
+
+      <!-- Edit button (reader mode) -->
+      <button class="ctrl-btn" id="edit-btn" title="Edit document (Ctrl+E)" style="display:none">
+        <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
+
+      <!-- Preview button (editor mode) -->
+      <button class="ctrl-btn" id="preview-btn" title="Preview (Ctrl+E)" style="display:none">
+        <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+
+      <!-- Comments button (reader mode) -->
+      <button class="ctrl-btn" id="comments-btn" title="Comments" style="display:none">
+        <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </button>
+
+      <div class="topbar-divider"></div>
+
+      <!-- Settings button (always visible) -->
+      <button class="ctrl-btn" id="settings-btn" title="Display settings">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- STATS BAR — Document metadata (title, word count, read time, ETA) -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="stats-bar">
+      <span class="stat-item" id="doc-title">—</span>
+      <span class="stat-item">~<strong id="word-count">0</strong> words</span>
+      <span class="stat-item"><strong id="read-time">0</strong> min read</span>
+      <span class="stat-item" id="eta-display">ETA: <strong id="eta-val">—</strong></span>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- SETTINGS PANEL — Theme, font size, line height, column width -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="settings-panel">
+      <div class="setting-group">
+        <label>Theme</label>
+        <div class="theme-btns">
+          <button class="theme-btn active" data-t="default">Day</button>
+          <button class="theme-btn" data-t="dark">Warm</button>
+          <button class="theme-btn" data-t="night">Night</button>
+        </div>
+      </div>
+      <div class="setting-group">
+        <label>Font Size</label>
+        <div class="size-control">
+          <button id="fs-down">&minus;</button>
+          <span id="fs-val">18px</span>
+          <button id="fs-up">+</button>
+        </div>
+      </div>
+      <div class="setting-group">
+        <label>Line Height</label>
+        <input type="range" class="line-height-slider" id="lh-slider" min="1.4" max="2.4" step="0.05" value="1.85" />
+      </div>
+      <div class="setting-group">
+        <label>Column Width</label>
+        <input type="range" class="width-slider" id="width-slider" min="480" max="900" step="20" value="680" />
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- MAIN CONTENT AREA — Contains all three views                       -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="main">
+
+      <!-- ── VIEW: HOME — Document grid + import area ── -->
+      <div id="view-home" class="view active">
+        <div class="home-header">
+          <h1>Your Documents</h1>
+          <button class="new-doc-btn" id="new-doc-btn">
+            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Document
+          </button>
+        </div>
+
+        <!-- Document cards go here -->
+        <div class="doc-grid" id="doc-grid"></div>
+
+        <!-- Import area (always shown below the grid) -->
+        <div style="margin-top:40px">
+          <div id="dropzone">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14,2 14,8 20,8"/>
+              <line x1="12" y1="18" x2="12" y2="12"/>
+              <line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
+            <h2>Import a Markdown file</h2>
+            <p>Drop a file here or browse — supports .md and .txt</p>
+            <button class="drop-btn" onclick="document.getElementById('file-input').click()">Choose File</button>
+            <input type="file" id="file-input" accept=".md,.txt,.markdown" />
+            <p class="paste-hint">Or paste markdown with <kbd>Ctrl</kbd>+<kbd>V</kbd></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VIEW: READER — Rendered markdown article ── -->
+      <div id="view-reader" class="view">
+        <div id="article-wrap">
+          <div id="article"></div>
+        </div>
+      </div>
+
+      <!-- ── VIEW: EDITOR — Markdown textarea ── -->
+      <div id="view-editor" class="view">
+        <div id="editor-wrap">
+          <div id="editor-container">
+            <input type="text" id="editor-title" placeholder="Document title..." />
+            <textarea id="editor-textarea" placeholder="Start writing markdown..."></textarea>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- PROGRESS RING — Floating circle (bottom-right) showing read %     -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="progress-ring-wrap">
+      <svg id="ring-svg" viewBox="0 0 58 58">
+        <circle id="ring-track" cx="29" cy="29" r="23" />
+        <circle id="ring-fill" cx="29" cy="29" r="23" />
+      </svg>
+      <span id="ring-pct">0%</span>
+      <div id="ring-tooltip">
+        <strong id="tt-pct">0%</strong> read &middot;
+        <strong id="tt-remain">—</strong> min left
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- CLOSE BUTTON — Bottom-left, returns to home                       -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <button id="close-btn">&larr; All documents</button>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- HIGHLIGHT TOOLBAR — Appears above selected text in reader mode    -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="highlight-toolbar">
+      <button class="hl-color-btn" data-color="yellow" title="Yellow"></button>
+      <button class="hl-color-btn" data-color="green" title="Green"></button>
+      <button class="hl-color-btn" data-color="blue" title="Blue"></button>
+      <button class="hl-color-btn" data-color="pink" title="Pink"></button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- HIGHLIGHT POPOVER — Appears when clicking an existing highlight   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="highlight-popover">
+      <button id="popover-comment">
+        <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Add Comment
+      </button>
+      <button id="popover-remove">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        Remove
+      </button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- COMMENTS PANEL — Slide-out panel from the right                   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="comments-panel">
+      <div class="comments-header">
+        <h2>Comments</h2>
+        <button class="comments-close" id="comments-close">&times;</button>
+      </div>
+      <div class="comments-list" id="comments-list">
+        <div class="comments-empty">No comments yet.</div>
+      </div>
+      <div class="comment-input-wrap">
+        <textarea id="comment-input" placeholder="Add a comment..." rows="3"></textarea>
+        <div class="comment-submit-row">
+          <button class="modal-btn" id="comment-cancel">Cancel</button>
+          <button class="modal-btn primary" id="comment-submit">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- SCRIPTS — External libraries, then our modules, then app init     -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+    <script src="js/store.js"></script>
+    <script src="js/settings.js"></script>
+    <script src="js/reader.js"></script>
+    <script src="js/editor.js"></script>
+    <script src="js/sidebar.js"></script>
+    <script src="js/highlights.js"></script>
+    <script src="js/comments.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
