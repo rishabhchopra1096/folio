@@ -157,14 +157,16 @@ function togglePanel() {
 // =============================================================================
 
 function createTray() {
-  // Create a simple template image for the tray (works in dark and light mode)
-  // Using a 16x16 "notepad" icon drawn with nativeImage
-  const iconPath = path.join(__dirname, "tray-icon.png");
-
-  // Create a simple tray icon programmatically (a small square with lines)
-  const canvas = nativeImage.createFromBuffer(createTrayIconBuffer());
-
-  tray = new Tray(canvas);
+  /*
+   * Create a tray icon for the macOS menu bar. We use nativeImage to create
+   * a simple 16x16 icon. On macOS, "template" images automatically adapt
+   * to the menu bar's light/dark appearance.
+   *
+   * We draw a simple document/notepad icon by creating a 16x16 image buffer.
+   * For production, you'd replace this with a proper .png asset file.
+   */
+  const icon = createTrayIcon();
+  tray = new Tray(icon);
   tray.setToolTip("Folio");
 
   // Click tray icon to toggle panel
@@ -216,26 +218,17 @@ function updateTrayMenu() {
   tray.setContextMenu(contextMenu);
 }
 
-// Create a simple 16x16 tray icon as a PNG buffer
-// (a small notepad/document icon — template image for macOS)
-function createTrayIconBuffer() {
-  // 16x16 PNG with a simple document icon
-  // This is a minimal valid PNG with a document shape
-  // For production, replace with a proper .png asset
-  const size = 16;
-  const canvas = nativeImage.createEmpty();
-
-  // Fallback: create from data URL (a simple filled rectangle as placeholder)
-  // In production, use a proper template@2x.png file
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-    <rect x="3" y="1" width="10" height="14" rx="1" fill="none" stroke="black" stroke-width="1.5"/>
-    <line x1="5" y1="5" x2="11" y2="5" stroke="black" stroke-width="1"/>
-    <line x1="5" y1="8" x2="11" y2="8" stroke="black" stroke-width="1"/>
-    <line x1="5" y1="11" x2="9" y2="11" stroke="black" stroke-width="1"/>
-  </svg>`;
-
-  const buf = Buffer.from(svg);
-  return buf;
+/*
+ * Creates a tray icon from the PNG file in the electron directory.
+ * On macOS, files named "*Template.png" are automatically treated as
+ * template images, which means macOS adapts them for dark/light mode.
+ * The @2x variant is for Retina displays.
+ */
+function createTrayIcon() {
+  const iconPath = path.join(__dirname, "tray-iconTemplate.png");
+  const icon = nativeImage.createFromPath(iconPath);
+  icon.setTemplateImage(true);
+  return icon;
 }
 
 // =============================================================================
