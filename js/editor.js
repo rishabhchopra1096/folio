@@ -1,31 +1,52 @@
 /*
  * =============================================================================
- * EDITOR.JS — Built-in Markdown Editor with Auto-Save
+ * EDITOR.JS — Editor.js Integration for Folio
  * =============================================================================
  * FILE OVERVIEW:
- * This file manages the markdown editing experience. It provides a full-width
- * textarea styled to look like writing on paper, with auto-save functionality
- * that persists changes to localStorage every second after typing stops.
+ * This file wraps the Editor.js block editor library, providing Notion-like
+ * WYSIWYG editing. Users can write with rich formatting, slash commands,
+ * checklists, code blocks, tables, and more — all without touching markdown.
  *
  * HOW IT WORKS:
- * 1. openEditor(docId) loads a document into the textarea
- * 2. Every keystroke triggers a debounced save (1 second delay)
- * 3. The save indicator in the stats bar shows "Saving..." / "Saved"
- * 4. Pressing Ctrl+E or the preview button switches to the reader view
+ * 1. openEditor(docId) loads a document's Editor.js JSON and initializes Editor.js
+ * 2. Editor.js handles all the block editing, slash commands, inline formatting
+ * 3. Auto-save: on every change, we debounce-save the JSON to FolioStore
+ * 4. Title and icon are editable inline above the editor
+ *
+ * EDITOR.JS PLUGINS LOADED:
+ * - Header: H1-H6 headings
+ * - List: Ordered/unordered lists
+ * - Checklist: To-do checkboxes
+ * - Code: Code blocks
+ * - Table: Editable tables
+ * - Quote: Blockquotes
+ * - Delimiter: Horizontal rules
+ * - InlineCode: Inline code formatting
+ * - Marker: Text highlighting (inline)
  * =============================================================================
  */
 
 const Editor = (function () {
 
+  // The Editor.js instance
+  let editorInstance = null;
   // The document currently being edited
   let currentDocId = null;
   // Timer for debounced auto-save
   let saveTimer = null;
 
   // Cache DOM elements
-  const textarea = document.getElementById("editor-textarea");
   const titleInput = document.getElementById("editor-title");
   const saveIndicator = document.getElementById("save-indicator");
+  const iconBtn = document.getElementById("icon-picker-btn");
+
+  // Common emoji icons for the page icon picker
+  const ICON_OPTIONS = [
+    "", "📄", "📝", "📚", "📖", "🗒️", "📋", "📌", "🔖",
+    "💡", "🎯", "🚀", "⭐", "❤️", "🔥", "✅", "📊",
+    "🎨", "🏗️", "🧪", "🔬", "📐", "🗂️", "💻", "🌐",
+    "🎵", "📷", "✈️", "🍽️", "🏠", "💰", "📅", "🎓",
+  ];
 
   // Open a document in the editor
   function openEditor(docId) {
@@ -34,53 +55,117 @@ const Editor = (function () {
 
     currentDocId = docId;
 
-    // Populate the title and content
+    // Set title
     titleInput.value = doc.meta.title || "";
-    textarea.value = doc.content;
 
-    // Show the stats bar with document info
-    const wordCount = doc.content.trim().split(/\s+/).filter(Boolean).length;
-    document.getElementById("word-count").textContent =
-      wordCount.toLocaleString();
-    document.getElementById("read-time").textContent =
-      Math.ceil(wordCount / 220);
-    document.getElementById("doc-title").textContent =
-      doc.meta.title || "Untitled";
+    // Set icon button
+    updateIconButton(doc.meta.icon);
 
-    document.getElementById("stats-bar").classList.add("visible");
-    document.getElementById("main").classList.add("has-stats");
+    // Destroy previous editor instance if one exists
+    if (editorInstance) {
+      editorInstance.destroy();
+      editorInstance = null;
+    }
+
+    // Initialize Editor.js with the document's saved block data
+    editorInstance = new EditorJS({
+      holder: "editorjs",
+      placeholder: "Start writing or press / for commands...",
+      autofocus: false,
+
+      // Configure all the block tools
+      tools: {
+        header: {
+          class: Header,
+          inlineToolbar: true,
+          config: {
+            placeholder: "Heading",
+            levels: [1, 2, 3, 4],
+            defaultLevel: 2,
+          },
+        },
+        list: {
+          class: List,
+          inlineToolbar: true,
+          config: {
+            defaultStyle: "unordered",
+          },
+        },
+        checklist: {
+          class: Checklist,
+          inlineToolbar: true,
+        },
+        code: {
+          class: CodeTool,
+        },
+        table: {
+          class: Table,
+          inlineToolbar: true,
+          config: {
+            rows: 3,
+            cols: 3,
+          },
+        },
+        quote: {
+          class: Quote,
+          inlineToolbar: true,
+          config: {
+            quotePlaceholder: "Enter a quote",
+            captionPlaceholder: "Quote author",
+          },
+        },
+        delimiter: Delimiter,
+        inlineCode: {
+          class: InlineCode,
+        },
+        marker: {
+          class: Marker,
+        },
+      },
+
+      // Load saved data
+      data: doc.content && doc.content.blocks && doc.content.blocks.length > 0
+        ? doc.content
+        : { time: Date.now(), blocks: [] },
+
+      // Auto-save on every change
+      onChange: function () {
+        debouncedSave();
+      },
+
+      // When editor is ready
+      onReady: function () {
+        if (saveIndicator) saveIndicator.textContent = "Saved";
+      },
+    });
 
     // Show save indicator
     if (saveIndicator) saveIndicator.textContent = "Saved";
-
-    // Focus the textarea
-    textarea.focus();
   }
 
-  // Auto-save: debounced write to localStorage on every keystroke
-  textarea.addEventListener("input", () => {
-    if (!currentDocId) return;
+  // Debounced save — waits 1 second after last change before saving
+  function debouncedSave() {
+    if (!currentDocId || !editorInstance) return;
 
-    // Show "Saving..." immediately
     if (saveIndicator) saveIndicator.textContent = "Saving...";
 
-    // Clear any pending save and set a new one
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      FolioStore.updateDocument(currentDocId, {
-        content: textarea.value,
-      });
+    saveTimer = setTimeout(async () => {
+      try {
+        const data = await editorInstance.save();
+        FolioStore.updateDocument(currentDocId, { content: data });
+        if (saveIndicator) saveIndicator.textContent = "Saved";
 
-      // Update word count in stats bar
-      const wc = textarea.value.trim().split(/\s+/).filter(Boolean).length;
-      document.getElementById("word-count").textContent =
-        wc.toLocaleString();
-      document.getElementById("read-time").textContent =
-        Math.ceil(wc / 220);
-
-      if (saveIndicator) saveIndicator.textContent = "Saved";
+        // Update the sidebar to reflect any changes
+        if (typeof SidebarUI !== "undefined") {
+          SidebarUI.renderPageTree();
+        }
+      } catch (err) {
+        console.error("Auto-save failed:", err);
+        if (saveIndicator) saveIndicator.textContent = "Save failed";
+      }
     }, 1000);
-  });
+  }
 
   // Auto-save title changes
   titleInput.addEventListener("input", () => {
@@ -93,43 +178,85 @@ const Editor = (function () {
       FolioStore.updateDocument(currentDocId, {
         title: titleInput.value || "Untitled",
       });
-      document.getElementById("doc-title").textContent =
-        titleInput.value || "Untitled";
       if (saveIndicator) saveIndicator.textContent = "Saved";
-    }, 1000);
+
+      // Update sidebar
+      if (typeof SidebarUI !== "undefined") {
+        SidebarUI.renderPageTree();
+      }
+    }, 500);
   });
 
-  // Handle tab key in textarea (insert spaces instead of changing focus)
-  textarea.addEventListener("keydown", (e) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      textarea.value =
-        textarea.value.substring(0, start) +
-        "  " +
-        textarea.value.substring(end);
-      textarea.selectionStart = textarea.selectionEnd = start + 2;
-      // Trigger input event for auto-save
-      textarea.dispatchEvent(new Event("input"));
+  // ==========================================================================
+  // ICON PICKER — Emoji selector for page icons
+  // ==========================================================================
+
+  function updateIconButton(icon) {
+    iconBtn.textContent = icon || "📄";
+    iconBtn.title = icon ? "Change icon" : "Add icon";
+  }
+
+  function showIconPicker() {
+    let picker = document.getElementById("icon-picker");
+    if (picker.children.length > 0) {
+      // Toggle visibility
+      picker.style.display = picker.style.display === "none" ? "grid" : "none";
+      return;
     }
+
+    // Build the picker grid
+    picker.style.display = "grid";
+    ICON_OPTIONS.forEach((emoji) => {
+      const btn = document.createElement("button");
+      btn.textContent = emoji || "✖";
+      btn.title = emoji || "Remove icon";
+      btn.className = "icon-option";
+      btn.addEventListener("click", () => {
+        if (currentDocId) {
+          FolioStore.updateDocument(currentDocId, { icon: emoji });
+          updateIconButton(emoji);
+          if (typeof SidebarUI !== "undefined") SidebarUI.renderPageTree();
+        }
+        picker.style.display = "none";
+      });
+      picker.appendChild(btn);
+    });
+  }
+
+  iconBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    showIconPicker();
   });
 
-  // Hide editor UI (when navigating away)
-  function hide() {
-    // Force-save any pending changes
-    if (currentDocId && saveTimer) {
+  // Close icon picker when clicking elsewhere
+  document.addEventListener("click", () => {
+    const picker = document.getElementById("icon-picker");
+    if (picker) picker.style.display = "none";
+  });
+
+  // ==========================================================================
+  // CLEANUP AND PUBLIC API
+  // ==========================================================================
+
+  // Force-save and clean up (called when navigating away)
+  async function hide() {
+    if (currentDocId && editorInstance) {
       clearTimeout(saveTimer);
-      FolioStore.updateDocument(currentDocId, {
-        content: textarea.value,
-        title: titleInput.value || "Untitled",
-      });
+      try {
+        const data = await editorInstance.save();
+        FolioStore.updateDocument(currentDocId, {
+          content: data,
+          title: titleInput.value || "Untitled",
+        });
+      } catch {
+        // Editor may already be destroyed
+      }
+    }
+    if (editorInstance) {
+      editorInstance.destroy();
+      editorInstance = null;
     }
     currentDocId = null;
-    textarea.value = "";
-    titleInput.value = "";
-    document.getElementById("stats-bar").classList.remove("visible");
-    document.getElementById("main").classList.remove("has-stats");
   }
 
   // Get the ID of the document currently being edited
@@ -137,9 +264,16 @@ const Editor = (function () {
     return currentDocId;
   }
 
+  // Get the current Editor.js instance (for external access)
+  function getInstance() {
+    return editorInstance;
+  }
+
   return {
     openEditor,
     hide,
     getCurrentDocId,
+    getInstance,
+    debouncedSave,
   };
 })();

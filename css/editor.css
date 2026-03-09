@@ -1,35 +1,94 @@
 /*
  * =============================================================================
- * EDITOR.CSS — Markdown Editor Styles
+ * EDITOR.CSS — Editor.js Block Editor Styles
  * =============================================================================
- * Styles for the built-in markdown editor. The textarea is styled to feel like
- * writing on the same "paper" as the reading view, but with a monospace font
- * to distinguish editing from reading.
+ * Styles for the Editor.js WYSIWYG editor, the icon picker, and the editor
+ * container. Editor.js comes with its own styles, but we override many to
+ * match Folio's paper aesthetic.
  * =============================================================================
  */
 
-/* The editor container — same centered layout as the article */
-#editor-container {
-  margin: 0 auto;
-  max-width: var(--article-width, 680px);
-  background: var(--paper);
-  border-radius: 4px;
-  padding: 56px 64px;
-  box-shadow: 0 4px 40px var(--shadow);
-  transition: max-width 0.3s;
+/* The editor wrapper — same padding as article-wrap */
+#editor-wrap {
+  width: 100%;
+  padding: 24px 24px 120px;
 }
 
-/* The editable document title */
+/* The editor container — centered paper-like card matching the reader */
+#editor-container {
+  margin: 0 auto;
+  max-width: var(--article-width, 720px);
+  background: var(--paper);
+  border-radius: 4px;
+  padding: 48px 64px;
+  box-shadow: 0 4px 40px var(--shadow);
+  transition: max-width 0.3s;
+  min-height: 60vh;
+}
+
+/* Page icon row */
+#page-icon-row {
+  margin-bottom: 8px;
+  position: relative;
+}
+#icon-picker-btn {
+  background: none;
+  border: none;
+  font-size: 32px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  line-height: 1;
+}
+#icon-picker-btn:hover {
+  background: var(--line);
+}
+
+/* Emoji picker grid */
+.icon-picker {
+  display: none;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 8px 32px var(--shadow);
+  z-index: 120;
+  width: 280px;
+}
+.icon-option {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.icon-option:hover {
+  background: var(--line);
+}
+
+/* Inline page title */
 #editor-title {
   width: 100%;
   border: none;
   outline: none;
   background: none;
   font-family: var(--font-body);
-  font-size: 1.9em;
+  font-size: 2em;
   font-weight: 600;
   color: var(--ink);
-  margin-bottom: 24px;
+  margin-bottom: 16px;
   padding: 0;
   line-height: 1.3;
 }
@@ -37,33 +96,207 @@
   color: var(--ink-faint);
 }
 
-/* The markdown textarea */
-#editor-textarea {
-  width: 100%;
-  min-height: 60vh;
-  border: none;
-  outline: none;
-  background: none;
-  font-family: "Courier New", monospace;
-  font-size: var(--article-fs, 16px);
-  line-height: var(--article-lh, 1.85);
+/* ── EDITOR.JS OVERRIDES — Make Editor.js match Folio's design ── */
+
+/* The Editor.js container */
+#editorjs {
+  font-family: var(--font-body);
   color: var(--ink);
-  resize: none;
-  padding: 0;
-}
-#editor-textarea::placeholder {
-  color: var(--ink-faint);
+  font-size: 18px;
+  line-height: 1.75;
 }
 
-/* Editor wrap — same padding as article-wrap */
-#editor-wrap {
-  width: 100%;
-  padding: 48px 24px 120px;
+/* Remove Editor.js default top padding */
+.codex-editor__redactor {
+  padding-bottom: 200px !important;
+}
+
+/* Editor.js block styling */
+.ce-block__content {
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+
+.ce-toolbar__content {
+  max-width: 100% !important;
+}
+
+/* Paragraph blocks */
+.ce-paragraph {
+  font-family: var(--font-body) !important;
+  color: var(--ink) !important;
+  line-height: 1.75 !important;
+  padding: 0.3em 0 !important;
+}
+
+.ce-paragraph[data-placeholder]:empty::before {
+  color: var(--ink-faint) !important;
+}
+
+/* Header blocks */
+.ce-header {
+  font-family: var(--font-body) !important;
+  font-weight: 600 !important;
+  color: var(--ink) !important;
+  padding: 0.5em 0 0.2em !important;
+}
+
+/* List blocks */
+.cdx-list {
+  padding-left: 1.5em !important;
+  color: var(--ink) !important;
+}
+
+/* Checklist blocks */
+.cdx-checklist {
+  padding-left: 0 !important;
+}
+.cdx-checklist__item {
+  padding: 4px 0 !important;
+}
+.cdx-checklist__item--checked .cdx-checklist__item-text {
+  text-decoration: line-through;
+  color: var(--ink-faint) !important;
+}
+.cdx-checklist__item-checkbox {
+  border-color: var(--ink-faint) !important;
+}
+.cdx-checklist__item--checked .cdx-checklist__item-checkbox {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Code blocks */
+.ce-code__textarea {
+  font-family: "Courier New", monospace !important;
+  background: var(--line) !important;
+  color: var(--ink) !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 16px 20px !important;
+  font-size: 0.9em !important;
+}
+
+/* Quote blocks */
+.cdx-quote__text {
+  border-left: 3px solid var(--accent) !important;
+  padding-left: 1em !important;
+  font-style: italic !important;
+  color: var(--ink-soft) !important;
+  min-height: auto !important;
+}
+.cdx-quote__caption {
+  color: var(--ink-faint) !important;
+  font-size: 0.85em !important;
+}
+
+/* Table blocks */
+.tc-table {
+  border-collapse: collapse !important;
+}
+.tc-table__cell {
+  border: 1px solid var(--line) !important;
+  padding: 8px 12px !important;
+  color: var(--ink) !important;
+}
+.tc-table__cell--heading {
+  background: var(--line) !important;
+  font-weight: 500 !important;
+}
+
+/* Delimiter */
+.ce-delimiter {
+  line-height: 1.6em !important;
+  color: var(--ink-faint) !important;
+}
+
+/* Inline toolbar */
+.ce-inline-toolbar {
+  background: var(--paper) !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: 0 4px 16px var(--shadow) !important;
+  border-radius: 8px !important;
+}
+.ce-inline-tool {
+  color: var(--ink-soft) !important;
+}
+.ce-inline-tool:hover {
+  background: var(--line) !important;
+}
+.ce-inline-tool--active {
+  color: var(--accent) !important;
+}
+
+/* Block settings popover */
+.ce-settings {
+  background: var(--paper) !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: 0 4px 16px var(--shadow) !important;
+  border-radius: 8px !important;
+}
+.ce-settings__button {
+  color: var(--ink-soft) !important;
+}
+.ce-settings__button:hover {
+  background: var(--line) !important;
+}
+
+/* Toolbar plus button */
+.ce-toolbar__plus {
+  color: var(--ink-faint) !important;
+}
+.ce-toolbar__plus:hover {
+  color: var(--accent) !important;
+  background: var(--line) !important;
+}
+
+/* Toolbox (slash command menu) */
+.ce-toolbox {
+  background: var(--paper) !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: 0 8px 32px var(--shadow) !important;
+  border-radius: 10px !important;
+}
+.ce-toolbox__button {
+  color: var(--ink-soft) !important;
+}
+.ce-toolbox__button:hover {
+  background: var(--line) !important;
+}
+
+/* Conversion toolbar */
+.ce-conversion-toolbar {
+  background: var(--paper) !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: 0 8px 32px var(--shadow) !important;
+}
+.ce-conversion-tool:hover {
+  background: var(--line) !important;
+}
+
+/* ── CHECKLIST IN READER VIEW ── */
+.checklist {
+  list-style: none;
+  padding-left: 0;
+}
+.checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+.checklist-item input[type="checkbox"] {
+  margin-top: 5px;
+  accent-color: var(--accent);
+}
+.checklist-done span {
+  text-decoration: line-through;
+  color: var(--ink-faint);
 }
 
 /* Responsive */
 @media (max-width: 700px) {
   #editor-container {
-    padding: 32px 24px;
+    padding: 32px 20px;
   }
 }

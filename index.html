@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Folio</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500&display=swap"
-      rel="stylesheet"
-    />
+
+    <!-- Google Fonts: Lora (reading) + DM Sans (UI) -->
+    <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+
+    <!-- Stylesheets -->
     <link rel="stylesheet" href="css/variables.css" />
     <link rel="stylesheet" href="css/layout.css" />
     <link rel="stylesheet" href="css/typography.css" />
@@ -19,61 +20,148 @@
   <body>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- TOP BAR — Fixed header with logo, progress bar, and action buttons -->
+    <!-- APP SHELL — Sidebar + Main Content side by side                   -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <div id="topbar">
-      <a id="logo" href="#/">Folio</a>
-      <div class="topbar-divider"></div>
+    <div id="app-shell">
 
-      <!-- Reading progress bar (only visible in reader mode) -->
-      <div id="progress-bar-wrap" title="Reading progress" style="display:none">
-        <div id="progress-bar"></div>
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- SIDEBAR — Persistent left panel with page tree                -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <nav id="sidebar">
+        <!-- Sidebar header: logo + collapse -->
+        <div class="sidebar-header">
+          <span class="sidebar-logo">Folio</span>
+          <button class="sidebar-collapse-btn" id="sidebar-collapse" title="Collapse sidebar">
+            <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+        </div>
+
+        <!-- Search -->
+        <div class="sidebar-search" style="position:relative">
+          <input type="text" id="sidebar-search-input" placeholder="Search pages..." />
+          <div class="search-results" id="search-results"></div>
+        </div>
+
+        <!-- New page button -->
+        <button class="sidebar-new-page" id="new-page-btn">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New Page
+        </button>
+
+        <!-- Section label -->
+        <div class="sidebar-section-label">Pages</div>
+
+        <!-- Page tree (scrollable) -->
+        <div class="sidebar-pages" id="sidebar-pages"></div>
+
+        <!-- Footer: settings, import, export -->
+        <div class="sidebar-footer">
+          <button class="sidebar-footer-btn" id="import-btn" title="Import markdown file">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Import
+          </button>
+          <button class="sidebar-footer-btn" id="settings-toggle-btn" title="Settings">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+            Settings
+          </button>
+        </div>
+      </nav>
+
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- MAIN CONTENT — Editor, Reader, or Welcome screen             -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <div id="main-content">
+
+        <!-- Toggle sidebar button (visible when collapsed) -->
+        <button id="sidebar-toggle" title="Open sidebar">
+          <svg viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+
+        <!-- Top bar with breadcrumb and action buttons -->
+        <div id="topbar" style="display:none">
+          <div class="breadcrumb" id="breadcrumb"></div>
+
+          <!-- Mode toggle: Edit <-> Read -->
+          <button class="ctrl-btn" id="mode-toggle" title="Toggle read/edit mode (Ctrl+E)">
+            <svg viewBox="0 0 24 24" id="mode-toggle-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+
+          <!-- Comments button -->
+          <button class="ctrl-btn" id="comments-btn" title="Comments">
+            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </button>
+
+          <!-- Settings button -->
+          <button class="ctrl-btn" id="settings-btn" title="Display settings">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          </button>
+
+          <!-- Save indicator -->
+          <span id="save-indicator"></span>
+
+          <!-- Progress bar (reader mode) -->
+          <div id="progress-bar-wrap" style="display:none">
+            <div id="progress-bar"></div>
+          </div>
+        </div>
+
+        <!-- ── VIEW: WELCOME — shown when no document is open ── -->
+        <div id="view-welcome" class="view active">
+          <div class="welcome-screen">
+            <h1>Welcome to Folio</h1>
+            <p>Your personal space for reading and writing. Create a new page or import a markdown file to get started.</p>
+            <button class="new-doc-btn" id="welcome-new-btn">
+              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Create Your First Page
+            </button>
+
+            <!-- Import dropzone -->
+            <div style="margin-top: 32px; width: 100%; max-width: 500px;">
+              <div id="dropzone">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14,2 14,8 20,8"/>
+                  <line x1="12" y1="18" x2="12" y2="12"/>
+                  <line x1="9" y1="15" x2="15" y2="15"/>
+                </svg>
+                <h2>Import a Markdown file</h2>
+                <p>Drop a .md or .txt file here</p>
+                <button class="drop-btn" onclick="document.getElementById('file-input').click()">Choose File</button>
+                <input type="file" id="file-input" accept=".md,.txt,.markdown" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── VIEW: EDITOR — Editor.js block editor ── -->
+        <div id="view-editor" class="view">
+          <div id="editor-wrap">
+            <div id="editor-container">
+              <!-- Page icon picker -->
+              <div id="page-icon-row">
+                <button id="icon-picker-btn" title="Choose icon"></button>
+                <div id="icon-picker" class="icon-picker"></div>
+              </div>
+              <!-- Inline page title -->
+              <input type="text" id="editor-title" placeholder="Untitled" />
+              <!-- Editor.js mounts here -->
+              <div id="editorjs"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── VIEW: READER — Beautiful rendered reading view ── -->
+        <div id="view-reader" class="view">
+          <div id="article-wrap">
+            <div id="article"></div>
+          </div>
+        </div>
+
       </div>
-      <span id="progress-label" style="display:none">0%</span>
-
-      <!-- Save indicator (only visible in editor mode) -->
-      <span id="save-indicator" style="display:none">Saved</span>
-
-      <div style="flex:1"></div>
-
-      <!-- Edit button (reader mode) -->
-      <button class="ctrl-btn" id="edit-btn" title="Edit document (Ctrl+E)" style="display:none">
-        <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-      </button>
-
-      <!-- Preview button (editor mode) -->
-      <button class="ctrl-btn" id="preview-btn" title="Preview (Ctrl+E)" style="display:none">
-        <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-      </button>
-
-      <!-- Comments button (reader mode) -->
-      <button class="ctrl-btn" id="comments-btn" title="Comments" style="display:none">
-        <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      </button>
-
-      <div class="topbar-divider"></div>
-
-      <!-- Settings button (always visible) -->
-      <button class="ctrl-btn" id="settings-btn" title="Display settings">
-        <svg viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-        </svg>
-      </button>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- STATS BAR — Document metadata (title, word count, read time, ETA) -->
-    <!-- ════════════════════════════════════════════════════════════════════ -->
-    <div id="stats-bar">
-      <span class="stat-item" id="doc-title">—</span>
-      <span class="stat-item">~<strong id="word-count">0</strong> words</span>
-      <span class="stat-item"><strong id="read-time">0</strong> min read</span>
-      <span class="stat-item" id="eta-display">ETA: <strong id="eta-val">—</strong></span>
-    </div>
-
-    <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- SETTINGS PANEL — Theme, font size, line height, column width -->
+    <!-- SETTINGS PANEL — Theme, font size, line height, column width      -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="settings-panel">
       <div class="setting-group">
@@ -98,67 +186,12 @@
       </div>
       <div class="setting-group">
         <label>Column Width</label>
-        <input type="range" class="width-slider" id="width-slider" min="480" max="900" step="20" value="680" />
+        <input type="range" class="width-slider" id="width-slider" min="480" max="960" step="20" value="720" />
       </div>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- MAIN CONTENT AREA — Contains all three views                       -->
-    <!-- ════════════════════════════════════════════════════════════════════ -->
-    <div id="main">
-
-      <!-- ── VIEW: HOME — Document grid + import area ── -->
-      <div id="view-home" class="view active">
-        <div class="home-header">
-          <h1>Your Documents</h1>
-          <button class="new-doc-btn" id="new-doc-btn">
-            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            New Document
-          </button>
-        </div>
-
-        <!-- Document cards go here -->
-        <div class="doc-grid" id="doc-grid"></div>
-
-        <!-- Import area (always shown below the grid) -->
-        <div style="margin-top:40px">
-          <div id="dropzone">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14,2 14,8 20,8"/>
-              <line x1="12" y1="18" x2="12" y2="12"/>
-              <line x1="9" y1="15" x2="15" y2="15"/>
-            </svg>
-            <h2>Import a Markdown file</h2>
-            <p>Drop a file here or browse — supports .md and .txt</p>
-            <button class="drop-btn" onclick="document.getElementById('file-input').click()">Choose File</button>
-            <input type="file" id="file-input" accept=".md,.txt,.markdown" />
-            <p class="paste-hint">Or paste markdown with <kbd>Ctrl</kbd>+<kbd>V</kbd></p>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── VIEW: READER — Rendered markdown article ── -->
-      <div id="view-reader" class="view">
-        <div id="article-wrap">
-          <div id="article"></div>
-        </div>
-      </div>
-
-      <!-- ── VIEW: EDITOR — Markdown textarea ── -->
-      <div id="view-editor" class="view">
-        <div id="editor-wrap">
-          <div id="editor-container">
-            <input type="text" id="editor-title" placeholder="Document title..." />
-            <textarea id="editor-textarea" placeholder="Start writing markdown..."></textarea>
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- PROGRESS RING — Floating circle (bottom-right) showing read %     -->
+    <!-- PROGRESS RING — Floating circle (bottom-right) for reader mode    -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="progress-ring-wrap">
       <svg id="ring-svg" viewBox="0 0 58 58">
@@ -173,12 +206,7 @@
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- CLOSE BUTTON — Bottom-left, returns to home                       -->
-    <!-- ════════════════════════════════════════════════════════════════════ -->
-    <button id="close-btn">&larr; All documents</button>
-
-    <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- HIGHLIGHT TOOLBAR — Appears above selected text in reader mode    -->
+    <!-- HIGHLIGHT TOOLBAR — Color picker on text selection (reader mode)  -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="highlight-toolbar">
       <button class="hl-color-btn" data-color="yellow" title="Yellow"></button>
@@ -188,7 +216,7 @@
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- HIGHLIGHT POPOVER — Appears when clicking an existing highlight   -->
+    <!-- HIGHLIGHT POPOVER — Actions on existing highlight (reader mode)   -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="highlight-popover">
       <button id="popover-comment">
@@ -222,9 +250,25 @@
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!-- SCRIPTS — External libraries, then our modules, then app init     -->
+    <!-- SCRIPTS — Libraries + Modules                                     -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
+
+    <!-- Editor.js core + plugins (all via CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@2.29.1/dist/editorjs.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/header@2.8.7/dist/header.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/list@1.9.0/dist/list.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/checklist@1.6.0/dist/checklist.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/code@2.9.0/dist/code.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/table@2.3.0/dist/table.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/quote@2.7.2/dist/quote.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/delimiter@1.4.2/dist/delimiter.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/inline-code@1.5.1/dist/inline-code.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/marker@1.4.0/dist/marker.umd.min.js"></script>
+
+    <!-- marked.js for markdown import -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+
+    <!-- Folio modules -->
     <script src="js/store.js"></script>
     <script src="js/settings.js"></script>
     <script src="js/reader.js"></script>
