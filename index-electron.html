@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Folio</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+
+    <!-- Google Fonts: Lora (reading) + DM Sans (UI) -->
+    <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+
+    <!-- Stylesheets (same as web version) -->
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/layout.css" />
+    <link rel="stylesheet" href="css/typography.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <link rel="stylesheet" href="css/editor.css" />
+    <link rel="stylesheet" href="css/highlights.css" />
+
+    <!-- Panel-specific overrides (MUST come after other CSS to override) -->
+    <link rel="stylesheet" href="electron/panel.css" />
+  </head>
+  <body>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- CUSTOM TITLE BAR — Drag region for the frameless window           -->
+    <!-- Only exists in the Electron version. Provides window drag + close -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="panel-titlebar">
+      <span class="panel-title-text">Folio</span>
+      <button class="panel-close-btn" id="panel-close-btn" title="Hide panel (Cmd+Shift+N)">&times;</button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- APP SHELL — Same structure as web version                         -->
+    <!-- In panel mode, this gets a vertical flex layout via panel.css     -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="app-shell">
+
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- SIDEBAR — Page tree (stacks vertically in panel mode)        -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <nav id="sidebar">
+        <!-- Sidebar header: logo + collapse -->
+        <div class="sidebar-header">
+          <span class="sidebar-logo">Folio</span>
+          <button class="sidebar-collapse-btn" id="sidebar-collapse" title="Collapse sidebar">
+            <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+        </div>
+
+        <!-- Search -->
+        <div class="sidebar-search" style="position:relative">
+          <input type="text" id="sidebar-search-input" placeholder="Search pages..." />
+          <div class="search-results" id="search-results"></div>
+        </div>
+
+        <!-- New page button -->
+        <button class="sidebar-new-page" id="new-page-btn">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New Page
+        </button>
+
+        <!-- Section label -->
+        <div class="sidebar-section-label">Pages</div>
+
+        <!-- Page tree (scrollable) -->
+        <div class="sidebar-pages" id="sidebar-pages"></div>
+
+        <!-- Notion sync status (only in Electron) -->
+        <div class="sync-status" id="sync-status" style="display:none">
+          <span class="sync-dot" id="sync-dot"></span>
+          <span id="sync-status-text">Not connected</span>
+        </div>
+
+        <!-- Footer: settings, import, Notion -->
+        <div class="sidebar-footer">
+          <button class="sidebar-footer-btn" id="import-btn" title="Import markdown file">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Import
+          </button>
+          <button class="sidebar-footer-btn" id="notion-btn" title="Notion sync settings">
+            <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 8h2v8H8z M14 8h2v5h-2z" fill="currentColor"/></svg>
+            Notion
+          </button>
+          <button class="sidebar-footer-btn" id="settings-toggle-btn" title="Settings">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+            Settings
+          </button>
+        </div>
+      </nav>
+
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <!-- MAIN CONTENT — Editor, Reader, or Welcome screen             -->
+      <!-- ══════════════════════════════════════════════════════════════ -->
+      <div id="main-content">
+
+        <!-- Toggle sidebar button (visible when collapsed) -->
+        <button id="sidebar-toggle" title="Open sidebar">
+          <svg viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+
+        <!-- Top bar with breadcrumb and action buttons -->
+        <div id="topbar" style="display:none">
+          <div class="breadcrumb" id="breadcrumb"></div>
+
+          <!-- Mode toggle: Edit <-> Read -->
+          <button class="ctrl-btn" id="mode-toggle" title="Toggle read/edit mode (Ctrl+E)">
+            <svg viewBox="0 0 24 24" id="mode-toggle-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+
+          <!-- Comments button -->
+          <button class="ctrl-btn" id="comments-btn" title="Comments">
+            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </button>
+
+          <!-- Settings button -->
+          <button class="ctrl-btn" id="settings-btn" title="Display settings">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          </button>
+
+          <!-- Save indicator -->
+          <span id="save-indicator"></span>
+
+          <!-- Progress bar (reader mode) -->
+          <div id="progress-bar-wrap" style="display:none">
+            <div id="progress-bar"></div>
+          </div>
+        </div>
+
+        <!-- ── VIEW: WELCOME — shown when no document is open ── -->
+        <div id="view-welcome" class="view active">
+          <div class="welcome-screen">
+            <h1>Welcome to Folio</h1>
+            <p>Your quick-access note panel. Create a new page or connect Notion to get started.</p>
+            <button class="new-doc-btn" id="welcome-new-btn">
+              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Create Your First Page
+            </button>
+
+            <!-- Import dropzone -->
+            <div style="margin-top: 32px; width: 100%; max-width: 500px;">
+              <div id="dropzone">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14,2 14,8 20,8"/>
+                  <line x1="12" y1="18" x2="12" y2="12"/>
+                  <line x1="9" y1="15" x2="15" y2="15"/>
+                </svg>
+                <h2>Import a Markdown file</h2>
+                <p>Drop a .md or .txt file here</p>
+                <button class="drop-btn" onclick="document.getElementById('file-input').click()">Choose File</button>
+                <input type="file" id="file-input" accept=".md,.txt,.markdown" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── VIEW: EDITOR — Editor.js block editor ── -->
+        <div id="view-editor" class="view">
+          <div id="editor-wrap">
+            <div id="editor-container">
+              <!-- Page icon picker -->
+              <div id="page-icon-row">
+                <button id="icon-picker-btn" title="Choose icon"></button>
+                <div id="icon-picker" class="icon-picker"></div>
+              </div>
+              <!-- Inline page title -->
+              <input type="text" id="editor-title" placeholder="Untitled" />
+              <!-- Editor.js mounts here -->
+              <div id="editorjs"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── VIEW: READER — Beautiful rendered reading view ── -->
+        <div id="view-reader" class="view">
+          <div id="article-wrap">
+            <div id="article"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- SETTINGS PANEL — Theme, font size, line height, column width      -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="settings-panel">
+      <div class="setting-group">
+        <label>Theme</label>
+        <div class="theme-btns">
+          <button class="theme-btn active" data-t="default">Day</button>
+          <button class="theme-btn" data-t="dark">Warm</button>
+          <button class="theme-btn" data-t="night">Night</button>
+        </div>
+      </div>
+      <div class="setting-group">
+        <label>Font Size</label>
+        <div class="size-control">
+          <button id="fs-down">&minus;</button>
+          <span id="fs-val">18px</span>
+          <button id="fs-up">+</button>
+        </div>
+      </div>
+      <div class="setting-group">
+        <label>Line Height</label>
+        <input type="range" class="line-height-slider" id="lh-slider" min="1.4" max="2.4" step="0.05" value="1.85" />
+      </div>
+      <div class="setting-group">
+        <label>Column Width</label>
+        <input type="range" class="width-slider" id="width-slider" min="480" max="960" step="20" value="720" />
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- PROGRESS RING — Floating circle (hidden in panel mode via CSS)    -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="progress-ring-wrap">
+      <svg id="ring-svg" viewBox="0 0 58 58">
+        <circle id="ring-track" cx="29" cy="29" r="23" />
+        <circle id="ring-fill" cx="29" cy="29" r="23" />
+      </svg>
+      <span id="ring-pct">0%</span>
+      <div id="ring-tooltip">
+        <strong id="tt-pct">0%</strong> read &middot;
+        <strong id="tt-remain">—</strong> min left
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- HIGHLIGHT TOOLBAR — Color picker on text selection (reader mode)  -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="highlight-toolbar">
+      <button class="hl-color-btn" data-color="yellow" title="Yellow"></button>
+      <button class="hl-color-btn" data-color="green" title="Green"></button>
+      <button class="hl-color-btn" data-color="blue" title="Blue"></button>
+      <button class="hl-color-btn" data-color="pink" title="Pink"></button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- HIGHLIGHT POPOVER — Actions on existing highlight (reader mode)   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="highlight-popover">
+      <button id="popover-comment">
+        <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Add Comment
+      </button>
+      <button id="popover-remove">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        Remove
+      </button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- COMMENTS PANEL — Slide-out panel from the right                   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="comments-panel">
+      <div class="comments-header">
+        <h2>Comments</h2>
+        <button class="comments-close" id="comments-close">&times;</button>
+      </div>
+      <div class="comments-list" id="comments-list">
+        <div class="comments-empty">No comments yet.</div>
+      </div>
+      <div class="comment-input-wrap">
+        <textarea id="comment-input" placeholder="Add a comment..." rows="3"></textarea>
+        <div class="comment-submit-row">
+          <button class="modal-btn" id="comment-cancel">Cancel</button>
+          <button class="modal-btn primary" id="comment-submit">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- SCRIPTS — Local vendor copies (no CDN dependency in Electron)     -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+
+    <!-- Editor.js core + plugins (local vendor copies) -->
+    <script src="vendor/editorjs.umd.min.js"></script>
+    <script src="vendor/header.umd.min.js"></script>
+    <script src="vendor/list.umd.min.js"></script>
+    <script src="vendor/checklist.umd.min.js"></script>
+    <script src="vendor/code.umd.min.js"></script>
+    <script src="vendor/table.umd.min.js"></script>
+    <script src="vendor/quote.umd.min.js"></script>
+    <script src="vendor/delimiter.umd.min.js"></script>
+    <script src="vendor/inline-code.umd.min.js"></script>
+    <script src="vendor/marker.umd.min.js"></script>
+
+    <!-- marked.js for markdown import -->
+    <script src="vendor/marked.min.js"></script>
+
+    <!-- Folio modules (same as web version) -->
+    <script src="js/store.js"></script>
+    <script src="js/settings.js"></script>
+    <script src="js/reader.js"></script>
+    <script src="js/editor.js"></script>
+    <script src="js/sidebar.js"></script>
+    <script src="js/highlights.js"></script>
+    <script src="js/comments.js"></script>
+    <script src="js/app.js"></script>
+
+    <!-- Notion sync (only in Electron version) -->
+    <script src="js/notion-sync.js"></script>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- ELECTRON BRIDGE — Connect preload API to the Folio UI             -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <script>
+      /*
+       * This inline script wires up the Electron-specific features:
+       * 1. Panel slide animation (show/hide via CSS class)
+       * 2. Close button in the custom title bar
+       * 3. New page from tray menu
+       * 4. Escape key to hide the panel
+       */
+      (function () {
+        // Only run in Electron (the folio object is exposed by preload.js)
+        if (typeof window.folio === "undefined") return;
+
+        const appShell = document.getElementById("app-shell");
+
+        // When main process says to show the panel, add the visible class
+        // (triggers the CSS slide-in animation)
+        window.folio.onPanelShow(() => {
+          // Small delay to allow the window to render before animating
+          requestAnimationFrame(() => {
+            appShell.classList.add("panel-visible");
+          });
+
+          // Trigger a sync check when panel becomes visible
+          if (typeof NotionSync !== "undefined" && NotionSync.syncOnShow) {
+            NotionSync.syncOnShow();
+          }
+        });
+
+        // When main process says to hide, remove the visible class
+        // (triggers the CSS slide-out animation)
+        window.folio.onPanelHide(() => {
+          appShell.classList.remove("panel-visible");
+        });
+
+        // Close button in the title bar hides the panel
+        document.getElementById("panel-close-btn").addEventListener("click", () => {
+          window.folio.hidePanel();
+        });
+
+        // Tray menu "New Page" sends a message to create a new page
+        window.folio.onNewPage(() => {
+          if (typeof SidebarUI !== "undefined") {
+            SidebarUI.createNewPage();
+          }
+        });
+
+        // Escape key hides the panel
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            window.folio.hidePanel();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
