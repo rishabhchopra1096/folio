@@ -363,101 +363,128 @@ const SidebarUI = (function () {
   // MARKDOWN IMPORT — Convert markdown text to Editor.js blocks
   // ==========================================================================
 
+  /*
+   * markdownToBlocks — Convert a raw markdown string into Editor.js block data.
+   *
+   * Uses `marked` (loaded globally) in two passes:
+   *   1. marked.lexer(md) gives a flat token stream for block-level structure
+   *      (headings, paragraphs, lists, tables, code fences, etc.)
+   *   2. marked.parseInline(text) on each block's text converts inline markdown
+   *      (**bold**, *italic*, `code`, [link](url)) into the HTML that Editor.js
+   *      paragraph/header/list/table/quote sanitizers accept out of the box.
+   *
+   * Without step 2, asterisks and backticks survive as literal characters in
+   * the rendered document because Editor.js never parses markdown itself.
+   */
   function markdownToBlocks(md) {
+    if (typeof marked === "undefined") {
+      // Fallback: marked failed to load — treat the whole thing as one paragraph
+      return { time: Date.now(), blocks: [{ type: "paragraph", data: { text: escapeHtml(md) } }] };
+    }
+
     const blocks = [];
-    const lines = md.split("\n");
-    let i = 0;
+    const tokens = marked.lexer(md);
 
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // Skip empty lines
-      if (!line.trim()) { i++; continue; }
-
-      // Headers
-      const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
-      if (headerMatch) {
-        blocks.push({
-          type: "header",
-          data: { text: headerMatch[2], level: headerMatch[1].length },
-        });
-        i++;
-        continue;
-      }
-
-      // Horizontal rule
-      if (/^(-{3,}|_{3,}|\*{3,})$/.test(line.trim())) {
-        blocks.push({ type: "delimiter", data: {} });
-        i++;
-        continue;
-      }
-
-      // Code block
-      if (line.trim().startsWith("```")) {
-        const codeLines = [];
-        i++;
-        while (i < lines.length && !lines[i].trim().startsWith("```")) {
-          codeLines.push(lines[i]);
-          i++;
-        }
-        blocks.push({ type: "code", data: { code: codeLines.join("\n") } });
-        i++; // skip closing ```
-        continue;
-      }
-
-      // Checklist
-      const checkMatch = line.match(/^-\s+\[([ x])\]\s+(.+)$/);
-      if (checkMatch) {
-        const items = [];
-        while (i < lines.length) {
-          const cm = lines[i].match(/^-\s+\[([ x])\]\s+(.+)$/);
-          if (!cm) break;
-          items.push({ text: cm[2], checked: cm[1] === "x" });
-          i++;
-        }
-        blocks.push({ type: "checklist", data: { items } });
-        continue;
-      }
-
-      // Unordered list
-      if (/^[-*+]\s+/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^[-*+]\s+/.test(lines[i])) {
-          items.push(lines[i].replace(/^[-*+]\s+/, ""));
-          i++;
-        }
-        blocks.push({ type: "list", data: { style: "unordered", items } });
-        continue;
-      }
-
-      // Ordered list
-      if (/^\d+\.\s+/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-          items.push(lines[i].replace(/^\d+\.\s+/, ""));
-          i++;
-        }
-        blocks.push({ type: "list", data: { style: "ordered", items } });
-        continue;
-      }
-
-      // Blockquote
-      if (line.startsWith("> ")) {
-        const quoteLines = [];
-        while (i < lines.length && lines[i].startsWith("> ")) {
-          quoteLines.push(lines[i].replace(/^>\s*/, ""));
-          i++;
-        }
-        blocks.push({ type: "quote", data: { text: quoteLines.join(" ") } });
-        continue;
-      }
-
-      // Default: paragraph
-      blocks.push({ type: "paragraph", data: { text: line } });
-      i++;
+    for (const token of tokens) {
+      const block = tokenToBlock(token);
+      if (block) blocks.push(block);
     }
 
     return { time: Date.now(), blocks };
+  }
+
+  // Run inline markdown (bold/italic/code/links) on a piece of text and strip
+  // any trailing <p>/newline artifacts marked sometimes leaves behind.
+  function inlineMd(text) {
+    if (!text) return "";
+    return marked.parseInline(text).trim();
+  }
+
+  // Map a single marked lexer token to an Editor.js block (or null to skip)
+  function tokenToBlock(token) {
+    switch (token.type) {
+      case "heading":
+        return {
+          type: "header",
+          data: { text: inlineMd(token.text), level: Math.min(token.depth, 6) },
+        };
+
+      case "paragraph":
+        return { type: "paragraph", data: { text: inlineMd(token.text) } };
+
+      case "code":
+        // Fenced code — keep raw (no inline parsing, no HTML)
+        return { type: "code", data: { code: token.text } };
+
+      case "hr":
+        return { type: "delimiter", data: {} };
+
+      case "blockquote": {
+        // Blockquote's child tokens are themselves block-level — flatten paragraphs
+        const inner = (token.tokens || [])
+          .filter((t) => t.type === "paragraph" || t.type === "text")
+          .map((t) => inlineMd(t.text || t.raw || ""))
+          .join("<br>");
+        return { type: "quote", data: { text: inner, caption: "", alignment: "left" } };
+      }
+
+      case "list": {
+        // GitHub-flavored task lists: items have { task: true, checked: bool }
+        const isChecklist = token.items.length > 0 && token.items.every((it) => it.task === true);
+        if (isChecklist) {
+          return {
+            type: "checklist",
+            data: {
+              items: token.items.map((it) => ({
+                text: inlineMd(itemPlainText(it)),
+                checked: !!it.checked,
+              })),
+            },
+          };
+        }
+        return {
+          type: "list",
+          data: {
+            style: token.ordered ? "ordered" : "unordered",
+            items: token.items.map((it) => inlineMd(itemPlainText(it))),
+          },
+        };
+      }
+
+      case "table":
+        return {
+          type: "table",
+          data: {
+            withHeadings: true,
+            content: [
+              token.header.map((h) => inlineMd(h.text)),
+              ...token.rows.map((row) => row.map((cell) => inlineMd(cell.text))),
+            ],
+          },
+        };
+
+      case "space":
+      case "html":
+        // Ignore whitespace tokens and raw HTML blocks (out of scope)
+        return null;
+
+      default:
+        // Unknown — render raw content as a paragraph so nothing is silently lost
+        if (token.raw && token.raw.trim()) {
+          return { type: "paragraph", data: { text: inlineMd(token.raw) } };
+        }
+        return null;
+    }
+  }
+
+  // Extract the plain inline text from a list item (marked puts the item body
+  // under `.text`, but nested block tokens can show up under `.tokens`)
+  function itemPlainText(item) {
+    if (item.text) return item.text;
+    if (Array.isArray(item.tokens)) {
+      return item.tokens.map((t) => t.text || t.raw || "").join(" ");
+    }
+    return item.raw || "";
   }
 
   // ==========================================================================

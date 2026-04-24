@@ -131,16 +131,222 @@ const Editor = (function () {
       // Auto-save on every change
       onChange: function () {
         debouncedSave();
+        // New code blocks may have been added (slash command or paste) — resize
+        autoResizeCodeBlocks();
       },
 
       // When editor is ready
       onReady: function () {
         if (saveIndicator) saveIndicator.textContent = "Saved";
+        // Resize any code blocks loaded with the initial document
+        autoResizeCodeBlocks();
+        // Intercept Cmd+V of raw markdown text so inline formatting survives
+        installMarkdownPasteHandler();
+        // Live markdown shortcuts: "### ", "- ", "> ", etc. convert as you type
+        installMarkdownShortcuts();
       },
     });
 
     // Show save indicator
     if (saveIndicator) saveIndicator.textContent = "Saved";
+  }
+
+  /*
+   * Editor.js's default paste handler treats `**bold**` as literal text —
+   * there's no built-in markdown-in, only HTML-in. When the clipboard looks
+   * like multi-line markdown (has fenced code, headings, bold, lists, or is
+   * long enough that losing formatting would be painful), we route it through
+   * SidebarUI.markdownToBlocks and render the resulting blocks via
+   * editor.blocks.renderFromHTML-equivalent — i.e. insert each block at the
+   * caret. Single-line paragraphs without any markdown markers skip this path
+   * so normal prose paste still works.
+   */
+  function installMarkdownPasteHandler() {
+    const holder = document.getElementById("editorjs");
+    if (!holder || holder.dataset.mdPasteBound) return;
+    holder.dataset.mdPasteBound = "1";
+
+    holder.addEventListener(
+      "paste",
+      (e) => {
+        // Don't interfere with pastes into a code block — users want raw text there
+        if (e.target && e.target.closest && e.target.closest(".ce-code__textarea, textarea")) return;
+
+        // Only handle plain-text clipboards — rich HTML copy (from a web page,
+        // Notion, etc.) is already structured and Editor.js handles it fine.
+        const types = e.clipboardData && e.clipboardData.types ? Array.from(e.clipboardData.types) : [];
+        if (types.includes("text/html")) return;
+
+        const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+        if (!text || !looksLikeMarkdown(text)) return;
+
+        // We're taking over — stop Editor.js from inserting the raw text
+        e.preventDefault();
+        e.stopPropagation();
+
+        insertMarkdownAsBlocks(text);
+      },
+      true // capture phase — beats Editor.js's own listener
+    );
+  }
+
+  // Cheap heuristic: does this blob of text look like structured markdown?
+  // We only want to intercept when converting actually helps — short plain
+  // sentences should paste normally.
+  function looksLikeMarkdown(text) {
+    if (text.length < 40) return false;
+    // Multiple newlines = multi-block content
+    const hasMultipleLines = text.split("\n").filter((l) => l.trim()).length >= 2;
+    // Any of these tokens suggests real markdown
+    const hasMarker = /(^|\n)#{1,6}\s|```|(^|\n)[-*+]\s|(^|\n)\d+\.\s|(^|\n)>\s|\*\*[^*]+\*\*|\|.*\|/.test(text);
+    return hasMultipleLines && hasMarker;
+  }
+
+  // Convert markdown to Editor.js blocks and insert them at the current caret
+  function insertMarkdownAsBlocks(markdown) {
+    if (!editorInstance || typeof SidebarUI === "undefined") return;
+    const { blocks } = SidebarUI.markdownToBlocks(markdown);
+    if (!blocks || blocks.length === 0) return;
+
+    const currentIdx = editorInstance.blocks.getCurrentBlockIndex();
+    // Insert after the current block; if the current block is empty, replace it
+    let insertAt = currentIdx >= 0 ? currentIdx + 1 : editorInstance.blocks.getBlocksCount();
+
+    blocks.forEach((block) => {
+      editorInstance.blocks.insert(block.type, block.data, {}, insertAt, false);
+      insertAt++;
+    });
+
+    // Trigger save + code-block resize for the newly inserted content
+    debouncedSave();
+    setTimeout(autoResizeCodeBlocks, 0);
+  }
+
+  /*
+   * Live markdown shortcuts — convert a paragraph to the intended block type
+   * as soon as the user finishes typing the shortcut prefix.
+   *
+   * Editor.js has no built-in markdown-while-typing support (its "shortcuts"
+   * are keyboard chords like Cmd+Shift+H, not `### `). Without this, typing
+   * `### heading` leaves you with a paragraph that contains literal hash marks.
+   *
+   * We hook the `input` event on the editor holder. On each keystroke we look
+   * at the current block's text. If it exactly matches a shortcut pattern AND
+   * the block is still a paragraph, we swap it for the target block type.
+   *
+   * Shortcuts fire only when the whole block text matches — so `### ` alone
+   * converts, but `### hello` does not (preventing mid-sentence conversions).
+   */
+  function installMarkdownShortcuts() {
+    const holder = document.getElementById("editorjs");
+    if (!holder || holder.dataset.mdShortcutsBound) return;
+    holder.dataset.mdShortcutsBound = "1";
+
+    holder.addEventListener("input", (e) => {
+      if (!editorInstance) return;
+      // Ignore input inside code textareas (user wants raw characters there)
+      if (e.target && e.target.closest && e.target.closest(".ce-code__textarea, textarea")) return;
+
+      const idx = editorInstance.blocks.getCurrentBlockIndex();
+      if (idx < 0) return;
+      const block = editorInstance.blocks.getBlockByIndex(idx);
+      if (!block || block.name !== "paragraph") return;
+
+      // Read the current paragraph's plain text (without HTML)
+      const blockEl = block.holder;
+      const contentEl = blockEl && blockEl.querySelector(".ce-paragraph, [contenteditable]");
+      if (!contentEl) return;
+      const text = contentEl.textContent || "";
+
+      const shortcut = matchShortcut(text);
+      if (!shortcut) return;
+
+      applyShortcut(idx, shortcut);
+    });
+  }
+
+  // Map a paragraph's full text to the block it should become (or null)
+  function matchShortcut(text) {
+    // Heading: "# " through "###### " — trailing space is the trigger
+    const h = text.match(/^(#{1,6}) $/);
+    if (h) return { type: "header", data: { text: "", level: h[1].length } };
+
+    // Checklist: "[] ", "[ ] ", or "- [ ] " — before bullet list so `- [ ]`
+    // isn't swallowed by the bullet pattern
+    if (/^(-\s+)?\[\s?\] $/.test(text)) {
+      return { type: "checklist", data: { items: [{ text: "", checked: false }] } };
+    }
+
+    // Unordered list: "- ", "* ", "+ "
+    if (/^[-*+] $/.test(text)) {
+      return { type: "list", data: { style: "unordered", items: [""] } };
+    }
+
+    // Ordered list: "1. " (or any digits)
+    if (/^\d+\. $/.test(text)) {
+      return { type: "list", data: { style: "ordered", items: [""] } };
+    }
+
+    // Blockquote: "> "
+    if (text === "> ") return { type: "quote", data: { text: "", caption: "", alignment: "left" } };
+
+    // Code fence: "```" — no trailing space, converts immediately on third backtick
+    if (text === "```") return { type: "code", data: { code: "" } };
+
+    // Horizontal rule: "---" (or "***", "___")
+    if (text === "---" || text === "***" || text === "___") {
+      return { type: "delimiter", data: {} };
+    }
+
+    return null;
+  }
+
+  // Replace the current paragraph with the chosen block type
+  function applyShortcut(idx, shortcut) {
+    // Defer to after the current input event — mutating blocks synchronously
+    // inside an input handler can leave Editor.js in a stale state
+    setTimeout(() => {
+      if (!editorInstance) return;
+      try {
+        editorInstance.blocks.delete(idx);
+        editorInstance.blocks.insert(shortcut.type, shortcut.data, {}, idx, true);
+
+        // Delimiter has no editable surface — add a paragraph after it so the
+        // caret has somewhere to land
+        if (shortcut.type === "delimiter") {
+          editorInstance.blocks.insert("paragraph", { text: "" }, {}, idx + 1, true);
+        }
+
+        autoResizeCodeBlocks();
+      } catch (err) {
+        console.error("Shortcut conversion failed:", err);
+      }
+    }, 0);
+  }
+
+  /*
+   * Editor.js's CodeTool renders as a fixed-height <textarea>. For long fenced
+   * code blocks (e.g. imported from markdown), the content gets stuck behind an
+   * inner scrollbar. We size every code textarea to its content instead — one
+   * tall block that scrolls with the page, not inside itself.
+   *
+   * Called from onReady (for loaded docs) and onChange (for new/edited blocks).
+   * Each textarea is tagged so we only wire the input listener once.
+   */
+  function autoResizeCodeBlocks() {
+    document.querySelectorAll("#editorjs .ce-code__textarea").forEach((ta) => {
+      resizeTextarea(ta);
+      if (!ta.dataset.autoResized) {
+        ta.addEventListener("input", () => resizeTextarea(ta));
+        ta.dataset.autoResized = "1";
+      }
+    });
+  }
+
+  function resizeTextarea(ta) {
+    // Reset to a small height first so scrollHeight reflects actual content
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + "px";
   }
 
   // Debounced save — waits 1 second after last change before saving

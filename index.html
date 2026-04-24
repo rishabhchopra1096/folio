@@ -188,6 +188,15 @@
         <label>Column Width</label>
         <input type="range" class="width-slider" id="width-slider" min="480" max="960" step="20" value="720" />
       </div>
+      <div class="setting-group">
+        <label>Backup</label>
+        <div class="backup-btns">
+          <button id="backup-export-btn" class="backup-btn">Export all</button>
+          <button id="backup-import-btn" class="backup-btn">Import…</button>
+          <input type="file" id="backup-import-file" accept=".json,application/json" style="display:none" />
+        </div>
+        <div class="backup-hint">Your pages are stored in this browser. Export a JSON backup occasionally so nothing is lost if the browser clears its storage.</div>
+      </div>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->

@@ -61,6 +61,99 @@ const Settings = (function () {
       applyColumnWidth();
       save();
     });
+
+    // Backup: export all folio_* localStorage keys as a JSON file
+    document.getElementById("backup-export-btn").addEventListener("click", exportBackup);
+
+    // Backup: import a previously-exported JSON file
+    const importBtn = document.getElementById("backup-import-btn");
+    const importFile = document.getElementById("backup-import-file");
+    importBtn.addEventListener("click", () => importFile.click());
+    importFile.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (file) importBackup(file);
+      importFile.value = "";
+    });
+  }
+
+  /*
+   * Dump every folio_* localStorage key into one JSON blob and trigger a
+   * download. Filename includes today's date so multiple backups don't clash.
+   */
+  function exportBackup() {
+    const data = FolioStore.exportAll();
+    const meta = {
+      exportedAt: new Date().toISOString(),
+      version: 1,
+      data,
+    };
+    const blob = new Blob([JSON.stringify(meta, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const today = new Date().toISOString().slice(0, 10);
+    const docCount = (data.folio_documents || []).length;
+    a.download = `folio-backup-${today}-${docCount}docs.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /*
+   * Read a backup file, ask the user whether to merge or replace, then restore.
+   * Defaults to merge (safer — existing docs are kept, only new ones are added).
+   */
+  function importBackup(file) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(ev.target.result);
+      } catch {
+        alert("That file isn't a valid Folio backup (couldn't parse JSON).");
+        return;
+      }
+
+      // Accept both the wrapped { version, data } shape and a raw folio_* map
+      const data = parsed && parsed.data ? parsed.data : parsed;
+      if (!data || typeof data !== "object" || !data.folio_documents) {
+        alert("That file doesn't look like a Folio backup (no folio_documents key).");
+        return;
+      }
+
+      const incomingCount = (data.folio_documents || []).length;
+      const currentCount = FolioStore.listDocuments().length;
+
+      // If there's no existing data, just import straight in
+      let mode = "merge";
+      if (currentCount > 0) {
+        const choice = confirm(
+          `Import backup (${incomingCount} pages)?\n\n` +
+            `You currently have ${currentCount} pages.\n\n` +
+            `OK = Merge (keep your pages, add new ones from the backup).\n` +
+            `Cancel = pick Replace instead.`
+        );
+        if (!choice) {
+          const replace = confirm(
+            `Replace everything with the backup?\n\nThis wipes your ${currentCount} current pages and restores the backup exactly as it was. Cannot be undone.`
+          );
+          if (!replace) return;
+          mode = "replace";
+        }
+      }
+
+      const result = FolioStore.importAll(data, mode);
+      alert(
+        mode === "replace"
+          ? `Restored backup. ${incomingCount} pages loaded.`
+          : `Merged backup. ${result.added} new pages added, ${result.skipped} skipped (already present).`
+      );
+
+      // Reload the page so all modules re-read the new store state cleanly
+      window.location.reload();
+    };
+    reader.readAsText(file);
   }
 
   function applyTheme(theme) {

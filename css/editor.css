@@ -175,6 +175,11 @@
   border-radius: 8px !important;
   padding: 16px 20px !important;
   font-size: 0.9em !important;
+  /* js/editor.js resizes this to scrollHeight — disable the inner vertical
+     scrollbar and manual resize handle so the block grows with its content */
+  overflow-y: hidden !important;
+  resize: none !important;
+  min-height: 3em !important;
 }
 
 /* Quote blocks */

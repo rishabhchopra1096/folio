@@ -324,20 +324,64 @@ const FolioStore = (function () {
     return data;
   }
 
-  function importAll(data) {
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key.startsWith("folio_")) keysToRemove.push(key);
-    }
-    keysToRemove.forEach((k) => localStorage.removeItem(k));
-
-    for (const [key, value] of Object.entries(data)) {
-      if (typeof value === "string") {
-        localStorage.setItem(key, value);
-      } else {
-        localStorage.setItem(key, JSON.stringify(value));
+  /*
+   * Import a backup JSON blob. `mode` controls what happens to existing data:
+   *   - "replace" — wipe all existing folio_* keys first, then load the backup
+   *                 (use when you want the backup to be the exact state)
+   *   - "merge"   — keep existing docs; for each doc in the backup, only add it
+   *                 if no doc with that id already exists. Settings from the
+   *                 backup are NOT applied in merge mode (preserve current UI).
+   *                 Default — safer for one-click import.
+   */
+  function importAll(data, mode = "merge") {
+    if (mode === "replace") {
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key.startsWith("folio_")) keysToRemove.push(key);
       }
+      keysToRemove.forEach((k) => localStorage.removeItem(k));
+
+      for (const [key, value] of Object.entries(data)) {
+        writeValue(key, value);
+      }
+      return { added: Object.keys(data).length, skipped: 0 };
+    }
+
+    // Merge: union of doc metadata by id, then copy content/highlights/comments
+    // only for docs that weren't already present locally.
+    const existingDocs = readJSON("folio_documents", []);
+    const existingIds = new Set(existingDocs.map((d) => d.id));
+    const incomingDocs = (data.folio_documents || []).filter((d) => d && d.id);
+
+    let added = 0;
+    let skipped = 0;
+    const mergedDocs = existingDocs.slice();
+
+    incomingDocs.forEach((doc) => {
+      if (existingIds.has(doc.id)) {
+        skipped++;
+        return;
+      }
+      mergedDocs.push(doc);
+      added++;
+      // Pull along the doc's content/highlights/comments if present in backup
+      ["folio_doc_", "folio_highlights_", "folio_comments_"].forEach((prefix) => {
+        const key = prefix + doc.id;
+        if (data[key] !== undefined) writeValue(key, data[key]);
+      });
+    });
+
+    writeJSON("folio_documents", mergedDocs);
+    return { added, skipped };
+  }
+
+  // Helper for importAll — accept either a JSON-encoded string or a raw value
+  function writeValue(key, value) {
+    if (typeof value === "string") {
+      localStorage.setItem(key, value);
+    } else {
+      localStorage.setItem(key, JSON.stringify(value));
     }
   }
 

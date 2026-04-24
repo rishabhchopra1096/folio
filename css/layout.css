@@ -442,24 +442,24 @@
   text-overflow: ellipsis;
 }
 
-/* Reading progress bar in topbar */
+/* Reading progress bar — fixed at the very top of the viewport (reader mode) */
 #progress-bar-wrap {
-  height: 3px;
-  background: var(--progress-bg);
-  border-radius: 2px;
+  height: 4px;
+  background: transparent;
   overflow: hidden;
-  cursor: pointer;
-  position: absolute;
-  bottom: 0;
+  position: fixed;
+  top: 0;
   left: 0;
   right: 0;
+  z-index: 200;
+  pointer-events: none;
 }
 #progress-bar {
   height: 100%;
   background: linear-gradient(90deg, var(--progress-fill), var(--accent-light));
-  border-radius: 2px;
   width: 0%;
   transition: width 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
 
 /* Control buttons in topbar */
