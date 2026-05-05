@@ -463,6 +463,14 @@ const SidebarUI = (function () {
           },
         };
 
+      case "image":
+        // Markdown ![alt](url) — only honor data-URL or http(s) sources to
+        // avoid pulling in protocol handlers we don't trust
+        if (token.href && /^(data:image\/|https?:)/.test(token.href)) {
+          return { type: "image", data: { url: token.href, caption: token.text || "" } };
+        }
+        return null;
+
       case "space":
       case "html":
         // Ignore whitespace tokens and raw HTML blocks (out of scope)

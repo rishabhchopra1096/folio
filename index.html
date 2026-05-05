@@ -185,8 +185,13 @@
         <input type="range" class="line-height-slider" id="lh-slider" min="1.4" max="2.4" step="0.05" value="1.85" />
       </div>
       <div class="setting-group">
-        <label>Column Width</label>
-        <input type="range" class="width-slider" id="width-slider" min="480" max="960" step="20" value="720" />
+        <label>Width</label>
+        <div class="width-mode-btns">
+          <button class="width-mode-btn active" data-mode="narrow">Narrow</button>
+          <button class="width-mode-btn" data-mode="wide">Wide</button>
+          <button class="width-mode-btn" data-mode="full">Full</button>
+        </div>
+        <input type="range" class="width-slider" id="width-slider" min="480" max="960" step="20" value="720" style="margin-top:10px" />
       </div>
       <div class="setting-group">
         <label>Backup</label>

@@ -21,6 +21,14 @@
   transition: font-size 0.2s, line-height 0.2s, max-width 0.3s;
 }
 
+/* Full-width mode: ignore --article-width entirely so the article fills its
+   container. Inline styles set by JS still apply, but this beats them via
+   !important for the explicit "Full" mode opt-in. */
+body.width-full #article,
+body.width-full #editor-container {
+  max-width: none !important;
+}
+
 /* Headings — all use the body serif font for consistency */
 #article h1,
 #article h2,

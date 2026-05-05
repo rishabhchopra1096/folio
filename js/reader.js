@@ -111,6 +111,17 @@ const Reader = (function () {
       case "delimiter":
         return "<hr />";
 
+      case "image": {
+        // Pasted images use the simpleImage tool's data shape: { url, caption }
+        const url = data.url || (data.file && data.file.url) || "";
+        if (!url) return "";
+        const cap = data.caption ? `<figcaption>${data.caption}</figcaption>` : "";
+        return `<figure class="folio-image">
+          <img src="${url}" alt="${data.caption || ""}" loading="lazy" />
+          ${cap}
+        </figure>`;
+      }
+
       default:
         // Unknown block: render as paragraph if it has text
         if (data.text) return `<p>${data.text}</p>`;

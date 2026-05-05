@@ -26,6 +26,76 @@
  * =============================================================================
  */
 
+/*
+ * FolioImageTool — minimal Editor.js block for inline images.
+ *
+ * Editor.js doesn't ship with a built-in image block; the official @editorjs/image
+ * tool assumes you have a server to upload to. We don't (Folio is static), so we
+ * roll our own tiny one — it accepts a data URL (or any URL) and renders an
+ * <img> + an editable caption. ~40 lines, no dependency.
+ *
+ * Data shape: { url: "data:image/jpeg;base64,...", caption: "" }
+ */
+class FolioImageTool {
+  static get toolbox() {
+    return {
+      title: "Image",
+      icon:
+        '<svg width="17" height="15" viewBox="0 0 17 15" xmlns="http://www.w3.org/2000/svg"><path d="M2 1h13a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm0 1v11h13V2H2zm3 3a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm-2 7l3-4 2 2 3-4 4 6H3z" fill="currentColor"/></svg>',
+    };
+  }
+
+  static get isReadOnlySupported() { return true; }
+
+  constructor({ data }) {
+    this.data = {
+      url: (data && data.url) || "",
+      caption: (data && data.caption) || "",
+    };
+    this.wrapper = null;
+    this.captionEl = null;
+  }
+
+  render() {
+    const wrapper = document.createElement("figure");
+    wrapper.className = "folio-image-block";
+
+    if (this.data.url) {
+      const img = document.createElement("img");
+      img.src = this.data.url;
+      img.alt = this.data.caption || "";
+      wrapper.appendChild(img);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "folio-image-placeholder";
+      placeholder.textContent = "Paste an image (Cmd+V) to insert it here";
+      wrapper.appendChild(placeholder);
+    }
+
+    const caption = document.createElement("div");
+    caption.className = "folio-image-caption";
+    caption.contentEditable = "true";
+    caption.dataset.placeholder = "Caption (optional)";
+    caption.textContent = this.data.caption;
+    wrapper.appendChild(caption);
+
+    this.wrapper = wrapper;
+    this.captionEl = caption;
+    return wrapper;
+  }
+
+  save() {
+    return {
+      url: this.data.url,
+      caption: this.captionEl ? this.captionEl.textContent : this.data.caption,
+    };
+  }
+
+  validate(savedData) {
+    return !!(savedData && savedData.url);
+  }
+}
+
 const Editor = (function () {
 
   // The Editor.js instance
@@ -121,6 +191,10 @@ const Editor = (function () {
         marker: {
           class: Marker,
         },
+        image: {
+          class: FolioImageTool,
+          inlineToolbar: false,
+        },
       },
 
       // Load saved data
@@ -172,6 +246,18 @@ const Editor = (function () {
         // Don't interfere with pastes into a code block — users want raw text there
         if (e.target && e.target.closest && e.target.closest(".ce-code__textarea, textarea")) return;
 
+        // ── Image pastes (Cmd+V from screenshot, photo, etc.) ──
+        // Check clipboardData.items for an image file BEFORE looking at text:
+        // some apps put both an image and a text fallback ("[image]") on the
+        // clipboard, and we want the actual image, not the fallback string.
+        const imageItem = findImageInClipboard(e.clipboardData);
+        if (imageItem) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleImagePaste(imageItem);
+          return;
+        }
+
         // Only handle plain-text clipboards — rich HTML copy (from a web page,
         // Notion, etc.) is already structured and Editor.js handles it fine.
         const types = e.clipboardData && e.clipboardData.types ? Array.from(e.clipboardData.types) : [];
@@ -188,6 +274,148 @@ const Editor = (function () {
       },
       true // capture phase — beats Editor.js's own listener
     );
+  }
+
+  // Pull the first image File out of a clipboard, or null if none present
+  function findImageInClipboard(clipboardData) {
+    if (!clipboardData) return null;
+    // Prefer items[] — gives access to images even when the clipboard also has text
+    if (clipboardData.items) {
+      for (const item of clipboardData.items) {
+        if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+          return item.getAsFile();
+        }
+      }
+    }
+    if (clipboardData.files) {
+      for (const f of clipboardData.files) {
+        if (f.type && f.type.startsWith("image/")) return f;
+      }
+    }
+    return null;
+  }
+
+  /*
+   * Image paste flow:
+   *   1. Read the file as a data URL
+   *   2. Pass through compressImage() — resizes >1800px, JPEG-encodes >500KB
+   *   3. Insert as an image block at the caret
+   *   4. Run a soft-quota check; warn if localStorage is near full
+   */
+  async function handleImagePaste(file) {
+    if (!editorInstance) return;
+    try {
+      const dataUrl = await compressImage(file);
+      const idx = editorInstance.blocks.getCurrentBlockIndex();
+      const insertAt = idx >= 0 ? idx + 1 : editorInstance.blocks.getBlocksCount();
+      editorInstance.blocks.insert("image", { url: dataUrl, caption: "" }, {}, insertAt, true);
+      debouncedSave();
+      checkStorageQuota();
+    } catch (err) {
+      console.error("Image paste failed:", err);
+      alert("Couldn't paste that image — " + (err.message || "unknown error"));
+    }
+  }
+
+  /*
+   * compressImage — turn an image File into a data URL that's safe for localStorage.
+   *
+   * Strategy (matches what we agreed):
+   *   • If the file is already small (≤500KB), keep it as-is (preserves PNG
+   *     transparency, GIF animation, screenshot crispness).
+   *   • Otherwise decode into a canvas, resize so the longest edge ≤1800px,
+   *     and re-encode as JPEG at 0.92 quality. If still >1.5MB, retry at 0.85.
+   *
+   * JPEG (per user preference) — wider compatibility than WebP at the cost of
+   * losing transparency. Most screenshots/photos are RGB anyway.
+   */
+  async function compressImage(file) {
+    const MAX_EDGE = 1800;
+    const SMALL_FILE = 500 * 1024;
+    const TARGET_BYTES = 1.5 * 1024 * 1024;
+
+    // Tiny images go through unchanged — no point re-encoding
+    if (file.size <= SMALL_FILE) {
+      return await fileToDataUrl(file);
+    }
+
+    const img = await loadImage(await fileToDataUrl(file));
+
+    // Compute target dimensions, preserving aspect ratio
+    let { width, height } = img;
+    if (width > MAX_EDGE || height > MAX_EDGE) {
+      const scale = MAX_EDGE / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    // White background — JPEG can't do transparency, so flatten alpha to white
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    let dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    if (dataUrlByteSize(dataUrl) > TARGET_BYTES) {
+      dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    }
+    return dataUrl;
+  }
+
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error("Couldn't read clipboard image"));
+      r.readAsDataURL(file);
+    });
+  }
+
+  function loadImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Couldn't decode clipboard image"));
+      img.src = dataUrl;
+    });
+  }
+
+  // Approximate byte size of a base64 data URL
+  function dataUrlByteSize(dataUrl) {
+    const comma = dataUrl.indexOf(",");
+    if (comma === -1) return 0;
+    const b64 = dataUrl.slice(comma + 1);
+    return Math.floor(b64.length * 0.75);
+  }
+
+  /*
+   * Soft quota warning — localStorage is typically capped at 5-10MB per origin,
+   * which fills up fast once you start pasting images. We don't block pastes,
+   * but once usage crosses ~6MB we nag the user once per session to export a
+   * backup. Better to warn early than to lose data when localStorage rejects
+   * the next write.
+   */
+  let storageWarned = false;
+  function checkStorageQuota() {
+    if (storageWarned) return;
+    let total = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      const v = localStorage.getItem(k);
+      total += (k.length + (v ? v.length : 0)) * 2; // UTF-16 estimate
+    }
+    if (total > 6 * 1024 * 1024) {
+      storageWarned = true;
+      const mb = (total / 1024 / 1024).toFixed(1);
+      setTimeout(() => {
+        alert(
+          `Folio is using ${mb}MB of browser storage — getting close to the browser's limit (~5-10MB).\n\nOpen Settings → Backup and Export your pages now. The browser may start refusing new edits if storage fills up.`
+        );
+      }, 100);
+    }
   }
 
   // Cheap heuristic: does this blob of text look like structured markdown?

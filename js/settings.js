@@ -13,20 +13,29 @@ const Settings = (function () {
   let fontSize = 18;
   let lineHeight = 1.85;
   let columnWidth = 720;
+  // Width mode: "narrow" uses the slider value (480-960), "wide" pins to ~1100px,
+  // "full" expands to fill the available content area. Default "narrow" so
+  // existing users see no behavior change.
+  let widthMode = "narrow";
 
   function init() {
     const saved = FolioStore.getSettings();
     fontSize = saved.fontSize || 18;
     lineHeight = saved.lineHeight || 1.85;
     columnWidth = saved.columnWidth || 720;
+    widthMode = saved.widthMode || "narrow";
 
     applyTheme(saved.theme || "default");
     applyFontSize();
     applyLineHeight();
     applyColumnWidth();
+    applyWidthMode();
 
     document.getElementById("lh-slider").value = lineHeight;
     document.getElementById("width-slider").value = columnWidth;
+    document.querySelectorAll(".width-mode-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.mode === widthMode);
+    });
 
     // Theme buttons
     document.querySelectorAll(".theme-btn").forEach((btn) => {
@@ -55,11 +64,23 @@ const Settings = (function () {
       save();
     });
 
-    // Column width slider
+    // Column width slider (only meaningful in narrow mode)
     document.getElementById("width-slider").addEventListener("input", (e) => {
       columnWidth = parseInt(e.target.value);
       applyColumnWidth();
       save();
+    });
+
+    // Width mode buttons (Narrow / Wide / Full)
+    document.querySelectorAll(".width-mode-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        widthMode = btn.dataset.mode;
+        document.querySelectorAll(".width-mode-btn").forEach((b) => {
+          b.classList.toggle("active", b.dataset.mode === widthMode);
+        });
+        applyWidthMode();
+        save();
+      });
     });
 
     // Backup: export all folio_* localStorage keys as a JSON file
@@ -178,10 +199,36 @@ const Settings = (function () {
   }
 
   function applyColumnWidth() {
-    const article = document.getElementById("article");
-    const editorContainer = document.getElementById("editor-container");
-    if (article) article.style.maxWidth = columnWidth + "px";
-    if (editorContainer) editorContainer.style.maxWidth = columnWidth + "px";
+    // Slider value only takes effect in narrow mode — wide/full ignore it
+    if (widthMode !== "narrow") return;
+    document.documentElement.style.setProperty("--article-width", columnWidth + "px");
+  }
+
+  /*
+   * Width mode controls how wide the reading/editing column is:
+   *   - narrow: slider value (480-960px) — comfortable reading width, default
+   *   - wide:   ~1100px — more generous, good for full-window with content
+   *   - full:   100% of available content area minus padding — no max
+   *
+   * We drive this through CSS custom properties on :root so #article and
+   * #editor-container (which already reference var(--article-width)) update
+   * automatically. The "full" mode swaps in a different value via a body class
+   * because CSS variables can't be conditional but classes can.
+   */
+  function applyWidthMode() {
+    const root = document.documentElement;
+    document.body.classList.remove("width-narrow", "width-wide", "width-full");
+    document.body.classList.add("width-" + widthMode);
+    if (widthMode === "narrow") {
+      root.style.setProperty("--article-width", columnWidth + "px");
+    } else if (widthMode === "wide") {
+      root.style.setProperty("--article-width", "1100px");
+    } else if (widthMode === "full") {
+      root.style.setProperty("--article-width", "none");
+    }
+    // Disable the slider visually when it has no effect
+    const slider = document.getElementById("width-slider");
+    if (slider) slider.disabled = widthMode !== "narrow";
   }
 
   function save() {
@@ -193,8 +240,9 @@ const Settings = (function () {
       fontSize,
       lineHeight,
       columnWidth,
+      widthMode,
     });
   }
 
-  return { init, applyFontSize, applyLineHeight, applyColumnWidth, save };
+  return { init, applyFontSize, applyLineHeight, applyColumnWidth, applyWidthMode, save };
 })();

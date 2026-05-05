@@ -55,6 +55,28 @@
 .theme-btn[data-t="dark"]    { background: #221e16; color: #ede5d4; }
 .theme-btn[data-t="night"]   { background: #112031; color: #d4e8f5; }
 
+/* Width mode buttons (Narrow / Wide / Full) in the settings panel */
+.width-mode-btns { display: flex; gap: 8px; }
+.width-mode-btn {
+  flex: 1;
+  padding: 6px 4px;
+  border-radius: 6px;
+  border: 1.5px solid var(--line);
+  background: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--font-ui);
+  color: var(--ink-soft);
+  text-align: center;
+  transition: border-color 0.2s, color 0.2s;
+}
+.width-mode-btn:hover { border-color: var(--accent); color: var(--accent); }
+.width-mode-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
 /* Backup buttons (Export / Import) in the settings panel */
 .backup-btns { display: flex; gap: 8px; }
 .backup-btn {
