@@ -35,6 +35,12 @@ const Highlights = (function () {
   let pendingRange = null;
   // The highlight ID that's currently showing the popover
   let activeHighlightId = null;
+  // The most recently created highlight (for Cmd+Z undo). We reset this on any
+  // action other than "create," so undo only ever affects the last create.
+  let lastCreatedHighlightId = null;
+  // IDs of highlights that overlap the pending selection — populated whenever
+  // pendingRange is set, so the eraser button knows what to remove.
+  let overlappingHighlightIds = [];
 
   // ==========================================================================
   // RANGE SERIALIZATION — Converting DOM Ranges to storable paths
@@ -200,9 +206,24 @@ const Highlights = (function () {
     });
     FolioStore.saveHighlights(docId, highlights);
 
+    // Remember this ID so Cmd+Z can undo just this creation
+    lastCreatedHighlightId = highlightId;
+
     // Clear the selection and hide the toolbar
     window.getSelection().removeAllRanges();
     hideToolbar();
+  }
+
+  // ==========================================================================
+  // UNDO — remove the most recently created highlight (Cmd+Z after creating)
+  // ==========================================================================
+
+  function undoLastHighlight() {
+    if (!lastCreatedHighlightId) return false;
+    const id = lastCreatedHighlightId;
+    lastCreatedHighlightId = null; // consume it — one undo per create
+    removeHighlight(id);
+    return true;
   }
 
   // ==========================================================================
@@ -332,14 +353,41 @@ const Highlights = (function () {
 
       // Store the range and show the toolbar above the selection
       pendingRange = range.cloneRange();
+
+      // Figure out whether the selection overlaps any existing highlights —
+      // that's what the eraser will act on. We walk the fragment produced by
+      // cloneContents() looking for <mark data-highlight-id="..."> tags, and
+      // ALSO check the ancestor chain in case the selection sits entirely
+      // inside a single existing highlight.
+      overlappingHighlightIds = findHighlightsInRange(range);
+      updateEraserState();
+
       const rect = range.getBoundingClientRect();
-      const toolbarX = rect.left + rect.width / 2 - 60;
+      // Toolbar is now wider (color swatches + divider + eraser) — center on it
+      const toolbarX = rect.left + rect.width / 2 - 80;
       const toolbarY = rect.top - 44;
       showToolbar(
         Math.max(8, toolbarX),
         Math.max(8, toolbarY)
       );
     });
+
+    // Eraser click — remove every highlight overlapping the current selection
+    const eraserBtn = document.getElementById("hl-eraser");
+    if (eraserBtn) {
+      eraserBtn.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // keep the selection alive across the click
+        e.stopPropagation();
+      });
+      eraserBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!overlappingHighlightIds.length) return;
+        overlappingHighlightIds.forEach((id) => removeHighlight(id));
+        overlappingHighlightIds = [];
+        window.getSelection().removeAllRanges();
+        hideToolbar();
+      });
+    }
 
     // Color button clicks in the toolbar
     toolbar.querySelectorAll(".hl-color-btn").forEach((btn) => {
@@ -388,7 +436,48 @@ const Highlights = (function () {
         hideToolbar();
         hidePopover();
       }
+
+      // Cmd+Z / Ctrl+Z after highlighting → undo the last created highlight.
+      // Only fires in reader mode and when we have a create to undo; anywhere
+      // else, native undo (e.g. inside the editor) is untouched.
+      if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey) {
+        const readerView = document.getElementById("view-reader");
+        if (readerView && readerView.classList.contains("active") && lastCreatedHighlightId) {
+          e.preventDefault();
+          undoLastHighlight();
+        }
+      }
     });
+  }
+
+  // Return an array of unique highlight IDs that overlap the given range.
+  // Used to enable the eraser button + drive its click action.
+  function findHighlightsInRange(range) {
+    const ids = new Set();
+
+    // Case 1: selection is INSIDE a single highlight — commonAncestor is the mark
+    let node = range.commonAncestorContainer;
+    if (node && node.nodeType === Node.TEXT_NODE) node = node.parentNode;
+    const ancestorMark = node && node.closest ? node.closest("mark[data-highlight-id]") : null;
+    if (ancestorMark) ids.add(ancestorMark.dataset.highlightId);
+
+    // Case 2: selection SPANS one or more highlights — clone and walk contents
+    try {
+      const frag = range.cloneContents();
+      frag.querySelectorAll("mark[data-highlight-id]").forEach((m) => {
+        ids.add(m.dataset.highlightId);
+      });
+    } catch {
+      // Some cross-node selections throw — ignore, ancestor check above still fires
+    }
+
+    return Array.from(ids);
+  }
+
+  function updateEraserState() {
+    const btn = document.getElementById("hl-eraser");
+    if (!btn) return;
+    btn.disabled = overlappingHighlightIds.length === 0;
   }
 
   return {

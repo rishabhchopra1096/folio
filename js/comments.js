@@ -24,6 +24,12 @@ const Comments = (function () {
   const commentInput = document.getElementById("comment-input");
   const commentSubmit = document.getElementById("comment-submit");
   const commentCancel = document.getElementById("comment-cancel");
+  const resizeHandle = document.getElementById("comments-resize");
+  const header = panel.querySelector(".comments-header");
+
+  // Distance from the right viewport edge at which the panel snaps to a
+  // full-height right-side margin dock. Small enough to be intentional.
+  const SNAP_THRESHOLD_PX = 32;
 
   // The highlight ID we're currently adding a comment to
   let activeHighlightId = null;
@@ -36,8 +42,206 @@ const Comments = (function () {
 
   // Open the panel and show all comments for the current document
   function openPanel() {
+    // Restore the last-used geometry before showing so the panel doesn't flash
+    // in the default position and then jump.
+    restoreGeometry();
     panel.classList.add("open");
     renderComments();
+  }
+
+  // ==========================================================================
+  // GEOMETRY PERSISTENCE — remember where/how big the panel was last time
+  // ==========================================================================
+
+  /*
+   * Panel geometry is stored under a single settings key so it survives across
+   * sessions and across docs. Shape:
+   *   {
+   *     mode: "floating" | "docked",
+   *     x, y: floating position (px from top-left of viewport)
+   *     width, height: floating size
+   *   }
+   * We clamp everything into the current viewport on load so a resize down
+   * doesn't leave the panel off-screen.
+   */
+  function getSavedGeometry() {
+    const settings = FolioStore.getSettings();
+    return settings.commentsGeometry || null;
+  }
+
+  function saveGeometry(geom) {
+    const settings = FolioStore.getSettings();
+    settings.commentsGeometry = geom;
+    FolioStore.saveSettings(settings);
+  }
+
+  function restoreGeometry() {
+    const g = getSavedGeometry();
+    if (!g) return; // fall back to CSS defaults
+
+    if (g.mode === "docked") {
+      panel.classList.add("docked");
+      panel.style.left = "";
+      panel.style.top = "";
+      panel.style.right = "";
+      panel.style.bottom = "";
+      panel.style.width = (g.width || 360) + "px";
+      panel.style.height = "";
+      return;
+    }
+
+    // Floating — clamp into viewport so a re-open after a window resize is safe
+    panel.classList.remove("docked");
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = Math.min(g.width || 320, vw - 40);
+    const h = Math.min(g.height || 400, vh - 40);
+    const x = Math.max(8, Math.min(g.x, vw - w - 8));
+    const y = Math.max(8, Math.min(g.y, vh - h - 8));
+    panel.style.left = x + "px";
+    panel.style.top = y + "px";
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+    panel.style.width = w + "px";
+    panel.style.height = h + "px";
+  }
+
+  // Capture current on-screen rect and persist it (floating or docked mode)
+  function captureAndSaveGeometry() {
+    if (panel.classList.contains("docked")) {
+      saveGeometry({ mode: "docked", width: panel.getBoundingClientRect().width });
+      return;
+    }
+    const r = panel.getBoundingClientRect();
+    saveGeometry({
+      mode: "floating",
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
+    });
+  }
+
+  // ==========================================================================
+  // DRAG — grab the header to move the panel; snap-to-margin at right edge
+  // ==========================================================================
+
+  function initDrag() {
+    if (!header) return;
+    let dragging = false;
+    let startX = 0, startY = 0;
+    let originLeft = 0, originTop = 0;
+
+    header.addEventListener("mousedown", (e) => {
+      // Ignore clicks on header buttons (close, export)
+      if (e.target.closest("button")) return;
+      dragging = true;
+      // If we were docked, undock into a floating card at the drag origin so
+      // the drag feels natural (else the panel would jump from full-height).
+      if (panel.classList.contains("docked")) {
+        const r = panel.getBoundingClientRect();
+        panel.classList.remove("docked");
+        panel.style.left = r.left + "px";
+        panel.style.top = r.top + "px";
+        panel.style.right = "auto";
+        panel.style.bottom = "auto";
+        panel.style.width = r.width + "px";
+        panel.style.height = r.height + "px";
+      }
+      const r = panel.getBoundingClientRect();
+      originLeft = r.left;
+      originTop = r.top;
+      startX = e.clientX;
+      startY = e.clientY;
+      panel.classList.add("dragging");
+      e.preventDefault();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const x = Math.max(0, Math.min(originLeft + dx, vw - w));
+      const y = Math.max(0, Math.min(originTop + dy, vh - h));
+      panel.style.left = x + "px";
+      panel.style.top = y + "px";
+      panel.style.right = "auto";
+      panel.style.bottom = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (!dragging) return;
+      dragging = false;
+      panel.classList.remove("dragging");
+
+      // Snap-to-margin: if the panel's right edge is within the snap threshold
+      // of the viewport's right edge, dock it so it acts like a margin column.
+      const r = panel.getBoundingClientRect();
+      const distToRight = window.innerWidth - r.right;
+      if (distToRight <= SNAP_THRESHOLD_PX) {
+        panel.classList.add("docked");
+        panel.style.left = "";
+        panel.style.top = "";
+        panel.style.right = "";
+        panel.style.bottom = "";
+        panel.style.height = "";
+        panel.style.width = Math.round(r.width) + "px";
+      }
+      captureAndSaveGeometry();
+    });
+  }
+
+  // ==========================================================================
+  // RESIZE — bottom-right corner handle
+  // ==========================================================================
+
+  function initResize() {
+    if (!resizeHandle) return;
+    let resizing = false;
+    let startX = 0, startY = 0;
+    let startW = 0, startH = 0;
+
+    resizeHandle.addEventListener("mousedown", (e) => {
+      resizing = true;
+      // If docked, undock into a floating card at the current on-screen rect
+      // so the drag-to-resize feels 1:1 with the corner.
+      if (panel.classList.contains("docked")) {
+        const r = panel.getBoundingClientRect();
+        panel.classList.remove("docked");
+        panel.style.left = r.left + "px";
+        panel.style.top = r.top + "px";
+        panel.style.right = "auto";
+        panel.style.bottom = "auto";
+        panel.style.width = r.width + "px";
+        panel.style.height = r.height + "px";
+      }
+      startX = e.clientX;
+      startY = e.clientY;
+      startW = panel.offsetWidth;
+      startH = panel.offsetHeight;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!resizing) return;
+      const dw = e.clientX - startX;
+      const dh = e.clientY - startY;
+      const w = Math.max(240, Math.min(startW + dw, window.innerWidth * 0.9));
+      const h = Math.max(200, Math.min(startH + dh, window.innerHeight * 0.9));
+      panel.style.width = w + "px";
+      panel.style.height = h + "px";
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (!resizing) return;
+      resizing = false;
+      captureAndSaveGeometry();
+    });
   }
 
   // Open the panel specifically for adding a comment to a highlight
@@ -226,12 +430,112 @@ const Comments = (function () {
   }
 
   // ==========================================================================
+  // EXPORT — dump highlights + comments as a markdown bulleted list
+  // ==========================================================================
+
+  /*
+   * Format:
+   *   # Highlights & comments — <doc title>
+   *   _Exported <date>_
+   *
+   *   - "quoted highlight text"
+   *     → my thought: comment text
+   *
+   *   - "another highlight, no comment"
+   *
+   * Design decisions (per plan):
+   *   • Include highlights WITHOUT comments (option A) — they're breadcrumbs too
+   *   • Order by highlight creation time so the export reads chronologically
+   *   • Multi-line comments preserved via a blockquote-style indent
+   *   • Markdown only (JSON round-trip is handled by the general backup feature)
+   */
+  function exportAnnotations() {
+    const docId = Reader.getCurrentDocId();
+    if (!docId) {
+      alert("Open a document first — export operates on the currently open page.");
+      return;
+    }
+
+    const doc = FolioStore.getDocument(docId);
+    const highlights = FolioStore.getHighlights(docId);
+    const comments = FolioStore.getComments(docId);
+
+    if (!highlights.length && !comments.length) {
+      alert("No highlights or comments to export yet.");
+      return;
+    }
+
+    // Sort highlights by creation time so the export mirrors reading order-ish
+    const sortedHighlights = [...highlights].sort(
+      (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
+    );
+
+    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
+    const today = new Date().toISOString().slice(0, 10);
+
+    const lines = [];
+    lines.push(`# Highlights & comments — ${title}`);
+    lines.push(`_Exported ${today}_`);
+    lines.push("");
+
+    sortedHighlights.forEach((hl) => {
+      // Collapse internal whitespace so multi-line highlights read as one quote
+      const quoteText = (hl.text || "").replace(/\s+/g, " ").trim();
+      lines.push(`- "${quoteText}"`);
+      const relatedComments = comments.filter((c) => c.highlightId === hl.id);
+      relatedComments.forEach((c) => {
+        // Indent each comment line so it visually attaches to its bullet
+        const commentLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+        commentLines.forEach((cl, i) => {
+          const prefix = i === 0 ? "  → " : "    ";
+          lines.push(`${prefix}${cl}`);
+        });
+      });
+      lines.push("");
+    });
+
+    // Also include orphan comments (highlight was removed but comment survived)
+    const orphanComments = comments.filter(
+      (c) => !highlights.some((h) => h.id === c.highlightId)
+    );
+    if (orphanComments.length) {
+      lines.push("---");
+      lines.push("");
+      lines.push("**Notes without a highlight** (the original text was edited or removed):");
+      lines.push("");
+      orphanComments.forEach((c) => {
+        lines.push(`- ${c.text || ""}`);
+      });
+    }
+
+    const md = lines.join("\n");
+    const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
+    downloadBlob(md, `${safeTitle}-annotations-${today}.md`, "text/markdown");
+  }
+
+  function downloadBlob(text, filename, mimeType) {
+    const blob = new Blob([text], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ==========================================================================
   // INITIALIZATION — Wire up event listeners
   // ==========================================================================
 
   function init() {
     // Close panel button
     document.getElementById("comments-close").addEventListener("click", closePanel);
+
+    // Export annotations button
+    const exportBtn = document.getElementById("comments-export");
+    if (exportBtn) exportBtn.addEventListener("click", exportAnnotations);
 
     // Submit comment
     commentSubmit.addEventListener("click", saveComment);
@@ -249,6 +553,16 @@ const Comments = (function () {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         saveComment();
       }
+    });
+
+    // Floating-window behavior: drag by header, resize by corner
+    initDrag();
+    initResize();
+
+    // Keep the panel in the viewport if the window is resized while docked
+    // or floating — otherwise a shrink can leave it off-screen.
+    window.addEventListener("resize", () => {
+      if (panel.classList.contains("open")) restoreGeometry();
     });
   }
 

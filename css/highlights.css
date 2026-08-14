@@ -71,6 +71,40 @@ mark[data-highlight-id]:hover {
 .hl-color-btn[data-color="blue"]   { background: rgba(100, 181, 246, 0.7); }
 .hl-color-btn[data-color="pink"]   { background: rgba(240, 98, 146, 0.6); }
 
+/* Vertical divider between color swatches and the eraser */
+.hl-toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  margin: 0 4px;
+}
+
+/* Eraser: removes highlights that overlap the current selection.
+   Slightly larger hit area than a swatch so it reads as an action, not a color. */
+.hl-eraser-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1.5px solid transparent;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-soft);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.hl-eraser-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+  background: var(--line);
+}
+.hl-eraser-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ── HIGHLIGHT POPOVER — appears when clicking an existing highlight ── */
 #highlight-popover {
   position: fixed;
@@ -107,6 +141,19 @@ mark[data-highlight-id]:hover {
   background: var(--line);
   color: var(--ink);
 }
+/* Make "Add Comment" the visually primary action so users notice it — that's
+   the whole point of the popover; Remove is secondary. */
+#highlight-popover #popover-comment {
+  color: var(--accent);
+  font-weight: 500;
+}
+#highlight-popover #popover-comment:hover {
+  background: var(--accent);
+  color: var(--paper);
+}
+#highlight-popover #popover-comment:hover svg {
+  stroke: var(--paper);
+}
 #highlight-popover button svg {
   width: 14px;
   height: 14px;
@@ -115,25 +162,78 @@ mark[data-highlight-id]:hover {
   stroke-width: 1.8;
 }
 
-/* ── COMMENTS PANEL — slide-over panel from the right ── */
+/* ── COMMENTS PANEL — floating, draggable, resizable card ──
+   Old design was a right-side drawer that overlaid the article. New design is
+   a small floating card (default bottom-right) that the user can drag anywhere
+   and resize from the bottom-right corner. Position + size persist in settings.
+   When dragged near the right edge, the panel snaps to a right-margin dock
+   so it behaves like a Google-Docs-style margin comments column. */
 #comments-panel {
   position: fixed;
-  top: 0;
-  right: -360px;
-  width: 360px;
-  height: 100vh;
+  /* Default position/size — JS overrides from persisted settings if present */
+  top: auto;
+  bottom: 24px;
+  right: 24px;
+  left: auto;
+  width: 320px;
+  height: 400px;
   background: var(--paper);
-  border-left: 1px solid var(--line);
-  box-shadow: -4px 0 24px var(--shadow);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px var(--shadow);
   z-index: 160;
-  display: flex;
+  display: none;
   flex-direction: column;
-  transition: right 0.3s ease;
   font-family: var(--font-ui);
+  overflow: hidden;
+  min-width: 240px;
+  min-height: 200px;
+  max-width: 90vw;
+  max-height: 90vh;
 }
 #comments-panel.open {
-  right: 0;
+  display: flex;
 }
+/* When docked to the right margin: fill full height and hug the edge.
+   The `docked` class also removes the border-radius on the right so it looks
+   like a proper margin column, not a floating card. */
+#comments-panel.docked {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  height: 100vh !important;
+  border-radius: 12px 0 0 12px;
+  border-right: none;
+}
+/* Corner-drag handle for resizing (bottom-right) */
+#comments-panel .comments-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    var(--ink-faint) 45% 55%,
+    transparent 55% 65%,
+    var(--ink-faint) 65% 75%,
+    transparent 75%
+  );
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+#comments-panel .comments-resize-handle:hover { opacity: 1; }
+#comments-panel.docked .comments-resize-handle { display: none; }
+
+/* Header doubles as the drag handle */
+#comments-panel .comments-header {
+  cursor: grab;
+  user-select: none;
+}
+#comments-panel .comments-header:active { cursor: grabbing; }
+#comments-panel.dragging { transition: none; }
 .comments-header {
   display: flex;
   align-items: center;
@@ -157,6 +257,27 @@ mark[data-highlight-id]:hover {
   transition: color 0.2s;
 }
 .comments-close:hover { color: var(--ink); }
+
+.comments-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.comments-export {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  transition: border-color 0.2s, color 0.2s;
+}
+.comments-export:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 .comments-list {
   flex: 1;
