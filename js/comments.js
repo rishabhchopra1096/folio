@@ -251,6 +251,7 @@ const Comments = (function () {
     openPanel();
     commentInput.value = "";
     commentInput.placeholder = "Add a comment...";
+    resetInputHeight();
     commentInput.focus();
   }
 
@@ -260,6 +261,19 @@ const Comments = (function () {
     activeHighlightId = null;
     editingCommentId = null;
     commentInput.value = "";
+    resetInputHeight();
+  }
+
+  // Grow the textarea to fit its content, up to the max-height set in CSS.
+  // Called on every input event so typing feels like a growing note pad.
+  function autoGrowInput() {
+    if (!commentInput) return;
+    commentInput.style.height = "auto";
+    commentInput.style.height = commentInput.scrollHeight + "px";
+  }
+  function resetInputHeight() {
+    if (!commentInput) return;
+    commentInput.style.height = "";
   }
 
   // ==========================================================================
@@ -377,6 +391,7 @@ const Comments = (function () {
 
     FolioStore.saveComments(docId, comments);
     commentInput.value = "";
+    resetInputHeight();
     activeHighlightId = null;
     renderComments();
   }
@@ -388,6 +403,8 @@ const Comments = (function () {
     commentInput.value = comment.text;
     commentInput.placeholder = "Edit comment...";
     commentInput.focus();
+    // Grow to fit the loaded text right away
+    autoGrowInput();
   }
 
   // Delete a comment
@@ -543,10 +560,15 @@ const Comments = (function () {
     // Cancel editing
     commentCancel.addEventListener("click", () => {
       commentInput.value = "";
+      resetInputHeight();
       editingCommentId = null;
       activeHighlightId = null;
       commentInput.placeholder = "Add a comment...";
     });
+
+    // Auto-grow on every keystroke — CSS max-height caps the growth,
+    // after which the internal scrollbar takes over
+    commentInput.addEventListener("input", autoGrowInput);
 
     // Submit on Ctrl+Enter
     commentInput.addEventListener("keydown", (e) => {

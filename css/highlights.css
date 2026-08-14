@@ -79,6 +79,28 @@ mark[data-highlight-id]:hover {
   margin: 0 4px;
 }
 
+/* Comment button in the toolbar — one-click "highlight + open comment".
+   Uses accent color so it reads as the primary CTA next to color swatches. */
+.hl-comment-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1.5px solid var(--accent);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  color: var(--accent);
+  margin-left: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+.hl-comment-btn:hover {
+  background: var(--accent);
+  color: var(--paper);
+}
+
 /* Eraser: removes highlights that overlap the current selection.
    Slightly larger hit area than a swatch so it reads as an action, not a color. */
 .hl-eraser-btn {
@@ -361,6 +383,9 @@ mark[data-highlight-id]:hover {
   resize: none;
   outline: none;
   min-height: 60px;
+  /* JS auto-grows this to scrollHeight up to max-height, then scroll takes over */
+  max-height: 240px;
+  overflow-y: auto;
   transition: border-color 0.2s;
 }
 .comment-input-wrap textarea:focus {

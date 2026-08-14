@@ -165,6 +165,24 @@ const Highlights = (function () {
     }
   }
 
+  /*
+   * Create a highlight from the current selection AND immediately open the
+   * comments panel focused on it. This is the one-shot "annotate" action —
+   * triggered by the comment button in the toolbar or by pressing "c" while
+   * the toolbar is visible. Default color is yellow (matches most reader tools).
+   */
+  function createHighlightAndComment() {
+    if (!pendingRange) return;
+    const color = "yellow";
+    // Snapshot the id we'll create — createHighlight() clears pendingRange, so
+    // we generate the id manually via the same code path.
+    // Easiest: monkey-track lastCreatedHighlightId which createHighlight already sets.
+    createHighlight(color);
+    if (lastCreatedHighlightId && typeof Comments !== "undefined") {
+      Comments.openPanelForHighlight(lastCreatedHighlightId);
+    }
+  }
+
   // Create a new highlight from the current pending selection
   function createHighlight(color) {
     if (!pendingRange) return;
@@ -389,6 +407,19 @@ const Highlights = (function () {
       });
     }
 
+    // Comment button — one click: highlight + open comment panel focused on it
+    const commentBtn = document.getElementById("hl-comment");
+    if (commentBtn) {
+      commentBtn.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // keep the selection alive across the click
+        e.stopPropagation();
+      });
+      commentBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        createHighlightAndComment();
+      });
+    }
+
     // Color button clicks in the toolbar
     toolbar.querySelectorAll(".hl-color-btn").forEach((btn) => {
       btn.addEventListener("mousedown", (e) => {
@@ -447,7 +478,30 @@ const Highlights = (function () {
           undoLastHighlight();
         }
       }
+
+      // "c" while the highlight toolbar is visible → one-shot highlight + comment.
+      // Guard against input focus so it doesn't hijack keystrokes inside a
+      // contenteditable/textarea/input somewhere else on the page.
+      if (
+        (e.key === "c" || e.key === "C") &&
+        !e.metaKey && !e.ctrlKey && !e.altKey &&
+        toolbar.classList.contains("visible") &&
+        !isTypingTarget(e.target)
+      ) {
+        e.preventDefault();
+        createHighlightAndComment();
+      }
     });
+  }
+
+  // True if the event target is somewhere the user is actively typing —
+  // used to keep single-key shortcuts from stealing keystrokes.
+  function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea") return true;
+    if (el.isContentEditable) return true;
+    return false;
   }
 
   // Return an array of unique highlight IDs that overlap the given range.
