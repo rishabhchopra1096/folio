@@ -57,6 +57,65 @@ const Highlights = (function () {
     return nodes;
   }
 
+  /*
+   * Triple-click bug fix — normalize a range so its start/end are always
+   * text nodes, never element nodes.
+   *
+   * When you triple-click a paragraph, browsers set the selection's
+   * start/end containers to the <p> element itself with element-offset
+   * (child index), not to the inner text nodes. Our serializeRange +
+   * wrapRange logic assumes text nodes and silently failed on element
+   * containers (indexOf returned -1 → serializeRange returned null →
+   * hideToolbar → no highlight, and if a prior lastCreatedHighlightId
+   * happened to be set, the "c" shortcut would even open the comment
+   * panel for the WRONG (old) highlight).
+   *
+   * Fix: drill into text nodes. For the START, walk down to the first
+   * text node inside/after the child at startOffset. For the END, walk
+   * to the last text node inside/before the child at endOffset-1.
+   * Everything downstream can then assume text-node endpoints.
+   */
+  function normalizeRangeToTextNodes(range) {
+    if (!range) return null;
+    const r = range.cloneRange();
+
+    if (r.startContainer.nodeType === Node.ELEMENT_NODE) {
+      const child = r.startContainer.childNodes[r.startOffset];
+      const firstText = child
+        ? findFirstTextNode(child)
+        : findFirstTextNode(r.startContainer);
+      if (firstText) r.setStart(firstText, 0);
+    }
+
+    if (r.endContainer.nodeType === Node.ELEMENT_NODE) {
+      const childIdx = Math.max(0, r.endOffset - 1);
+      const child = r.endContainer.childNodes[childIdx];
+      const lastText = child
+        ? findLastTextNode(child)
+        : findLastTextNode(r.endContainer);
+      if (lastText) r.setEnd(lastText, lastText.length);
+    }
+
+    return r;
+  }
+
+  function findFirstTextNode(node) {
+    if (!node) return null;
+    if (node.nodeType === Node.TEXT_NODE) return node;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    return walker.nextNode();
+  }
+
+  function findLastTextNode(node) {
+    if (!node) return null;
+    if (node.nodeType === Node.TEXT_NODE) return node;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let last = null;
+    let n;
+    while ((n = walker.nextNode())) last = n;
+    return last;
+  }
+
   // Serialize a Range to a storable object
   // We record the text node index and character offset for start and end
   function serializeRange(range) {
@@ -170,15 +229,18 @@ const Highlights = (function () {
    * comments panel focused on it. This is the one-shot "annotate" action —
    * triggered by the comment button in the toolbar or by pressing "c" while
    * the toolbar is visible. Default color is yellow (matches most reader tools).
+   *
+   * We snapshot lastCreatedHighlightId BEFORE calling createHighlight so we
+   * can detect whether this particular call actually created something. If
+   * wrapRange fails and no new ID is set, we do NOT open the panel on a
+   * stale ID from an earlier highlight — that was the "opens the wrong
+   * comment box" bug behind the triple-click complaint.
    */
   function createHighlightAndComment() {
     if (!pendingRange) return;
-    const color = "yellow";
-    // Snapshot the id we'll create — createHighlight() clears pendingRange, so
-    // we generate the id manually via the same code path.
-    // Easiest: monkey-track lastCreatedHighlightId which createHighlight already sets.
-    createHighlight(color);
-    if (lastCreatedHighlightId && typeof Comments !== "undefined") {
+    const before = lastCreatedHighlightId;
+    createHighlight("yellow");
+    if (lastCreatedHighlightId && lastCreatedHighlightId !== before && typeof Comments !== "undefined") {
       Comments.openPanelForHighlight(lastCreatedHighlightId);
     }
   }
@@ -369,8 +431,14 @@ const Highlights = (function () {
         return;
       }
 
-      // Store the range and show the toolbar above the selection
-      pendingRange = range.cloneRange();
+      // Store the range and show the toolbar above the selection.
+      // Normalize to text-node endpoints first so triple-click / other
+      // element-container selections don't silently break serialize/wrap.
+      pendingRange = normalizeRangeToTextNodes(range);
+      if (!pendingRange || pendingRange.collapsed) {
+        hideToolbar();
+        return;
+      }
 
       // Figure out whether the selection overlaps any existing highlights —
       // that's what the eraser will act on. We walk the fragment produced by

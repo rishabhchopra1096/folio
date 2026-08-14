@@ -285,7 +285,8 @@ mark[data-highlight-id]:hover {
   align-items: center;
   gap: 8px;
 }
-.comments-export {
+.comments-export,
+.comments-new-note {
   background: none;
   border: 1px solid var(--line);
   color: var(--ink-soft);
@@ -296,9 +297,39 @@ mark[data-highlight-id]:hover {
   font-size: 12px;
   transition: border-color 0.2s, color 0.2s;
 }
-.comments-export:hover {
+.comments-export:hover,
+.comments-new-note:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+/* Make "+ Note" the visually primary header action — it's the entry point
+   for page-level notes and should read as inviting, not neutral. */
+.comments-new-note {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.comments-new-note:hover {
+  background: var(--accent);
+  color: var(--paper);
+}
+
+/* Distinguish page-level notes from highlight-attached comments: subtle
+   accent-tinted left border + italic "Note" label instead of quoted text. */
+.comment-entry-general {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+}
+.comment-context-label {
+  font-style: italic;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.comment-context-label.muted {
+  color: var(--ink-faint);
+  font-style: normal;
 }
 
 .comments-list {

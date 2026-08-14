@@ -35,6 +35,10 @@ const Comments = (function () {
   let activeHighlightId = null;
   // The comment ID being edited (null if creating new)
   let editingCommentId = null;
+  // True when the user clicked "New note" and we should create a page-level
+  // comment (no highlight attached). Distinguished from "orphaned" comments,
+  // which are ones whose highlight was deleted after the fact.
+  let creatingGeneralNote = false;
 
   // ==========================================================================
   // PANEL MANAGEMENT — Opening and closing the comments panel
@@ -248,9 +252,23 @@ const Comments = (function () {
   function openPanelForHighlight(highlightId) {
     activeHighlightId = highlightId;
     editingCommentId = null;
+    creatingGeneralNote = false;
     openPanel();
     commentInput.value = "";
     commentInput.placeholder = "Add a comment...";
+    resetInputHeight();
+    commentInput.focus();
+  }
+
+  // Open the panel with the textarea primed for a general (page-level) note.
+  // Same UX as commenting on a highlight, but no highlight id.
+  function openPanelForNewNote() {
+    activeHighlightId = null;
+    editingCommentId = null;
+    creatingGeneralNote = true;
+    openPanel();
+    commentInput.value = "";
+    commentInput.placeholder = "Write a note about this page...";
     resetInputHeight();
     commentInput.focus();
   }
@@ -293,7 +311,7 @@ const Comments = (function () {
 
     if (comments.length === 0) {
       commentsList.innerHTML =
-        '<div class="comments-empty">No comments yet. Highlight text and click "Add Comment" to start.</div>';
+        '<div class="comments-empty">No comments yet.<br>Highlight text and press <kbd>c</kbd>, or click "New note" above for a page-level note.</div>';
       return;
     }
 
@@ -305,13 +323,29 @@ const Comments = (function () {
     );
 
     sorted.forEach((comment) => {
-      // Find the associated highlight to show the highlighted text
-      const hl = highlights.find((h) => h.id === comment.highlightId);
-      const hlText = hl ? hl.text : "(highlight removed)";
+      // Three cases for the "context" label above a comment:
+      //   1. General note   → italic "Note" label, no quote
+      //   2. Orphaned       → highlight was deleted (comment.highlightId set,
+      //                       but no matching highlight found)
+      //   3. Attached       → matching highlight found → show quoted text
+      const hl = comment.highlightId
+        ? highlights.find((h) => h.id === comment.highlightId)
+        : null;
+      const isGeneral = !!comment.isGeneral || comment.highlightId === null;
+      const isOrphan = !isGeneral && !!comment.highlightId && !hl;
+
+      let contextHtml;
+      if (isGeneral) {
+        contextHtml = '<div class="comment-context-label">Note</div>';
+      } else if (isOrphan) {
+        contextHtml = '<div class="comment-context-label muted">(highlight removed)</div>';
+      } else {
+        contextHtml = `<div class="comment-highlight-text">${escapeHtml(hl.text)}</div>`;
+      }
 
       const entry = document.createElement("div");
-      entry.className = "comment-entry";
-      entry.dataset.highlightId = comment.highlightId;
+      entry.className = "comment-entry" + (isGeneral ? " comment-entry-general" : "");
+      entry.dataset.highlightId = comment.highlightId || "";
 
       const dateStr = new Date(comment.createdAt).toLocaleDateString(
         "en-US",
@@ -319,7 +353,7 @@ const Comments = (function () {
       );
 
       entry.innerHTML = `
-        <div class="comment-highlight-text">${escapeHtml(hlText)}</div>
+        ${contextHtml}
         <div class="comment-text">${escapeHtml(comment.text)}</div>
         <div class="comment-meta">
           <span>${dateStr}</span>
@@ -330,10 +364,11 @@ const Comments = (function () {
         </div>
       `;
 
-      // Click to scroll to the highlight in the document
+      // Click to scroll to the highlight in the document — only meaningful if
+      // the comment IS attached to a live highlight.
       entry.addEventListener("click", (e) => {
         if (e.target.closest(".comment-actions")) return;
-        scrollToHighlight(comment.highlightId);
+        if (comment.highlightId && !isOrphan) scrollToHighlight(comment.highlightId);
       });
 
       // Edit button
@@ -379,10 +414,21 @@ const Comments = (function () {
       }
       editingCommentId = null;
     } else if (activeHighlightId) {
-      // Create new comment
+      // Create new comment attached to a highlight
       comments.push({
         id: FolioStore.generateId("cm"),
         highlightId: activeHighlightId,
+        text: text,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } else if (creatingGeneralNote) {
+      // Create a page-level note (no highlight). isGeneral distinguishes it
+      // from orphan comments whose highlight was removed after the fact.
+      comments.push({
+        id: FolioStore.generateId("cm"),
+        highlightId: null,
+        isGeneral: true,
         text: text,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -393,6 +439,8 @@ const Comments = (function () {
     commentInput.value = "";
     resetInputHeight();
     activeHighlightId = null;
+    creatingGeneralNote = false;
+    commentInput.placeholder = "Add a comment...";
     renderComments();
   }
 
@@ -495,6 +543,26 @@ const Comments = (function () {
     lines.push(`_Exported ${today}_`);
     lines.push("");
 
+    // General notes first (they're about the whole page, not any specific quote)
+    const generalNotes = comments.filter((c) => c.isGeneral || (c.highlightId === null));
+    if (generalNotes.length) {
+      lines.push("## General notes");
+      lines.push("");
+      generalNotes
+        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+        .forEach((c) => {
+          const noteLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+          if (!noteLines.length) return;
+          lines.push(`- ${noteLines[0]}`);
+          noteLines.slice(1).forEach((l) => lines.push(`  ${l}`));
+        });
+      lines.push("");
+      if (sortedHighlights.length) {
+        lines.push("## Highlights");
+        lines.push("");
+      }
+    }
+
     sortedHighlights.forEach((hl) => {
       // Collapse internal whitespace so multi-line highlights read as one quote
       const quoteText = (hl.text || "").replace(/\s+/g, " ").trim();
@@ -511,14 +579,16 @@ const Comments = (function () {
       lines.push("");
     });
 
-    // Also include orphan comments (highlight was removed but comment survived)
+    // Orphan comments: had a highlight once, but the highlight was removed.
+    // Exclude general notes (already listed above) — an orphan has a non-null
+    // highlightId that no longer resolves.
     const orphanComments = comments.filter(
-      (c) => !highlights.some((h) => h.id === c.highlightId)
+      (c) => !c.isGeneral && c.highlightId != null && !highlights.some((h) => h.id === c.highlightId)
     );
     if (orphanComments.length) {
       lines.push("---");
       lines.push("");
-      lines.push("**Notes without a highlight** (the original text was edited or removed):");
+      lines.push("**Notes whose highlight was removed:**");
       lines.push("");
       orphanComments.forEach((c) => {
         lines.push(`- ${c.text || ""}`);
@@ -554,6 +624,10 @@ const Comments = (function () {
     const exportBtn = document.getElementById("comments-export");
     if (exportBtn) exportBtn.addEventListener("click", exportAnnotations);
 
+    // "New note" button — creates a page-level comment (no highlight)
+    const newNoteBtn = document.getElementById("comments-new-note");
+    if (newNoteBtn) newNoteBtn.addEventListener("click", openPanelForNewNote);
+
     // Submit comment
     commentSubmit.addEventListener("click", saveComment);
 
@@ -570,10 +644,24 @@ const Comments = (function () {
     // after which the internal scrollbar takes over
     commentInput.addEventListener("input", autoGrowInput);
 
-    // Submit on Ctrl+Enter
+    // Submit on Cmd+Enter (mac) / Ctrl+Enter (win/linux). preventDefault so
+    // the newline the textarea would otherwise insert doesn't sneak in on
+    // release — I dropped that bit last time and it was the difference
+    // between the shortcut appearing to fire and actually saving cleanly.
     commentInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        e.stopPropagation();
         saveComment();
+      }
+      // Escape cancels an in-progress edit or new note
+      if (e.key === "Escape") {
+        e.preventDefault();
+        commentInput.value = "";
+        resetInputHeight();
+        editingCommentId = null;
+        activeHighlightId = null;
+        commentInput.placeholder = "Add a comment...";
       }
     });
 
@@ -592,6 +680,7 @@ const Comments = (function () {
     init,
     openPanel,
     openPanelForHighlight,
+    openPanelForNewNote,
     closePanel,
     renderComments,
   };
