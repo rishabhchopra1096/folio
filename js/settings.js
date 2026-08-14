@@ -95,6 +95,75 @@ const Settings = (function () {
       if (file) importBackup(file);
       importFile.value = "";
     });
+
+    // Voice: Groq API key handlers (Save / Test / Clear)
+    initVoiceKeyUI();
+  }
+
+  /*
+   * Wire the Groq API key controls in the settings panel. The key never leaves
+   * the browser — Voice module reads it from localStorage and posts audio
+   * directly to Groq. Test button records ~500ms of ambient audio, uploads it,
+   * and confirms Groq accepted the key (silence returns an empty transcript,
+   * not an error).
+   */
+  function initVoiceKeyUI() {
+    const input = document.getElementById("voice-key-input");
+    const saveBtn = document.getElementById("voice-key-save-btn");
+    const testBtn = document.getElementById("voice-key-test-btn");
+    const clearBtn = document.getElementById("voice-key-clear-btn");
+    const status = document.getElementById("voice-key-status");
+    if (!input || !saveBtn || typeof Voice === "undefined") return;
+
+    // Prefill the field with a masked hint if a key is already stored
+    if (Voice.hasKey()) {
+      const k = Voice.getKey();
+      input.placeholder = maskKey(k);
+    }
+
+    saveBtn.addEventListener("click", () => {
+      const raw = input.value.trim();
+      if (!raw) {
+        setStatus(status, "Paste a key first", "muted");
+        return;
+      }
+      Voice.setKey(raw);
+      input.value = "";
+      input.placeholder = maskKey(raw);
+      setStatus(status, "Saved — try the Test button to confirm", "ok");
+    });
+
+    testBtn.addEventListener("click", async () => {
+      if (!Voice.hasKey()) {
+        setStatus(status, "Save a key first", "err");
+        return;
+      }
+      setStatus(status, "Testing… (grant mic permission if prompted)", "muted");
+      try {
+        await Voice.testKey();
+        setStatus(status, "Key works ✓", "ok");
+      } catch (err) {
+        setStatus(status, "Test failed: " + (err && err.message ? err.message : "unknown"), "err");
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      Voice.clearKey();
+      input.value = "";
+      input.placeholder = "gsk_...";
+      setStatus(status, "Cleared", "muted");
+    });
+  }
+
+  function maskKey(k) {
+    if (!k || k.length < 10) return "gsk_...";
+    return k.slice(0, 6) + "…" + k.slice(-4);
+  }
+
+  function setStatus(el, text, tone) {
+    if (!el) return;
+    el.textContent = text;
+    el.className = "voice-key-status voice-key-status-" + (tone || "muted");
   }
 
   /*

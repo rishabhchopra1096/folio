@@ -98,6 +98,37 @@
   margin-top: 8px;
   line-height: 1.4;
 }
+.backup-hint a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.backup-hint a:hover { text-decoration: underline; }
+
+/* Voice — Groq API key field */
+.voice-key-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 8px;
+  transition: border-color 0.2s;
+}
+.voice-key-input:focus { border-color: var(--accent); }
+.voice-key-btns { display: flex; gap: 8px; }
+.voice-key-status {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  min-height: 1em;
+}
+.voice-key-status-ok    { color: var(--accent); }
+.voice-key-status-err   { color: #d95c5c; }
+.voice-key-status-muted { color: var(--ink-faint); }
 
 .size-control {
   display: flex;

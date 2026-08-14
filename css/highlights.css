@@ -402,9 +402,15 @@ mark[data-highlight-id]:hover {
   padding: 12px;
   border-top: 1px solid var(--line);
 }
+/* Textarea wrapper — positions the mic button as an overlay on the bottom-right */
+.comment-input-inner {
+  position: relative;
+}
 .comment-input-wrap textarea {
   width: 100%;
   padding: 10px 12px;
+  /* Extra right padding so long text doesn't run under the mic button */
+  padding-right: 36px;
   border: 1.5px solid var(--line);
   border-radius: 8px;
   font-family: var(--font-ui);
@@ -418,6 +424,54 @@ mark[data-highlight-id]:hover {
   max-height: 240px;
   overflow-y: auto;
   transition: border-color 0.2s;
+}
+
+/* Mic button overlaid on the textarea's bottom-right corner */
+.comment-mic-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+.comment-mic-btn:hover {
+  color: var(--accent);
+  background: var(--line);
+}
+/* Recording — solid red circle with a soft pulse */
+.comment-mic-btn.recording {
+  background: #d95c5c;
+  color: #fff;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 92, 92, 0.35); }
+  50%      { box-shadow: 0 0 0 6px rgba(217, 92, 92, 0);    }
+}
+/* Processing (uploading to Groq) — blue with a spinning border */
+.comment-mic-btn.processing {
+  background: transparent;
+  color: var(--accent);
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mic-spin 0.8s linear infinite;
+}
+@keyframes mic-spin { to { transform: rotate(360deg); } }
+.comment-mic-btn.processing svg { display: none; }
+.comment-mic-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .comment-input-wrap textarea:focus {
   border-color: var(--accent);

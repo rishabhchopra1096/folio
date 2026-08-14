@@ -202,6 +202,20 @@
         </div>
         <div class="backup-hint">Your pages are stored in this browser. Export a JSON backup occasionally so nothing is lost if the browser clears its storage.</div>
       </div>
+      <div class="setting-group">
+        <label>Voice — Groq API key</label>
+        <input type="password" id="voice-key-input" class="voice-key-input" placeholder="gsk_..." autocomplete="off" />
+        <div class="voice-key-btns">
+          <button id="voice-key-save-btn" class="backup-btn">Save</button>
+          <button id="voice-key-test-btn" class="backup-btn">Test</button>
+          <button id="voice-key-clear-btn" class="backup-btn">Clear</button>
+        </div>
+        <div class="voice-key-status" id="voice-key-status"></div>
+        <div class="backup-hint">
+          Get a free key at <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>.
+          Stored only in this browser — never sent anywhere except Groq itself.
+        </div>
+      </div>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
@@ -266,7 +280,12 @@
         <div class="comments-empty">No comments yet.</div>
       </div>
       <div class="comment-input-wrap">
-        <textarea id="comment-input" placeholder="Add a comment..." rows="3"></textarea>
+        <div class="comment-input-inner">
+          <textarea id="comment-input" placeholder="Add a comment..." rows="3"></textarea>
+          <button class="comment-mic-btn" id="comment-mic-btn" title="Dictate (Groq Whisper) — click to record, click again to stop">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10a7 7 0 0 1-14 0"/><line x1="12" y1="17" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
+          </button>
+        </div>
         <div class="comment-submit-row">
           <button class="modal-btn" id="comment-cancel">Cancel</button>
           <button class="modal-btn primary" id="comment-submit">Save</button>
@@ -296,6 +315,7 @@
 
     <!-- Folio modules -->
     <script src="js/store.js"></script>
+    <script src="js/voice.js"></script>
     <script src="js/settings.js"></script>
     <script src="js/reader.js"></script>
     <script src="js/editor.js"></script>

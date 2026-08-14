@@ -280,6 +280,16 @@ const Comments = (function () {
     editingCommentId = null;
     commentInput.value = "";
     resetInputHeight();
+    // If a voice recording was in progress, cancel it so the mic stays freed
+    if (voiceHandle && typeof Voice !== "undefined") {
+      Voice.cancelRecording(voiceHandle);
+      voiceHandle = null;
+      const btn = document.getElementById("comment-mic-btn");
+      if (btn) {
+        btn.classList.remove("recording", "processing");
+        btn.disabled = false;
+      }
+    }
   }
 
   // Grow the textarea to fit its content, up to the max-height set in CSS.
@@ -600,6 +610,110 @@ const Comments = (function () {
     downloadBlob(md, `${safeTitle}-annotations-${today}.md`, "text/markdown");
   }
 
+  // ==========================================================================
+  // VOICE DICTATION — mic button in the textarea, powered by Voice module
+  // ==========================================================================
+
+  /*
+   * Two states per session: idle or recording. Click toggles.
+   * On stop → upload to Groq → insert transcript at the caret in
+   * commentInput. Escape while recording cancels without uploading.
+   *
+   * We keep a module-level handle since only one recording can be active per
+   * comment panel at a time; if the user closes the panel mid-recording, we
+   * proactively cancel.
+   */
+  let voiceHandle = null;
+
+  function initMicButton() {
+    const btn = document.getElementById("comment-mic-btn");
+    if (!btn || typeof Voice === "undefined") return;
+
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (voiceHandle) {
+        // Currently recording → stop and transcribe
+        await stopAndInsert(btn);
+      } else {
+        // Idle → start recording
+        await startVoice(btn);
+      }
+    });
+
+    // Escape while recording cancels — but only if the textarea has focus,
+    // else we'd fight the Escape handler on commentInput's keydown listener.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && voiceHandle) {
+        Voice.cancelRecording(voiceHandle);
+        voiceHandle = null;
+        setMicState(btn, "idle");
+      }
+    });
+  }
+
+  async function startVoice(btn) {
+    if (!Voice.hasKey()) {
+      alert("Set your Groq API key in Settings → Voice first.\n\nGet a free key at https://console.groq.com/keys");
+      return;
+    }
+    try {
+      voiceHandle = await Voice.startRecording();
+      setMicState(btn, "recording");
+    } catch (err) {
+      voiceHandle = null;
+      alert(err && err.message ? err.message : "Couldn't start recording");
+    }
+  }
+
+  async function stopAndInsert(btn) {
+    const handle = voiceHandle;
+    voiceHandle = null;
+    setMicState(btn, "processing");
+
+    let transcript = "";
+    try {
+      transcript = await Voice.stopRecording(handle);
+    } catch (err) {
+      setMicState(btn, "idle");
+      alert(err && err.message ? err.message : "Transcription failed");
+      return;
+    }
+    setMicState(btn, "idle");
+
+    if (!transcript) return;
+    insertAtCaret(commentInput, transcript);
+    autoGrowInput();
+    commentInput.focus();
+  }
+
+  // Set the mic button visual state — "idle" | "recording" | "processing"
+  function setMicState(btn, state) {
+    btn.classList.toggle("recording", state === "recording");
+    btn.classList.toggle("processing", state === "processing");
+    btn.disabled = state === "processing";
+    if (state === "recording") btn.title = "Click to stop and transcribe";
+    else if (state === "processing") btn.title = "Transcribing…";
+    else btn.title = "Dictate (Groq Whisper) — click to record, click again to stop";
+  }
+
+  // Insert text at the current cursor position in a textarea, replacing any
+  // active selection. Adds a space separator if we're appending mid-sentence.
+  function insertAtCaret(textarea, text) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const before = textarea.value.slice(0, start);
+    const after = textarea.value.slice(end);
+    // Only add a leading space if there's non-whitespace directly before
+    const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+    const inserted = (needsLeadingSpace ? " " : "") + text;
+    textarea.value = before + inserted + after;
+    // Move caret to end of inserted text
+    const newPos = start + inserted.length;
+    textarea.selectionStart = textarea.selectionEnd = newPos;
+  }
+
   function downloadBlob(text, filename, mimeType) {
     const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
@@ -643,6 +757,10 @@ const Comments = (function () {
     // Auto-grow on every keystroke — CSS max-height caps the growth,
     // after which the internal scrollbar takes over
     commentInput.addEventListener("input", autoGrowInput);
+
+    // Voice dictation via Groq Whisper — click to start, click again to stop,
+    // Escape while recording cancels without uploading.
+    initMicButton();
 
     // Submit on Cmd+Enter (mac) / Ctrl+Enter (win/linux). preventDefault so
     // the newline the textarea would otherwise insert doesn't sneak in on
