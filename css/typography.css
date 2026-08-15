@@ -29,6 +29,15 @@ body.width-full #editor-container {
   max-width: none !important;
 }
 
+/* Paper-theme typography — under warm cream + lower contrast, a slightly
+   heavier weight and a hair more letter-spacing read cleaner without going
+   bold. Scoped to Paper so it doesn't touch the other themes. */
+[data-theme="paper"] #article,
+[data-theme="paper"] #editor-container {
+  letter-spacing: 0.005em;
+  font-weight: 450;
+}
+
 /* Headings — all use the body serif font for consistency */
 #article h1,
 #article h2,

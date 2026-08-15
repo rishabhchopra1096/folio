@@ -17,6 +17,9 @@ const Settings = (function () {
   // "full" expands to fill the available content area. Default "narrow" so
   // existing users see no behavior change.
   let widthMode = "narrow";
+  // Sleep intensity for the Paper theme: "off" | "warm" | "bedtime".
+  // Only visually relevant when theme === "paper".
+  let sleepIntensity = "off";
 
   function init() {
     const saved = FolioStore.getSettings();
@@ -24,8 +27,10 @@ const Settings = (function () {
     lineHeight = saved.lineHeight || 1.85;
     columnWidth = saved.columnWidth || 720;
     widthMode = saved.widthMode || "narrow";
+    sleepIntensity = saved.sleepIntensity || "off";
 
     applyTheme(saved.theme || "default");
+    applySleepIntensity();
     applyFontSize();
     applyLineHeight();
     applyColumnWidth();
@@ -35,6 +40,9 @@ const Settings = (function () {
     document.getElementById("width-slider").value = columnWidth;
     document.querySelectorAll(".width-mode-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.mode === widthMode);
+    });
+    document.querySelectorAll(".sleep-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.sleep === sleepIntensity);
     });
 
     // Theme buttons
@@ -79,6 +87,18 @@ const Settings = (function () {
           b.classList.toggle("active", b.dataset.mode === widthMode);
         });
         applyWidthMode();
+        save();
+      });
+    });
+
+    // Sleep-intensity buttons (Off / Warm / Bedtime) — Paper theme only
+    document.querySelectorAll(".sleep-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        sleepIntensity = btn.dataset.sleep;
+        document.querySelectorAll(".sleep-btn").forEach((b) => {
+          b.classList.toggle("active", b.dataset.sleep === sleepIntensity);
+        });
+        applySleepIntensity();
         save();
       });
     });
@@ -251,6 +271,26 @@ const Settings = (function () {
     document.querySelectorAll(".theme-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.t === theme);
     });
+    // Sleep-intensity strip only makes sense with the Paper theme —
+    // hide it under any other theme so the settings panel stays tidy.
+    const strip = document.getElementById("sleep-intensity");
+    if (strip) strip.classList.toggle("visible", theme === "paper");
+  }
+
+  /*
+   * Apply the sleep intensity as [data-sleep] on the html element.
+   * Only visually relevant when the active theme is "paper" — the token
+   * override selectors in variables.css are gated on [data-theme="paper"].
+   * We still write the attribute even for other themes so switching to
+   * Paper later restores the user's last chosen intensity without needing
+   * a re-click.
+   */
+  function applySleepIntensity() {
+    if (sleepIntensity && sleepIntensity !== "off") {
+      document.documentElement.dataset.sleep = sleepIntensity;
+    } else {
+      delete document.documentElement.dataset.sleep;
+    }
   }
 
   function applyFontSize() {
@@ -310,8 +350,9 @@ const Settings = (function () {
       lineHeight,
       columnWidth,
       widthMode,
+      sleepIntensity,
     });
   }
 
-  return { init, applyFontSize, applyLineHeight, applyColumnWidth, applyWidthMode, save };
+  return { init, applyFontSize, applyLineHeight, applyColumnWidth, applyWidthMode, applySleepIntensity, save };
 })();

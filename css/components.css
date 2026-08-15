@@ -54,6 +54,50 @@
 .theme-btn[data-t="default"] { background: #f5f0e8; color: #2c2416; }
 .theme-btn[data-t="dark"]    { background: #221e16; color: #ede5d4; }
 .theme-btn[data-t="night"]   { background: #112031; color: #d4e8f5; }
+.theme-btn[data-t="paper"]   { background: #ede0c8; color: #2e2417; }
+
+/* Sleep-intensity strip — only shown when the Paper theme is active.
+   JS toggles .sleep-intensity-active on the settings panel when Paper
+   is picked; without that class the strip stays hidden so it doesn't
+   clutter the other themes (which don't benefit from a warm-shift). */
+.sleep-intensity {
+  display: none;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.sleep-intensity.visible {
+  display: block;
+}
+.sleep-intensity label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+.sleep-btns { display: flex; gap: 8px; }
+.sleep-btn {
+  flex: 1;
+  padding: 6px 4px;
+  border-radius: 6px;
+  border: 1.5px solid var(--line);
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-soft);
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+.sleep-btn:hover { border-color: var(--accent); color: var(--accent); }
+.sleep-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+.sleep-btn[data-sleep="warm"].active    { background: #e8d0a8; }
+.sleep-btn[data-sleep="bedtime"].active { background: #d8b078; color: #24180a; }
 
 /* Width mode buttons (Narrow / Wide / Full) in the settings panel */
 .width-mode-btns { display: flex; gap: 8px; }

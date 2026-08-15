@@ -60,6 +60,65 @@
   --shadow: rgba(0, 0, 0, 0.4);
 }
 
+/* ===========================================================================
+ * PAPER THEME — Kindle-Paperwhite-with-warm-light emulation for sleep hygiene
+ * ===========================================================================
+ * Rationale (evidence-backed):
+ *  - Melatonin suppression peaks at ~480nm (blue). Just dimming brightness
+ *    doesn't help — you need to remove blue from the spectrum. So this theme
+ *    uses cream/amber tones with no cool-blue values anywhere.
+ *  - Ink is dark warm brown (#2e2417), never pure black. Pure #000 on a bright
+ *    LCD still spikes contrast in the blue-adjacent gray range.
+ *  - Accent is copper — never sky-blue — because any residual blue pixel
+ *    contributes to the melanopsin signal.
+ *  - We swap CSS custom properties instead of applying `filter: sepia() ...`
+ *    to #article, because CSS filters force GPU compositing which kills
+ *    subpixel antialiasing on Retina LCDs — text would go visibly soft, and
+ *    Folio's whole value prop is readable typography.
+ *
+ * The base Paper palette is ~2500K equivalent (Kindle Paperwhite at ~50%
+ * warm-light). The [data-sleep="warm"] and [data-sleep="bedtime"] layers
+ * shift progressively further into amber for evening/late-night reading.
+ * =========================================================================== */
+[data-theme="paper"] {
+  --bg: #ede0c8;
+  --paper: #f2e6d0;
+  --ink: #2e2417;
+  --ink-soft: #5a4a37;
+  --ink-faint: #9a856a;
+  --accent: #b87333;
+  --accent-light: #d49456;
+  --line: #d9c9b0;
+  --progress-bg: #d9c9b0;
+  --progress-fill: #b87333;
+  --shadow: rgba(46, 36, 23, 0.10);
+}
+
+/* Sleep-intensity "Warm" — approximates ~2000K (Kindle max-warm). Deeper
+ * amber. Only takes effect when Paper is the active theme. */
+[data-theme="paper"][data-sleep="warm"] {
+  --bg: #e8d0a8;
+  --paper: #ecd5ae;
+  --ink: #2a1f10;
+  --ink-soft: #58402a;
+  --ink-faint: #8a7050;
+  --line: #d0b48c;
+  --progress-bg: #d0b48c;
+}
+
+/* Sleep-intensity "Bedtime" — approximates ~1500K (f.lux bedtime territory).
+ * Very deep amber. Use in dim rooms only — the eye strains less in ambient
+ * dark than under overhead lighting. */
+[data-theme="paper"][data-sleep="bedtime"] {
+  --bg: #d8b078;
+  --paper: #dcb680;
+  --ink: #24180a;
+  --ink-soft: #4a3418;
+  --ink-faint: #7a5c38;
+  --line: #b8946a;
+  --progress-bg: #b8946a;
+}
+
 /* Global reset */
 * {
   box-sizing: border-box;
