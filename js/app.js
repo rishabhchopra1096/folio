@@ -227,6 +227,7 @@ const App = (function () {
     SidebarUI.init();
     Highlights.init();
     Comments.init();
+    if (typeof TTS !== "undefined") TTS.init();
 
     // Set up routing
     window.addEventListener("hashchange", route);

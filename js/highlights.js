@@ -248,19 +248,38 @@ const Highlights = (function () {
   // Create a new highlight from the current pending selection
   function createHighlight(color) {
     if (!pendingRange) return;
+    return createHighlightFromRange(pendingRange, color);
+  }
+
+  /*
+   * Create a highlight from ANY range, not just the current mouse selection.
+   *
+   * This is the shared implementation behind both the selection path (the
+   * colour swatches / "c" shortcut, via createHighlight above) and
+   * programmatic callers like read-aloud, which highlights the paragraph you
+   * paused on. Returns the new highlight's id, or null if it couldn't be
+   * created.
+   */
+  function createHighlightFromRange(range, color) {
+    if (!range) return null;
 
     const docId = Reader.getCurrentDocId();
-    if (!docId) return;
+    if (!docId) return null;
+
+    // Normalize first — element-container ranges (triple-click, or a
+    // programmatic selectNodeContents) break serialize/wrap otherwise.
+    const norm = normalizeRangeToTextNodes(range);
+    if (!norm || norm.collapsed) return null;
 
     // Serialize the range before we modify the DOM
-    const serialized = serializeRange(pendingRange);
+    const serialized = serializeRange(norm);
     if (!serialized) {
       hideToolbar();
-      return;
+      return null;
     }
 
     // Get the selected text for storage
-    const text = pendingRange.toString();
+    const text = norm.toString();
     const colorClass = `hl-${color}`;
 
     // Generate a unique ID for this highlight
@@ -268,11 +287,11 @@ const Highlights = (function () {
 
     // Wrap the text in <mark> elements
     try {
-      wrapRange(pendingRange, highlightId, colorClass);
+      wrapRange(norm, highlightId, colorClass);
     } catch {
       // If wrapping fails (complex DOM), fall back to re-rendering
       hideToolbar();
-      return;
+      return null;
     }
 
     // Save the highlight to the store
@@ -292,6 +311,8 @@ const Highlights = (function () {
     // Clear the selection and hide the toolbar
     window.getSelection().removeAllRanges();
     hideToolbar();
+
+    return highlightId;
   }
 
   // ==========================================================================
@@ -606,6 +627,7 @@ const Highlights = (function () {
     init,
     applyHighlights,
     removeHighlight,
+    createHighlightFromRange,
     hideToolbar,
     hidePopover,
   };

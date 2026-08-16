@@ -184,6 +184,97 @@ mark[data-highlight-id]:hover {
   stroke-width: 1.8;
 }
 
+/* ── READ-ALOUD HIGHLIGHTS — CSS Custom Highlight API ──
+   Painted via CSS.highlights, so NO DOM nodes are created. That matters: the
+   saved-highlight system keys off text-node indices, and wrapping words in
+   spans would silently reattach every stored highlight to the wrong text.
+   Two tiers: the sentence gets a soft wash, the spoken word a stronger one. */
+::highlight(tts-sentence) {
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+::highlight(tts-word) {
+  background-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  color: var(--ink);
+}
+
+/* ── READ-ALOUD PLAYER BAR ── */
+#tts-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%) translateY(140%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 32px var(--shadow);
+  z-index: 170;
+  font-family: var(--font-ui);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.28s cubic-bezier(0.05,0.7,0.1,1), opacity 0.2s;
+}
+#tts-bar.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.tts-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.12s;
+}
+.tts-btn:hover { background: var(--line); color: var(--ink); }
+.tts-btn:active { transform: scale(0.94); }
+.tts-btn.primary {
+  background: var(--accent);
+  color: var(--paper);
+  width: 38px;
+  height: 38px;
+}
+.tts-btn.primary:hover { background: var(--accent-light); color: var(--paper); }
+#tts-bar.playing .tts-btn.primary {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+#tts-rate {
+  min-width: 46px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+#tts-rate:hover { border-color: var(--accent); color: var(--accent); }
+#tts-voice {
+  max-width: 130px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.tts-sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
+
 /* ── COMMENTS PANEL — floating, draggable, resizable card ──
    Old design was a right-side drawer that overlaid the article. New design is
    a small floating card (default bottom-right) that the user can drag anywhere

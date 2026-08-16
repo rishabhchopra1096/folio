@@ -172,6 +172,13 @@ const Reader = (function () {
     if (typeof Highlights !== "undefined") {
       Highlights.applyHighlights(docId);
     }
+
+    // Rebuild the read-aloud index against the freshly-rendered DOM. Must run
+    // AFTER applyHighlights, since that inserts <mark> wrappers and therefore
+    // changes the text-node layout the index maps against.
+    if (typeof TTS !== "undefined") {
+      TTS.attach(docId);
+    }
   }
 
   // ==========================================================================
@@ -205,6 +212,9 @@ const Reader = (function () {
 
   // Hide the reader UI
   function hide() {
+    // Stop any in-flight speech and drop the index — it points at DOM nodes
+    // that are about to be destroyed.
+    if (typeof TTS !== "undefined") TTS.detach();
     ringWrap.classList.remove("visible");
     document.getElementById("progress-bar-wrap").style.display = "none";
     article.innerHTML = "";

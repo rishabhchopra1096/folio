@@ -243,6 +243,28 @@
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- READ-ALOUD PLAYER BAR — floating pill, reader mode only           -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="tts-bar">
+      <button class="tts-btn" id="tts-prev" title="Previous sentence (Shift+←)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+      </button>
+      <button class="tts-btn primary" id="tts-play" title="Play (Space)">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="tts-btn" id="tts-next" title="Next sentence (Shift+→)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
+      </button>
+      <div class="tts-sep"></div>
+      <button id="tts-rate" title="Playback speed ( [ and ] )">1×</button>
+      <select id="tts-voice" title="Voice"></select>
+      <div class="tts-sep"></div>
+      <button class="tts-btn" id="tts-close" title="Close player">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
     <!-- HIGHLIGHT TOOLBAR — Color picker on text selection (reader mode)  -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="highlight-toolbar">
@@ -331,6 +353,7 @@
     <script src="js/sidebar.js"></script>
     <script src="js/highlights.js"></script>
     <script src="js/comments.js"></script>
+    <script src="js/tts.js"></script>
     <script src="js/app.js"></script>
   </body>
 </html>
