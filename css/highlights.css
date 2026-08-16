@@ -282,7 +282,53 @@ mark[data-highlight-id]:hover {
   min-width: 62px;
   text-align: right;
 }
+/* Mic button — dictate a comment without leaving the reading flow */
+.tts-mic { color: var(--accent); }
+.tts-mic:hover { background: var(--accent); color: var(--paper); }
+.tts-mic.recording {
+  background: #d95c5c;
+  color: #fff;
+  animation: tts-mic-pulse 1.2s ease-in-out infinite;
+}
+.tts-mic.recording:hover { background: #c94f4f; color: #fff; }
+@keyframes tts-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 92, 92, 0.4); }
+  50%      { box-shadow: 0 0 0 7px rgba(217, 92, 92, 0); }
+}
+.tts-mic.transcribing {
+  color: var(--accent);
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: tts-mic-spin 0.8s linear infinite;
+}
+.tts-mic.transcribing svg { display: none; }
+@keyframes tts-mic-spin { to { transform: rotate(360deg); } }
+
 .tts-sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
+
+/* Toast — brief status for the dictate-and-resume loop */
+#tts-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 86px;
+  transform: translateX(-50%) translateY(8px);
+  max-width: min(440px, 86vw);
+  padding: 9px 16px;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 999px;
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 6px 24px var(--shadow);
+  z-index: 180;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+#tts-toast.visible { opacity: 0.95; transform: translateX(-50%) translateY(0); }
 
 /* ── COMMENTS PANEL — floating, draggable, resizable card ──
    Old design was a right-side drawer that overlaid the article. New design is

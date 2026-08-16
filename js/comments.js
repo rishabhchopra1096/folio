@@ -454,6 +454,34 @@ const Comments = (function () {
     renderComments();
   }
 
+  /*
+   * Save a comment against a highlight without opening the panel.
+   *
+   * Read-aloud uses this for its dictate-and-resume loop: the point there is
+   * to stay in flow, so popping the panel open (and stealing focus into the
+   * textarea) would defeat it. Returns the new comment's id.
+   */
+  function addComment(highlightId, text) {
+    const docId = Reader.getCurrentDocId();
+    if (!docId || !text || !text.trim()) return null;
+
+    const comments = FolioStore.getComments(docId);
+    const id = FolioStore.generateId("cm");
+    comments.push({
+      id: id,
+      highlightId: highlightId || null,
+      isGeneral: !highlightId,
+      text: text.trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    FolioStore.saveComments(docId, comments);
+
+    // Keep the panel current if it happens to be open.
+    if (panel.classList.contains("open")) renderComments();
+    return id;
+  }
+
   // Start editing an existing comment
   function startEditing(comment) {
     editingCommentId = comment.id;
@@ -801,5 +829,6 @@ const Comments = (function () {
     openPanelForNewNote,
     closePanel,
     renderComments,
+    addComment,
   };
 })();

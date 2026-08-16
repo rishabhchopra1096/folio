@@ -677,21 +677,178 @@ const TTS = (function () {
    * pressing "c". This is the whole point of the feature: pausing usually
    * means you have a reaction.
    */
-  function offerCommentOnPause() {
-    if (!getSettings().ttsCommentOnPause) return;
-    if (!curWord) return;
-    if (typeof Highlights === "undefined" || !Highlights.createHighlightFromRange) return;
+  /*
+   * Highlight the paragraph containing the playhead and return its id.
+   *
+   * IMPORTANT: creating a highlight wraps text in <mark> elements, which
+   * splits text nodes and invalidates every node reference in `segments`.
+   * The text CONTENT is unchanged, so docText and all character offsets stay
+   * valid — only the offset->node mapping goes stale. So we rebuild the index
+   * afterwards and deliberately leave chunkIdx/curWord alone.
+   */
+  function highlightCurrentBlock() {
+    if (!curWord) return null;
+    if (typeof Highlights === "undefined" || !Highlights.createHighlightFromRange) return null;
 
     const b = blockAt(curWord.ds);
-    if (!b) return;
+    if (!b) return null;
 
     const r = document.createRange();
     r.selectNodeContents(b.el);
 
     const id = Highlights.createHighlightFromRange(r, "yellow");
+    if (id) {
+      buildIndex(article);   // remap offsets onto the new text nodes
+      paint();               // repaint against the rebuilt mapping
+    }
+    return id;
+  }
+
+  function offerCommentOnPause() {
+    if (!getSettings().ttsCommentOnPause) return;
+    const id = highlightCurrentBlock();
     if (id && typeof Comments !== "undefined") {
       Comments.openPanelForHighlight(id);
     }
+  }
+
+  // ==========================================================================
+  // DICTATE-AND-RESUME — the mic button in the player bar
+  // ==========================================================================
+
+  /*
+   * One button, two presses. First press pauses the reading, highlights the
+   * paragraph you're on, and starts recording. Second press stops, transcribes
+   * via Groq Whisper, saves the result as a comment on that paragraph, and
+   * picks the reading back up where it left off.
+   *
+   * The comments panel is deliberately NOT opened — the whole point is to keep
+   * you in the flow of listening rather than pulling you into the UI.
+   */
+  let micState = "idle";       // 'idle' | 'recording' | 'transcribing'
+  let micHandle = null;        // Voice module recording handle
+  let micHighlightId = null;   // the paragraph this dictation belongs to
+  let micResumeAfter = false;  // was it reading when the mic was pressed?
+
+  async function toggleMic() {
+    if (micState === "transcribing") return;
+    if (micState === "recording") return finishDictation();
+    return beginDictation();
+  }
+
+  async function beginDictation() {
+    if (typeof Voice === "undefined" || !Voice.hasKey()) {
+      toast("Add your Groq API key in Settings → Voice to dictate", 3200);
+      return;
+    }
+
+    micResumeAfter = playing;
+    if (playing) pauseForDictation();
+
+    micHighlightId = highlightCurrentBlock();
+
+    try {
+      micHandle = await Voice.startRecording();
+      micState = "recording";
+      updateMic();
+      toast("Recording… press the mic again when done", 2000);
+    } catch (err) {
+      micHandle = null;
+      micState = "idle";
+      updateMic();
+      toast(err && err.message ? err.message : "Could not start recording", 3200);
+      if (micResumeAfter) play();
+    }
+  }
+
+  /*
+   * A dictation pause is not the same as a manual pause: we do NOT want
+   * offerCommentOnPause() popping the panel open, because the mic flow is
+   * handling the comment itself.
+   */
+  function pauseForDictation() {
+    playing = false;
+    stopMeasure();
+    if (handle) { handle.stop(); handle = null; }
+    updateBar();
+    updateEta(true);
+  }
+
+  async function finishDictation() {
+    micState = "transcribing";
+    updateMic();
+
+    const h = micHandle;
+    micHandle = null;
+
+    let text = "";
+    try {
+      text = await Voice.stopRecording(h);
+    } catch (err) {
+      micState = "idle";
+      updateMic();
+      toast(err && err.message ? err.message : "Transcription failed", 3200);
+      if (micResumeAfter) play();
+      return;
+    }
+
+    micState = "idle";
+    updateMic();
+
+    if (text && typeof Comments !== "undefined" && Comments.addComment) {
+      Comments.addComment(micHighlightId, text);
+      const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
+      toast("Saved: " + preview, 2600);
+    } else if (!text) {
+      toast("Nothing recorded", 1800);
+    }
+
+    micHighlightId = null;
+    if (micResumeAfter) play();
+  }
+
+  function cancelDictation() {
+    if (micState !== "recording") return;
+    if (micHandle && typeof Voice !== "undefined") Voice.cancelRecording(micHandle);
+    micHandle = null;
+    micState = "idle";
+    micHighlightId = null;
+    updateMic();
+    toast("Dictation cancelled", 1600);
+    if (micResumeAfter) play();
+  }
+
+  function updateMic() {
+    if (!bar) return;
+    const btn = bar.querySelector("#tts-mic");
+    if (!btn) return;
+    btn.classList.toggle("recording", micState === "recording");
+    btn.classList.toggle("transcribing", micState === "transcribing");
+    btn.disabled = micState === "transcribing";
+    btn.title = micState === "recording"
+      ? "Done — save comment and resume (M)"
+      : micState === "transcribing"
+        ? "Transcribing…"
+        : "Dictate a comment on this paragraph (M)";
+  }
+
+  // ==========================================================================
+  // TOAST — brief, non-blocking status for the dictation loop
+  // ==========================================================================
+
+  let toastEl = null;
+  let toastTimer = null;
+
+  function toast(msg, ms) {
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.id = "tts-toast";
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add("visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("visible"), ms || 2200);
   }
 
   // ==========================================================================
@@ -711,7 +868,12 @@ const TTS = (function () {
       let i = RATES.indexOf(rate);
       setRate(RATES[(i + 1) % RATES.length]);
     });
-    bar.querySelector("#tts-close").addEventListener("click", () => { stop(true); hideBar(); });
+    bar.querySelector("#tts-mic").addEventListener("click", toggleMic);
+    bar.querySelector("#tts-close").addEventListener("click", () => {
+      cancelDictation();
+      stop(true);
+      hideBar();
+    });
 
     const vsel = bar.querySelector("#tts-voice");
     vsel.addEventListener("change", () => {
@@ -803,6 +965,7 @@ const TTS = (function () {
   }
 
   function detach() {
+    cancelDictation();   // release the mic before the DOM goes away
     stop(true);
     hideBar();
     attachedDocId = null;
@@ -847,7 +1010,18 @@ const TTS = (function () {
       const t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
 
+      // While dictating, Space and Escape belong to the mic, not the player —
+      // otherwise you'd resume reading over your own recording.
+      if (micState === "recording") {
+        if (e.code === "Space" || e.key === "m" || e.key === "M") {
+          e.preventDefault(); toggleMic(); return;
+        }
+        if (e.key === "Escape") { e.preventDefault(); cancelDictation(); return; }
+        return;
+      }
+
       if (e.code === "Space") { e.preventDefault(); toggle(); }
+      else if (e.key === "m" || e.key === "M") { e.preventDefault(); toggleMic(); }
       else if (e.key === "[")  { e.preventDefault(); cycleRate(-1); }
       else if (e.key === "]")  { e.preventDefault(); cycleRate(1); }
       else if (e.key === "ArrowLeft"  && e.shiftKey) { e.preventDefault(); jumpSentence(-1); }
@@ -869,6 +1043,7 @@ const TTS = (function () {
     initClickToSeek();
     initShortcuts();
     updateBar();
+    updateMic();
 
     // Stop speaking if the tab is hidden — otherwise it keeps talking in the
     // background with no visible highlight.
