@@ -273,6 +273,15 @@ mark[data-highlight-id]:hover {
   cursor: pointer;
   outline: none;
 }
+#tts-eta {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 0 2px;
+  min-width: 62px;
+  text-align: right;
+}
 .tts-sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
 
 /* ── COMMENTS PANEL — floating, draggable, resizable card ──

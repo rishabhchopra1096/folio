@@ -68,6 +68,14 @@ const TTS = (function () {
   const SCROLL_TOP_PAD = 0.25;
   const SCROLL_BOT_PAD = 0.75;
 
+  // Starting guess for speaking pace, in characters per second at rate 1.
+  // ~180 wpm x ~5.5 chars/word / 60 ≈ 16.5; real voices run a bit slower.
+  // This is only a seed — we measure the actual pace and converge on it.
+  const DEFAULT_CPS_AT_1X = 15.5;
+
+  // Ignore measurement windows shorter than this; too little signal.
+  const MEASURE_MIN_SECONDS = 1.5;
+
   // ==========================================================================
   // MODULE STATE
   // ==========================================================================
@@ -95,6 +103,15 @@ const TTS = (function () {
   let wordHL = null;
   let sentHL = null;
   let highlightsSupported = false;
+
+  // Reading-pace measurement, used for the time-remaining estimate.
+  // Always normalized to rate 1 so a speed change is a pure multiply and the
+  // estimate updates instantly instead of having to re-learn the pace.
+  let cpsAt1x = DEFAULT_CPS_AT_1X;
+  let measT0 = 0;          // wall clock when the current window opened
+  let measOffset0 = 0;     // doc offset when the current window opened
+  let measuring = false;
+  let lastEtaPaint = 0;
 
   // ==========================================================================
   // DOCUMENT INDEX — walk the DOM once into a character-offset model
@@ -419,6 +436,102 @@ const TTS = (function () {
   }
 
   // ==========================================================================
+  // READING PACE & TIME REMAINING
+  // ==========================================================================
+
+  /*
+   * How long is left depends on how fast this particular voice actually
+   * speaks, which varies enough between voices that a fixed constant would be
+   * visibly wrong. So we measure it: a window opens when playback starts, and
+   * every word boundary tells us how many characters have been consumed since.
+   *
+   * The measured pace is stored normalized to rate 1. That way changing speed
+   * doesn't invalidate what we've learned — the estimate is just
+   * (chars remaining) / (cpsAt1x x rate), so it re-reads instantly on a speed
+   * change rather than having to observe the new rate for a few seconds.
+   *
+   * Windows close on pause, seek, rate change and voice change, because each
+   * would otherwise smear unrelated conditions into one average.
+   */
+  function startMeasure(offset) {
+    measT0 = performance.now();
+    measOffset0 = offset;
+    measuring = true;
+  }
+
+  function stopMeasure() { measuring = false; }
+
+  function updateMeasure(offset) {
+    if (!measuring) return;
+    const dt = (performance.now() - measT0) / 1000;
+    if (dt < MEASURE_MIN_SECONDS) return;
+    const dChars = offset - measOffset0;
+    if (dChars <= 0) return;
+
+    const observed = dChars / dt / (rate || 1);
+    // Exponential smoothing — converges quickly but shrugs off one odd chunk
+    // (a long pause at a paragraph break, a hyphenated monster of a word).
+    cpsAt1x = cpsAt1x * 0.75 + observed * 0.25;
+
+    // Roll the window forward so the average tracks recent pace.
+    measT0 = performance.now();
+    measOffset0 = offset;
+
+    persistCps();
+  }
+
+  // Pace is a property of the voice, so remember it per voice.
+  function persistCps() {
+    if (!selectedVoice) return;
+    const s = FolioStore.getSettings();
+    s.ttsCpsByVoice = s.ttsCpsByVoice || {};
+    s.ttsCpsByVoice[selectedVoice.name] = Math.round(cpsAt1x * 100) / 100;
+    FolioStore.saveSettings(s);
+  }
+
+  function loadCpsForVoice() {
+    const s = FolioStore.getSettings();
+    const map = s.ttsCpsByVoice || {};
+    cpsAt1x = (selectedVoice && map[selectedVoice.name]) || DEFAULT_CPS_AT_1X;
+  }
+
+  // Current position in the document, in characters.
+  function currentOffset() {
+    if (curWord) return curWord.ds;
+    if (chunks[chunkIdx]) return chunks[chunkIdx].ds;
+    return 0;
+  }
+
+  function remainingSeconds() {
+    const remaining = Math.max(0, docText.length - currentOffset());
+    const cps = cpsAt1x * (rate || 1);
+    return cps > 0 ? remaining / cps : 0;
+  }
+
+  function formatDuration(sec) {
+    if (!isFinite(sec) || sec <= 1) return "done";
+    const totalMin = sec / 60;
+    if (totalMin < 1) return "<1 min left";
+    const m = Math.round(totalMin);
+    if (m < 60) return m + " min left";
+    const h = Math.floor(m / 60);
+    const rem = m % 60;
+    return rem ? `${h}h ${rem}m left` : `${h}h left`;
+  }
+
+  // Throttled during playback so it doesn't rewrite the DOM on every word.
+  function updateEta(force) {
+    if (!bar) return;
+    const now = performance.now();
+    if (!force && now - lastEtaPaint < 500) return;
+    lastEtaPaint = now;
+    const el = bar.querySelector("#tts-eta");
+    if (!el) return;
+    if (!chunks.length) { el.textContent = ""; return; }
+    el.textContent = formatDuration(remainingSeconds());
+  }
+
+  // ==========================================================================
   // THE PLAYER
   // ==========================================================================
 
@@ -449,6 +562,8 @@ const TTS = (function () {
         curSentence = sentenceAt(ds) || curSentence;
         paint();
         maybeScroll();
+        updateMeasure(ds);
+        updateEta(false);
       },
       onEnd: function () {
         if (!playing) return;
@@ -474,15 +589,19 @@ const TTS = (function () {
     if (!chunks.length) return;
     if (playing) return;
     playing = true;
+    startMeasure(currentOffset());
     updateBar();
+    updateEta(true);
     speakChunk(curWord ? curWord.ds : undefined);
   }
 
   function pause() {
     if (!playing) return;
     playing = false;
+    stopMeasure();
     if (handle) { handle.stop(); handle = null; }
     updateBar();
+    updateEta(true);
     // Pausing is a signal that you have something to say about this passage.
     offerCommentOnPause();
   }
@@ -491,10 +610,12 @@ const TTS = (function () {
 
   function stop(reachedEnd) {
     playing = false;
+    stopMeasure();
     if (handle) { handle.stop(); handle = null; }
     if (reachedEnd) { chunkIdx = 0; curWord = null; curSentence = null; }
     clearPaint();
     updateBar();
+    updateEta(true);
   }
 
   /*
@@ -506,8 +627,13 @@ const TTS = (function () {
     rate = r;
     saveSettings();
     updateBar();
+    // The estimate re-reads immediately because the measured pace is stored
+    // normalized to rate 1 — no need to observe the new rate first.
+    updateEta(true);
     if (!playing) return;
     if (handle) { handle.stop(); handle = null; }
+    // Reopen the measurement window; the old one was at a different rate.
+    startMeasure(currentOffset());
     speakChunk(curWord ? curWord.ds : undefined);
   }
 
@@ -531,8 +657,12 @@ const TTS = (function () {
     curWord = { ds: pos, de: wordEndFrom(pos) };
     curSentence = sentenceAt(pos);
     paint();
+    updateEta(true);
     if (playing) {
       if (handle) { handle.stop(); handle = null; }
+      // Jumping invalidates the window — chars consumed no longer reflect
+      // time elapsed.
+      startMeasure(pos);
       speakChunk(pos);
     }
   }
@@ -586,7 +716,13 @@ const TTS = (function () {
     const vsel = bar.querySelector("#tts-voice");
     vsel.addEventListener("change", () => {
       const v = provider().voices().find((x) => x.name === vsel.value);
-      if (v) { selectedVoice = v; saveSettings(); if (playing) setRate(rate); }
+      if (!v) return;
+      selectedVoice = v;
+      saveSettings();
+      // Pace is per-voice, so swap in whatever we learned about this one.
+      loadCpsForVoice();
+      updateEta(true);
+      if (playing) setRate(rate);
     });
   }
 
@@ -641,6 +777,7 @@ const TTS = (function () {
     const vs = provider().voices();
     selectedVoice = (s.ttsVoice && vs.find((v) => v.name === s.ttsVoice))
                  || provider().defaultVoice();
+    loadCpsForVoice();
   }
 
   // ==========================================================================
@@ -662,6 +799,7 @@ const TTS = (function () {
     curWord = null;
     curSentence = null;
     if (chunks.length) showBar();
+    updateEta(true);
   }
 
   function detach() {
