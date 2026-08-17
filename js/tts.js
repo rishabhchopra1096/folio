@@ -68,13 +68,18 @@ const TTS = (function () {
   const SCROLL_TOP_PAD = 0.25;
   const SCROLL_BOT_PAD = 0.75;
 
-  // Starting guess for speaking pace, in characters per second at rate 1.
-  // ~180 wpm x ~5.5 chars/word / 60 ≈ 16.5; real voices run a bit slower.
-  // This is only a seed — we measure the actual pace and converge on it.
-  const DEFAULT_CPS_AT_1X = 15.5;
-
-  // Ignore measurement windows shorter than this; too little signal.
-  const MEASURE_MIN_SECONDS = 1.5;
+  /*
+   * Speaking pace in words per minute at rate 1. Speech engines read at a
+   * known, steady pace, and the rate multiplier scales it linearly — so the
+   * time left is just (words remaining) / (WPM x rate). No measurement.
+   *
+   * An earlier version tried to measure the pace live and converge on it. That
+   * was a mistake: each sample only covered a couple of seconds, so the
+   * estimate chased noise and the displayed number bounced around by tens of
+   * minutes. A constant is slightly less "accurate" in theory and dramatically
+   * better in practice, because it only ever counts down.
+   */
+  const WPM_AT_1X = 175;
 
   // Arrow-key seek distance, in seconds of listening at the current speed.
   const SEEK_SECONDS = 15;
@@ -113,13 +118,10 @@ const TTS = (function () {
   let sentHL = null;
   let highlightsSupported = false;
 
-  // Reading-pace measurement, used for the time-remaining estimate.
-  // Always normalized to rate 1 so a speed change is a pure multiply and the
-  // estimate updates instantly instead of having to re-learn the pace.
-  let cpsAt1x = DEFAULT_CPS_AT_1X;
-  let measT0 = 0;          // wall clock when the current window opened
-  let measOffset0 = 0;     // doc offset when the current window opened
-  let measuring = false;
+  // Character offset of the start of each word, in document order. Lets us
+  // answer "how many words are left from here" with a binary search, and
+  // convert a seek-by-seconds into a seek-by-words.
+  let wordStarts = [];
   let lastEtaPaint = 0;
 
   // ==========================================================================
@@ -160,6 +162,8 @@ const TTS = (function () {
         docText += "\n\n";
       }
     }
+
+    buildWordStarts();
   }
 
   /*
@@ -449,59 +453,26 @@ const TTS = (function () {
   // ==========================================================================
 
   /*
-   * How long is left depends on how fast this particular voice actually
-   * speaks, which varies enough between voices that a fixed constant would be
-   * visibly wrong. So we measure it: a window opens when playback starts, and
-   * every word boundary tells us how many characters have been consumed since.
-   *
-   * The measured pace is stored normalized to rate 1. That way changing speed
-   * doesn't invalidate what we've learned — the estimate is just
-   * (chars remaining) / (cpsAt1x x rate), so it re-reads instantly on a speed
-   * change rather than having to observe the new rate for a few seconds.
-   *
-   * Windows close on pause, seek, rate change and voice change, because each
-   * would otherwise smear unrelated conditions into one average.
+   * Index the start offset of every word once, when the document is indexed.
+   * "Words remaining" is then a binary search rather than a re-scan.
    */
-  function startMeasure(offset) {
-    measT0 = performance.now();
-    measOffset0 = offset;
-    measuring = true;
+  function buildWordStarts() {
+    wordStarts = [];
+    const re = /\S+/g;
+    let m;
+    while ((m = re.exec(docText)) !== null) wordStarts.push(m.index);
   }
 
-  function stopMeasure() { measuring = false; }
-
-  function updateMeasure(offset) {
-    if (!measuring) return;
-    const dt = (performance.now() - measT0) / 1000;
-    if (dt < MEASURE_MIN_SECONDS) return;
-    const dChars = offset - measOffset0;
-    if (dChars <= 0) return;
-
-    const observed = dChars / dt / (rate || 1);
-    // Exponential smoothing — converges quickly but shrugs off one odd chunk
-    // (a long pause at a paragraph break, a hyphenated monster of a word).
-    cpsAt1x = cpsAt1x * 0.75 + observed * 0.25;
-
-    // Roll the window forward so the average tracks recent pace.
-    measT0 = performance.now();
-    measOffset0 = offset;
-
-    persistCps();
-  }
-
-  // Pace is a property of the voice, so remember it per voice.
-  function persistCps() {
-    if (!selectedVoice) return;
-    const s = FolioStore.getSettings();
-    s.ttsCpsByVoice = s.ttsCpsByVoice || {};
-    s.ttsCpsByVoice[selectedVoice.name] = Math.round(cpsAt1x * 100) / 100;
-    FolioStore.saveSettings(s);
-  }
-
-  function loadCpsForVoice() {
-    const s = FolioStore.getSettings();
-    const map = s.ttsCpsByVoice || {};
-    cpsAt1x = (selectedVoice && map[selectedVoice.name]) || DEFAULT_CPS_AT_1X;
+  // How many words sit at or after this character offset.
+  function wordsRemainingFrom(pos) {
+    if (!wordStarts.length) return 0;
+    let lo = 0, hi = wordStarts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (wordStarts[mid] < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return wordStarts.length - lo;
   }
 
   // Current position in the document, in characters.
@@ -511,10 +482,11 @@ const TTS = (function () {
     return 0;
   }
 
+  // Words remaining divided by the engine's words-per-minute at this rate.
   function remainingSeconds() {
-    const remaining = Math.max(0, docText.length - currentOffset());
-    const cps = cpsAt1x * (rate || 1);
-    return cps > 0 ? remaining / cps : 0;
+    const words = wordsRemainingFrom(currentOffset());
+    const wpm = WPM_AT_1X * (rate || 1);
+    return wpm > 0 ? (words / wpm) * 60 : 0;
   }
 
   function formatDuration(sec) {
@@ -571,7 +543,6 @@ const TTS = (function () {
         curSentence = sentenceAt(ds) || curSentence;
         paint();
         maybeScroll();
-        updateMeasure(ds);
         updateEta(false);
       },
       onEnd: function () {
@@ -598,7 +569,6 @@ const TTS = (function () {
     if (!chunks.length) return;
     if (playing) return;
     playing = true;
-    startMeasure(currentOffset());
     updateBar();
     updateEta(true);
     speakChunk(curWord ? curWord.ds : undefined);
@@ -607,7 +577,6 @@ const TTS = (function () {
   function pause() {
     if (!playing) return;
     playing = false;
-    stopMeasure();
     if (handle) { handle.stop(); handle = null; }
     updateBar();
     updateEta(true);
@@ -619,7 +588,6 @@ const TTS = (function () {
 
   function stop(reachedEnd) {
     playing = false;
-    stopMeasure();
     if (handle) { handle.stop(); handle = null; }
     if (reachedEnd) { chunkIdx = 0; curWord = null; curSentence = null; }
     clearPaint();
@@ -641,8 +609,6 @@ const TTS = (function () {
     updateEta(true);
     if (!playing) return;
     if (handle) { handle.stop(); handle = null; }
-    // Reopen the measurement window; the old one was at a different rate.
-    startMeasure(currentOffset());
     speakChunk(curWord ? curWord.ds : undefined);
   }
 
@@ -670,11 +636,17 @@ const TTS = (function () {
    * takes 15 seconds again, which is what the gesture implies.
    */
   function seekSeconds(delta) {
-    if (!chunks.length) return;
-    const cps = cpsAt1x * (rate || 1);
-    const target = Math.max(0, Math.min(docText.length - 1,
-                                        currentOffset() + Math.round(delta * cps)));
-    seekToChar(target);
+    if (!chunks.length || !wordStarts.length) return;
+
+    // How many words the engine gets through in `delta` seconds at this rate.
+    const words = Math.round((WPM_AT_1X * (rate || 1) / 60) * delta);
+
+    // Step that many entries through the word index rather than guessing at a
+    // character distance, so we always land on a word boundary.
+    let idx = wordStarts.length - wordsRemainingFrom(currentOffset());
+    idx = Math.max(0, Math.min(wordStarts.length - 1, idx + words));
+
+    seekToChar(wordStarts[idx]);
     toast((delta < 0 ? "◀ " : "▶ ") + Math.abs(delta) + "s", 900);
   }
 
@@ -686,9 +658,6 @@ const TTS = (function () {
     updateEta(true);
     if (playing) {
       if (handle) { handle.stop(); handle = null; }
-      // Jumping invalidates the window — chars consumed no longer reflect
-      // time elapsed.
-      startMeasure(pos);
       speakChunk(pos);
     }
   }
@@ -803,7 +772,6 @@ const TTS = (function () {
    */
   function pauseForDictation() {
     playing = false;
-    stopMeasure();
     if (handle) { handle.stop(); handle = null; }
     updateBar();
     updateEta(true);
@@ -945,8 +913,6 @@ const TTS = (function () {
       if (!v) return;
       selectedVoice = v;
       saveSettings();
-      // Pace is per-voice, so swap in whatever we learned about this one.
-      loadCpsForVoice();
       updateEta(true);
       if (playing) setRate(rate);
     });
@@ -1010,7 +976,6 @@ const TTS = (function () {
     const vs = provider().voices();
     selectedVoice = (s.ttsVoice && vs.find((v) => v.name === s.ttsVoice))
                  || provider().defaultVoice();
-    loadCpsForVoice();
   }
 
   // ==========================================================================
