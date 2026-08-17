@@ -136,6 +136,20 @@ const Voice = (function () {
    * user-readable message.
    */
   async function stopRecording(handle) {
+    const audioBlob = await stopRecordingRaw(handle);
+    return transcribeBlob(audioBlob);
+  }
+
+  /*
+   * Stop recording and hand back the raw audio WITHOUT transcribing it.
+   *
+   * Splitting this out matters: if transcription and capture happen in one
+   * call, a failed upload takes the audio down with it — the blob goes out of
+   * scope and the recording is simply lost. Callers that want to survive a
+   * dropped connection stop first, hold the blob, and transcribe separately so
+   * they can retry the upload with the same audio.
+   */
+  async function stopRecordingRaw(handle) {
     if (!handle || !handle.recorder) throw new Error("No active recording");
 
     // Wait for the recorder to actually emit its final chunk
@@ -157,7 +171,23 @@ const Voice = (function () {
       throw new Error("No audio captured — try holding a bit longer.");
     }
 
-    return transcribeBlob(audioBlob);
+    return audioBlob;
+  }
+
+  /*
+   * Is this failure worth retrying? A dropped connection or a server-side
+   * wobble will succeed later; a rejected key or an empty recording never will,
+   * so those must not sit in a queue forever.
+   */
+  function isRetryable(err) {
+    const m = (err && err.message ? err.message : "").toLowerCase();
+    if (m.includes("rejected the key")) return false;      // 401
+    if (m.includes("no audio")) return false;
+    if (m.includes("set your groq api key")) return false;
+    if (m.includes("network error")) return true;
+    if (m.includes("rate limit")) return true;             // 429
+    if (/groq api error \((5\d\d|408|409)\)/.test(m)) return true;
+    return false;
   }
 
   /*
@@ -266,6 +296,9 @@ const Voice = (function () {
     hasKey,
     startRecording,
     stopRecording,
+    stopRecordingRaw,
+    transcribe: transcribeBlob,
+    isRetryable,
     cancelRecording,
     testKey,
   };

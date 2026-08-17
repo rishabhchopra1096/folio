@@ -461,8 +461,14 @@ const Comments = (function () {
    * to stay in flow, so popping the panel open (and stealing focus into the
    * textarea) would defeat it. Returns the new comment's id.
    */
-  function addComment(highlightId, text) {
-    const docId = Reader.getCurrentDocId();
+  /*
+   * `docId` is optional and defaults to the open document. Pass it explicitly
+   * when saving something that was captured earlier — a dictation held while
+   * offline, say — otherwise a retry that lands after the reader has moved on
+   * would file the comment against whatever document happens to be open.
+   */
+  function addComment(highlightId, text, docId) {
+    docId = docId || Reader.getCurrentDocId();
     if (!docId || !text || !text.trim()) return null;
 
     const comments = FolioStore.getComments(docId);
@@ -477,8 +483,10 @@ const Comments = (function () {
     });
     FolioStore.saveComments(docId, comments);
 
-    // Keep the panel current if it happens to be open.
-    if (panel.classList.contains("open")) renderComments();
+    // Keep the panel current if it happens to be open on that same doc.
+    if (panel.classList.contains("open") && docId === Reader.getCurrentDocId()) {
+      renderComments();
+    }
     return id;
   }
 

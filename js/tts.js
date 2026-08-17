@@ -810,27 +810,81 @@ const TTS = (function () {
 
     const h = micHandle;
     micHandle = null;
+    const targetHighlight = micHighlightId;
 
+    /*
+     * Stop and KEEP the audio first. If stopRecording() transcribes in the same
+     * call, a dropped connection takes the recording down with it — the blob
+     * goes out of scope and what you said is gone for good.
+     *
+     * The one-call form is kept as a fallback: js/*.js are cached separately by
+     * the browser, so during a deploy you can briefly end up with a new tts.js
+     * against an older voice.js. Better to lose the retry ability than to have
+     * dictation stop working entirely.
+     */
+    const canHoldAudio = typeof Voice.stopRecordingRaw === "function" &&
+                         typeof Voice.transcribe === "function";
+
+    let blob = null;
     let text = "";
+
+    if (!canHoldAudio) {
+      try {
+        text = await Voice.stopRecording(h);
+      } catch (err) {
+        micState = "idle";
+        updateMic();
+        toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3200);
+        micHighlightId = null;
+        if (micResumeAfter) play();
+        return;
+      }
+      return saveDictation(text, targetHighlight);
+    }
+
     try {
-      text = await Voice.stopRecording(h);
+      blob = await Voice.stopRecordingRaw(h);
     } catch (err) {
       micState = "idle";
       updateMic();
-      toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3200);
+      toast(escapeForToast(err && err.message ? err.message : "Recording failed"), 3200);
+      micHighlightId = null;
       if (micResumeAfter) play();
       return;
     }
 
+    try {
+      text = await Voice.transcribe(blob);
+    } catch (err) {
+      micState = "idle";
+      updateMic();
+      if (Voice.isRetryable && Voice.isRetryable(err)) {
+        // Hold the audio and try again when the connection is back.
+        queueForRetry(blob, targetHighlight);
+      } else {
+        toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3600);
+      }
+      micHighlightId = null;
+      if (micResumeAfter) play();
+      return;
+    }
+
+    return saveDictation(text, targetHighlight);
+  }
+
+  /*
+   * Commit a finished transcript. Shared by the normal path and the
+   * older-voice.js fallback. Every branch must end the sticky "Transcribing…"
+   * toast, or it stays on screen forever.
+   */
+  function saveDictation(text, highlightId) {
     micState = "idle";
     updateMic();
 
-    // Every path below must end the sticky "Transcribing…" toast, or it hangs
-    // on screen forever.
     if (!text) {
       toast("Nothing recorded", 1800);
     } else if (typeof Comments !== "undefined" && Comments.addComment) {
-      Comments.addComment(micHighlightId, text);
+      Comments.addComment(highlightId, text, attachedDocId);
       const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
       // The toast renders HTML (for the <kbd> hints), so transcript text —
       // which comes back from the speech API — has to be escaped.
@@ -848,6 +902,99 @@ const TTS = (function () {
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+  }
+
+  // ==========================================================================
+  // RETRY QUEUE — don't lose a recording to a dropped connection
+  // ==========================================================================
+
+  /*
+   * A transcription that fails for a transient reason (no network, rate limit,
+   * 5xx) keeps its audio here and is retried when the connection returns, when
+   * the next dictation succeeds, or on a slow timer.
+   *
+   * The queue lives in memory only. Persisting audio would mean base64 in
+   * localStorage — a 30-second clip is ~250KB encoded, against a budget that
+   * already warns at 6MB — or IndexedDB, which this codebase deliberately
+   * avoids. So a reload still loses anything pending, and the UI says so
+   * rather than pretending otherwise.
+   */
+  let pending = [];          // [{ blob, highlightId, docId, tries }]
+  let retryTimer = null;
+  let retrying = false;
+
+  function queueForRetry(blob, highlightId) {
+    pending.push({ blob: blob, highlightId: highlightId,
+                   docId: attachedDocId, tries: 1 });
+    updatePendingUI();
+    toast('<span class="tts-rec-dot"></span>Offline — recording held, ' +
+          'will retry when you reconnect', 4200);
+    scheduleRetry(15000);
+  }
+
+  function scheduleRetry(ms) {
+    if (retryTimer) clearTimeout(retryTimer);
+    if (!pending.length) return;
+    retryTimer = setTimeout(retryPending, ms);
+  }
+
+  async function retryPending() {
+    if (retrying || !pending.length) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      scheduleRetry(20000);
+      return;
+    }
+    retrying = true;
+
+    const still = [];
+    let saved = 0;
+    for (const item of pending) {
+      try {
+        const text = await Voice.transcribe(item.blob);
+        if (text && typeof Comments !== "undefined" && Comments.addComment) {
+          // Attach to the doc it came from, not whatever is open now.
+          Comments.addComment(item.highlightId, text, item.docId);
+          saved++;
+        }
+      } catch (err) {
+        item.tries++;
+        // Give up after enough attempts so a permanently broken item doesn't
+        // retry forever — but only for retryable failures.
+        if (item.tries <= 8 && Voice.isRetryable && Voice.isRetryable(err)) {
+          still.push(item);
+        } else {
+          toast("Could not transcribe a held recording — it has been dropped", 4200);
+        }
+      }
+    }
+
+    pending = still;
+    retrying = false;
+    updatePendingUI();
+
+    if (saved) {
+      toast(saved === 1 ? "Held recording saved as a comment"
+                        : saved + " held recordings saved", 3000);
+    }
+    if (pending.length) scheduleRetry(30000);
+  }
+
+  function updatePendingUI() {
+    if (!bar) return;
+    const btn = bar.querySelector("#tts-mic");
+    if (!btn) return;
+    btn.classList.toggle("has-pending", pending.length > 0);
+    btn.dataset.pending = pending.length ? String(pending.length) : "";
+  }
+
+  function initRetry() {
+    // The obvious trigger: the connection came back.
+    window.addEventListener("online", function () {
+      if (pending.length) { toast("Back online — retrying…", 2000); retryPending(); }
+    });
+    // And a slow safety net, since "online" can fire while the network is
+    // still not actually usable.
+    setInterval(function () { if (pending.length) retryPending(); }, 60000);
   }
 
   function cancelDictation() {
@@ -1375,6 +1522,16 @@ const TTS = (function () {
     initClickToSeek();
     initShortcuts();
     initAltTap();
+    initRetry();
+
+    // Held recordings live in memory only, so a reload really does lose them.
+    // Say so rather than letting them vanish silently.
+    window.addEventListener("beforeunload", function (e) {
+      if (!pending.length) return;
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    });
     updateBar();
     updateMic();
 
