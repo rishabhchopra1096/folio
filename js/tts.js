@@ -90,6 +90,20 @@ const TTS = (function () {
   // enough that the gesture feels immediate.
   const SPACE_HOLD_MS = 350;
 
+  /*
+   * Modern macOS voices worth defaulting to, best first. These are the
+   * Premium/Enhanced downloads from System Settings → Accessibility → Spoken
+   * Content → System voice (i) → Voice.
+   *
+   * Matched against the voice name with any "(Premium)"/"(English (UK))" style
+   * suffix stripped, because Chrome's exposure of these names is inconsistent —
+   * sometimes the tier is in the name, usually it isn't.
+   */
+  const PREFERRED_VOICES = [
+    "Zoe", "Jamie", "Ava", "Evan", "Serena", "Allison",
+    "Susan", "Tom", "Nathan", "Joelle", "Noelle", "Oliver", "Stephanie",
+  ];
+
   // ==========================================================================
   // MODULE STATE
   // ==========================================================================
@@ -332,23 +346,34 @@ const TTS = (function () {
      * measured hanging indefinitely and blocking the global utterance queue,
      * which starves every subsequent utterance until something calls cancel().
      */
+    /*
+     * Rank voices best-first.
+     *
+     * The tier a macOS voice belongs to is NOT reliably in its name. Downloading
+     * "Zoe (Premium)" in System Settings often shows up in Chrome as plain
+     * "Zoe" — so matching on /premium/ alone silently leaves you on Samantha,
+     * a 2009-era voice, even after downloading a good one. Hence an explicit
+     * list of known-good modern voices, checked before any name heuristic.
+     */
     voices: function () {
       if (!this.available()) return [];
+      const rank = (v) => {
+        const bare = v.name.replace(/\s*\(.*\)\s*$/, "").trim();
+        const known = PREFERRED_VOICES.indexOf(bare);
+        if (known !== -1) return known;                    // 0..n, best first
+        if (/premium/i.test(v.name)) return 100;
+        if (/enhanced/i.test(v.name)) return 200;
+        if (bare === "Samantha") return 300;               // decent last resort
+        return 400;
+      };
       return speechSynthesis.getVoices()
         .filter((v) => v.localService && /^en/i.test(v.lang))
-        .sort((a, b) => {
-          // Surface Premium/Enhanced voices first — they're markedly better
-          const score = (v) => (/premium/i.test(v.name) ? 0 : /enhanced/i.test(v.name) ? 1 : 2);
-          return score(a) - score(b) || a.name.localeCompare(b.name);
-        });
+        .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
     },
 
     defaultVoice: function () {
-      const vs = this.voices();
-      return vs.find((v) => /premium/i.test(v.name))
-          || vs.find((v) => /enhanced/i.test(v.name))
-          || vs.find((v) => v.name === "Samantha")
-          || vs[0] || null;
+      // voices() is already ranked best-first.
+      return this.voices()[0] || null;
     },
 
     speak: function (text, opts) {
@@ -913,6 +938,10 @@ const TTS = (function () {
       const v = provider().voices().find((x) => x.name === vsel.value);
       if (!v) return;
       selectedVoice = v;
+      // Mark this as a deliberate choice so it survives future ranking changes.
+      const s = FolioStore.getSettings();
+      s.ttsVoicePicked = true;
+      FolioStore.saveSettings(s);
       saveSettings();
       updateEta(true);
       if (playing) setRate(rate);
@@ -971,12 +1000,24 @@ const TTS = (function () {
     FolioStore.saveSettings(s);
   }
 
+  /*
+   * A stored voice only wins if the user actually chose it from the dropdown
+   * (ttsVoicePicked). Otherwise it was just whatever happened to be best at
+   * the time, and should be re-evaluated — so downloading a better voice
+   * upgrades you automatically instead of leaving you stuck on Samantha
+   * because her name got persisted weeks ago.
+   */
   function loadSettings() {
     const s = getSettings();
     rate = s.ttsRate || 1;
     const vs = provider().voices();
-    selectedVoice = (s.ttsVoice && vs.find((v) => v.name === s.ttsVoice))
-                 || provider().defaultVoice();
+    const stored = s.ttsVoice && vs.find((v) => v.name === s.ttsVoice);
+
+    if (stored && s.ttsVoicePicked) {
+      selectedVoice = stored;
+    } else {
+      selectedVoice = provider().defaultVoice() || stored || null;
+    }
   }
 
   // ==========================================================================
