@@ -754,8 +754,9 @@ const TTS = (function () {
       updateMic();
       // Sticky: this has to stay up the whole time you're talking, because it
       // is the only place that says how to finish.
-      toast('<span class="tts-rec-dot"></span>Recording — tap ' +
-            '<kbd>Space</kbd> to save &nbsp;·&nbsp; <kbd>Esc</kbd> to discard', 0);
+      toast('<span class="tts-rec-dot"></span>Recording — ' +
+            '<kbd>D</kbd> or <kbd>Space</kbd> to save &nbsp;·&nbsp; ' +
+            '<kbd>Esc</kbd> to discard', 0);
     } catch (err) {
       micHandle = null;
       micState = "idle";
@@ -844,10 +845,10 @@ const TTS = (function () {
     btn.classList.toggle("transcribing", micState === "transcribing");
     btn.disabled = micState === "transcribing";
     btn.title = micState === "recording"
-      ? "Done — save and resume (or tap Space)"
+      ? "Done — save and resume (D, or tap Space)"
       : micState === "transcribing"
         ? "Transcribing…"
-        : "Dictate a comment on this paragraph (or hold Space)";
+        : "Dictate a comment on this paragraph (D, or hold Space)";
   }
 
   // ==========================================================================
@@ -1076,6 +1077,21 @@ const TTS = (function () {
   let spaceWasPlaying = false;
   let spaceIsDown = false;
 
+  /*
+   * Keys that toggle dictation: press once to start, again to stop and save.
+   * This is the alternative to hold-Space, kept alongside it so both styles are
+   * available.
+   *
+   * NOTE: "c" is deliberately NOT in this set. highlights.js already binds "c"
+   * to highlight-and-comment whenever the selection toolbar is showing
+   * (js/highlights.js:575), and that handler has no idea this one exists — so
+   * pressing "c" with text selected would fire both, creating a highlight AND
+   * starting a recording. "d" is the primary key; "m" stays as an alias.
+   */
+  function isDictateKey(k) {
+    return k === "d" || k === "D" || k === "m" || k === "M";
+  }
+
   function engaged() { return playing || !!curWord; }
 
   function isTypingTarget(t) {
@@ -1097,7 +1113,7 @@ const TTS = (function () {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const isSpace = e.code === "Space" || e.key === " ";
-      const isMicKey = e.key === "c" || e.key === "C" || e.key === "m" || e.key === "M";
+      const isMicKey = isDictateKey(e.key);
 
       // Mid-transcription: swallow transport keys so a stray tap can't start
       // playback underneath the pending save.
@@ -1227,7 +1243,9 @@ const TTS = (function () {
             <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
             <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Previous / next sentence</dd>
             <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Faster / slower</dd>
-            <dt><kbd>C</kbd></dt><dd>Dictate (same as holding Space)</dd>
+            <dt><kbd>D</kbd></dt>
+              <dd>Dictate — tap to start, tap again to save. Same result as
+                  hold-Space, without the holding.</dd>
             <dt><kbd>Esc</kbd></dt><dd>Cancel dictation / stop</dd>
             <dt><kbd>?</kbd></dt><dd>Close this</dd>
           </dl>

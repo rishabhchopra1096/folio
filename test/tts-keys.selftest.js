@@ -186,6 +186,64 @@ const I = TTS.__i();
   const e3 = key("keydown", { key: "ArrowRight", ctrlKey: true });
   ok("Ctrl+Right ignored", !e3.defaultPrevented);
 
+  console.log("\n=== 'D' is a tap-toggle: tap to start, tap to stop ===");
+  voice.hasKey = true;
+  TTS.attach("doc_d");
+  TTS.play(); await sleep(40);
+  ok("playing before D", I.playing);
+  const dStart = voice.started;
+  key("keydown", { key: "d" }); await sleep(60);
+  ok("D started recording", I.micState === "recording", "micState=" + I.micState);
+  ok("no holding required", voice.started === dStart + 1, `${dStart} -> ${voice.started}`);
+  ok("reading paused", !I.playing);
+  key("keyup", { key: "d" }); await sleep(60);
+  ok("releasing D does NOT stop it", I.micState === "recording", "micState=" + I.micState);
+  const savedBefore = saved.filter((s) => s.text).length;
+  key("keydown", { key: "d" }); await sleep(140);
+  ok("second D tap ended recording", I.micState === "idle", "micState=" + I.micState);
+  ok("comment saved", saved.filter((s) => s.text).length === savedBefore + 1);
+  ok("reading resumed", I.playing, "playing=" + I.playing);
+
+  console.log("\n=== 'D' key repeat does not double-fire ===");
+  const dS2 = voice.started;
+  key("keydown", { key: "d" });
+  key("keydown", { key: "d", repeat: true });
+  key("keydown", { key: "d", repeat: true });
+  await sleep(60);
+  ok("only one recording started", voice.started === dS2 + 1, `${dS2} -> ${voice.started}`);
+  key("keydown", { key: "Escape" }); await sleep(60);
+  ok("escaped cleanly", I.micState === "idle");
+
+  console.log("\n=== 'M' still works as an alias ===");
+  TTS.play(); await sleep(40);
+  const mS = voice.started;
+  key("keydown", { key: "m" }); await sleep(60);
+  ok("M started recording", I.micState === "recording");
+  ok("startRecording called", voice.started === mS + 1);
+  key("keydown", { key: "Escape" }); await sleep(60);
+
+  console.log("\n=== 'C' no longer triggers dictation (belongs to highlights.js) ===");
+  TTS.play(); await sleep(40);
+  const cS = voice.started;
+  const eC = key("keydown", { key: "c" }); await sleep(60);
+  ok("C did NOT start a recording", voice.started === cS, `${cS} -> ${voice.started}`);
+  ok("C was not consumed by the TTS handler", !eC.defaultPrevented);
+  ok("still just playing", I.playing && I.micState === "idle",
+     `playing=${I.playing} micState=${I.micState}`);
+
+  console.log("\n=== both styles reach the same state ===");
+  // hold-Space and D must leave micState identical.
+  TTS.play(); await sleep(40);
+  spaceDown(); await sleep(500);
+  const viaSpace = I.micState;
+  key("keydown", { key: "Escape" }); await sleep(50); spaceUp();
+  TTS.play(); await sleep(40);
+  key("keydown", { key: "d" }); await sleep(60);
+  const viaD = I.micState;
+  key("keydown", { key: "Escape" }); await sleep(50);
+  ok("hold-Space and D produce the same state", viaSpace === viaD && viaD === "recording",
+     `space=${viaSpace} d=${viaD}`);
+
   console.log("\n=== no dictation without a Groq key ===");
   voice.hasKey = false;
   TTS.attach("doc_test3");
