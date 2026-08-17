@@ -783,12 +783,15 @@ const TTS = (function () {
       micHandle = await Voice.startRecording();
       micState = "recording";
       updateMic();
-      toast("Recording… press the mic again when done", 2000);
+      // Sticky: this has to stay up the whole time you're talking, because it
+      // is the only place that says how to finish.
+      toast('<span class="tts-rec-dot"></span>Recording — tap ' +
+            '<kbd>Space</kbd> to save &nbsp;·&nbsp; <kbd>Esc</kbd> to discard', 0);
     } catch (err) {
       micHandle = null;
       micState = "idle";
       updateMic();
-      toast(err && err.message ? err.message : "Could not start recording", 3200);
+      toast(escapeForToast(err && err.message ? err.message : "Could not start recording"), 3200);
       if (micResumeAfter) play();
     }
   }
@@ -809,6 +812,7 @@ const TTS = (function () {
   async function finishDictation() {
     micState = "transcribing";
     updateMic();
+    toast("Transcribing…", 0);
 
     const h = micHandle;
     micHandle = null;
@@ -819,7 +823,7 @@ const TTS = (function () {
     } catch (err) {
       micState = "idle";
       updateMic();
-      toast(err && err.message ? err.message : "Transcription failed", 3200);
+      toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3200);
       if (micResumeAfter) play();
       return;
     }
@@ -827,16 +831,29 @@ const TTS = (function () {
     micState = "idle";
     updateMic();
 
-    if (text && typeof Comments !== "undefined" && Comments.addComment) {
+    // Every path below must end the sticky "Transcribing…" toast, or it hangs
+    // on screen forever.
+    if (!text) {
+      toast("Nothing recorded", 1800);
+    } else if (typeof Comments !== "undefined" && Comments.addComment) {
       Comments.addComment(micHighlightId, text);
       const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
-      toast("Saved: " + preview, 2600);
-    } else if (!text) {
-      toast("Nothing recorded", 1800);
+      // The toast renders HTML (for the <kbd> hints), so transcript text —
+      // which comes back from the speech API — has to be escaped.
+      toast("Saved: " + escapeForToast(preview), 2600);
+    } else {
+      toast("Could not save the comment", 2600);
     }
 
     micHighlightId = null;
     if (micResumeAfter) play();
+  }
+
+  function escapeForToast(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
   }
 
   function cancelDictation() {
@@ -846,7 +863,8 @@ const TTS = (function () {
     micState = "idle";
     micHighlightId = null;
     updateMic();
-    toast("Dictation cancelled", 1600);
+    hideToast();
+    toast("Discarded", 1400);
     if (micResumeAfter) play();
   }
 
@@ -858,10 +876,10 @@ const TTS = (function () {
     btn.classList.toggle("transcribing", micState === "transcribing");
     btn.disabled = micState === "transcribing";
     btn.title = micState === "recording"
-      ? "Done — save comment and resume (M)"
+      ? "Done — save and resume (or tap Space)"
       : micState === "transcribing"
         ? "Transcribing…"
-        : "Dictate a comment on this paragraph (M)";
+        : "Dictate a comment on this paragraph (or hold Space)";
   }
 
   // ==========================================================================
@@ -871,16 +889,28 @@ const TTS = (function () {
   let toastEl = null;
   let toastTimer = null;
 
+  /*
+   * Pass ms = 0 to make the toast stick until something clears it. Recording
+   * uses that: the instruction for how to STOP needs to stay on screen the
+   * whole time you're talking, since you're looking at the page and not the
+   * player bar.
+   */
   function toast(msg, ms) {
     if (!toastEl) {
       toastEl = document.createElement("div");
       toastEl.id = "tts-toast";
       document.body.appendChild(toastEl);
     }
-    toastEl.textContent = msg;
+    toastEl.innerHTML = msg;
     toastEl.classList.add("visible");
     clearTimeout(toastTimer);
+    if (ms === 0) return;                 // sticky
     toastTimer = setTimeout(() => toastEl.classList.remove("visible"), ms || 2200);
+  }
+
+  function hideToast() {
+    clearTimeout(toastTimer);
+    if (toastEl) toastEl.classList.remove("visible");
   }
 
   // ==========================================================================
@@ -1224,7 +1254,11 @@ const TTS = (function () {
             <dt><kbd>Space</kbd> <span class="tts-help-hint">tap</span></dt>
               <dd>Play / pause</dd>
             <dt><kbd>Space</kbd> <span class="tts-help-hint">hold</span></dt>
-              <dd>Start dictating a comment — let go and keep talking, then tap to save and resume</dd>
+              <dd>Start dictating a comment</dd>
+            <dt><span class="tts-help-hint">…then</span></dt>
+              <dd><b>1.</b> Let go — it keeps recording, hands free<br>
+                  <b>2.</b> Say what you think<br>
+                  <b>3.</b> Tap <kbd>Space</kbd> to save it and carry on reading</dd>
             <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
             <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Previous / next sentence</dd>
             <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Faster / slower</dd>

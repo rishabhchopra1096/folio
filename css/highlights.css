@@ -330,6 +330,36 @@ mark[data-highlight-id]:hover {
 }
 #tts-toast.visible { opacity: 0.95; transform: translateX(-50%) translateY(0); }
 
+/* Keys called out inside a toast (e.g. "tap Space to save") */
+#tts-toast kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  margin: 0 1px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--paper);
+}
+
+/* Live recording indicator inside the sticky toast */
+.tts-rec-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #ff5f5f;
+  vertical-align: middle;
+  animation: tts-rec-blink 1.1s ease-in-out infinite;
+}
+@keyframes tts-rec-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
 /* Shortcut help overlay (press ?) */
 #tts-help {
   position: fixed;
