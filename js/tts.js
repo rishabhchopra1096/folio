@@ -1133,6 +1133,65 @@ const TTS = (function () {
     return k === "d" || k === "D" || k === "m" || k === "M";
   }
 
+  /*
+   * Bare Option-tap as a dictation toggle.
+   *
+   * Option is reachable by the left thumb and, unlike Fn, it really is
+   * delivered to the page. The complication is that it's a MODIFIER: its
+   * keydown fires on the way into every combo, so acting on keydown would
+   * start a recording on ⌥←, on ⌥-click, and on typing é.
+   *
+   * So we only act on keyUP, and only if the press was "bare" — nothing else
+   * happened while Option was held. Any other key, any mouse press, any scroll
+   * disqualifies it. Losing focus mid-press disqualifies it too, since the
+   * keyup may never arrive.
+   */
+  let altDown = false;
+  let altBare = false;
+
+  function disqualifyAltTap() { altBare = false; }
+
+  function initAltTap() {
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Alt") {
+        if (!altDown) {
+          altDown = true;
+          // Only a candidate if Option is the ONLY modifier involved.
+          altBare = !e.metaKey && !e.ctrlKey && !e.shiftKey;
+        }
+        return;
+      }
+      // Some other key went down while Option was held — it's a combo.
+      if (altDown) disqualifyAltTap();
+    }, true);
+
+    document.addEventListener("keyup", function (e) {
+      if (e.key !== "Alt") return;
+      const wasBare = altBare;
+      altDown = false;
+      altBare = false;
+      if (!wasBare) return;
+
+      const readerActive = document.getElementById("view-reader");
+      if (!readerActive || !readerActive.classList.contains("active")) return;
+      if (!chunks.length) return;
+      if (isTypingTarget(e.target)) return;
+      if (micState === "transcribing") return;
+
+      toggleMic();
+    }, true);
+
+    // A mouse press or scroll while Option is held means it was a modifier.
+    ["mousedown", "wheel", "contextmenu", "dragstart"].forEach(function (evt) {
+      document.addEventListener(evt, function () {
+        if (altDown) disqualifyAltTap();
+      }, true);
+    });
+
+    // If the window loses focus while Option is down, the keyup never comes.
+    window.addEventListener("blur", function () { altDown = false; altBare = false; });
+  }
+
   function engaged() { return playing || !!curWord; }
 
   function isTypingTarget(t) {
@@ -1284,9 +1343,10 @@ const TTS = (function () {
             <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
             <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Previous / next sentence</dd>
             <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Faster / slower</dd>
-            <dt><kbd>D</kbd></dt>
+            <dt><kbd>D</kbd> <span class="tts-help-hint">or</span> <kbd>⌥</kbd></dt>
               <dd>Dictate — tap to start, tap again to save. Same result as
-                  hold-Space, without the holding.</dd>
+                  hold-Space, without the holding. Option only counts as a
+                  bare tap, so ⌥-combos still work normally.</dd>
             <dt><kbd>Esc</kbd></dt><dd>Cancel dictation / stop</dd>
             <dt><kbd>?</kbd></dt><dd>Close this</dd>
           </dl>
@@ -1314,6 +1374,7 @@ const TTS = (function () {
 
     initClickToSeek();
     initShortcuts();
+    initAltTap();
     updateBar();
     updateMic();
 

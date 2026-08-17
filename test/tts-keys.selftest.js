@@ -244,6 +244,79 @@ const I = TTS.__i();
   ok("hold-Space and D produce the same state", viaSpace === viaD && viaD === "recording",
      `space=${viaSpace} d=${viaD}`);
 
+
+  console.log("\n=== bare Option tap toggles dictation ===");
+  voice.hasKey = true;
+  TTS.attach("doc_alt");
+  TTS.play(); await sleep(40);
+  const aS = voice.started;
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("bare Option started recording", I.micState === "recording", "micState=" + I.micState);
+  ok("startRecording called once", voice.started === aS + 1, `${aS} -> ${voice.started}`);
+  const savedA = saved.filter(s => s.text).length;
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(140);
+  ok("second Option tap saved and stopped", I.micState === "idle", "micState=" + I.micState);
+  ok("comment saved", saved.filter(s => s.text).length === savedA + 1);
+
+  console.log("\n=== Option COMBOS must not trigger it ===");
+  TTS.play(); await sleep(40);
+  const cS2 = voice.started;
+
+  // Option + ArrowLeft (word-wise cursor movement)
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  key("keydown", { key: "ArrowLeft", altKey: true });
+  key("keyup",   { key: "ArrowLeft", altKey: true });
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("Option+ArrowLeft did NOT record", voice.started === cS2, `${cS2} -> ${voice.started}`);
+
+  // Option + e  (typing an accent)
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  key("keydown", { key: "e", altKey: true });
+  key("keyup",   { key: "e", altKey: true });
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("Option+e did NOT record", voice.started === cS2, `${cS2} -> ${voice.started}`);
+
+  // Option + click
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  dom.window.document.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true }));
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("Option+click did NOT record", voice.started === cS2, `${cS2} -> ${voice.started}`);
+
+  // Option + scroll
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  dom.window.document.dispatchEvent(new dom.window.WheelEvent("wheel", { bubbles: true }));
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("Option+scroll did NOT record", voice.started === cS2, `${cS2} -> ${voice.started}`);
+
+  // Cmd+Option (a real chord)
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true, metaKey: true });
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false, metaKey: true });
+  await sleep(60);
+  ok("Cmd+Option did NOT record", voice.started === cS2, `${cS2} -> ${voice.started}`);
+
+  console.log("\n=== losing focus mid-press does not leave it armed ===");
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  dom.window.dispatchEvent(new dom.window.Event("blur"));
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("blurred Option press did NOT record", voice.started === cS2, `${cS2} -> ${voice.started}`);
+
+  console.log("\n=== Option still works right after a disqualified press ===");
+  const rS = voice.started;
+  key("keydown", { key: "Alt", code: "AltLeft", altKey: true });
+  key("keyup",   { key: "Alt", code: "AltLeft", altKey: false });
+  await sleep(60);
+  ok("recovers on the next bare tap", voice.started === rS + 1, `${rS} -> ${voice.started}`);
+  key("keydown", { key: "Escape" }); await sleep(60);
+
   console.log("\n=== no dictation without a Groq key ===");
   voice.hasKey = false;
   TTS.attach("doc_test3");
