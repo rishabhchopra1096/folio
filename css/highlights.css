@@ -330,6 +330,68 @@ mark[data-highlight-id]:hover {
 }
 #tts-toast.visible { opacity: 0.95; transform: translateX(-50%) translateY(0); }
 
+/* Shortcut help overlay (press ?) */
+#tts-help {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 190;
+}
+#tts-help.visible { display: flex; }
+.tts-help-card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 18px 60px var(--shadow);
+  padding: 26px 30px;
+  max-width: 440px;
+  font-family: var(--font-ui);
+}
+.tts-help-card h3 {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 18px;
+}
+.tts-help-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 18px;
+  align-items: baseline;
+}
+.tts-help-card dt { white-space: nowrap; }
+.tts-help-card dd { font-size: 13px; color: var(--ink-soft); }
+.tts-help-card kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-align: center;
+}
+.tts-help-hint {
+  font-size: 10px;
+  color: var(--ink-faint);
+  font-style: italic;
+  margin-left: 3px;
+}
+.tts-help-foot {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  line-height: 1.5;
+}
+
 /* ── COMMENTS PANEL — floating, draggable, resizable card ──
    Old design was a right-side drawer that overlaid the article. New design is
    a small floating card (default bottom-right) that the user can drag anywhere

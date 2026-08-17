@@ -76,6 +76,15 @@ const TTS = (function () {
   // Ignore measurement windows shorter than this; too little signal.
   const MEASURE_MIN_SECONDS = 1.5;
 
+  // Arrow-key seek distance, in seconds of listening at the current speed.
+  const SEEK_SECONDS = 15;
+
+  // Hold Space longer than this and it starts dictation instead of being a
+  // play/pause tap. Recording then LATCHES — you let go and keep talking, and
+  // a later tap ends it. Long enough not to trigger on a normal tap, short
+  // enough that the gesture feels immediate.
+  const SPACE_HOLD_MS = 350;
+
   // ==========================================================================
   // MODULE STATE
   // ==========================================================================
@@ -652,6 +661,23 @@ const TTS = (function () {
     seekToChar(sentences[i].ds);
   }
 
+  /*
+   * Seek by wall-clock listening time rather than by characters.
+   *
+   * "Back 15 seconds" means the last 15 seconds of YOUR time, so the distance
+   * scales with the current speed: at 3x you covered three times as much text
+   * in those 15 seconds, so we rewind three times as far. Re-hearing it then
+   * takes 15 seconds again, which is what the gesture implies.
+   */
+  function seekSeconds(delta) {
+    if (!chunks.length) return;
+    const cps = cpsAt1x * (rate || 1);
+    const target = Math.max(0, Math.min(docText.length - 1,
+                                        currentOffset() + Math.round(delta * cps)));
+    seekToChar(target);
+    toast((delta < 0 ? "◀ " : "▶ ") + Math.abs(delta) + "s", 900);
+  }
+
   function seekToChar(pos) {
     chunkIdx = chunkIndexAt(pos);
     curWord = { ds: pos, de: wordEndFrom(pos) };
@@ -736,13 +762,19 @@ const TTS = (function () {
     return beginDictation();
   }
 
-  async function beginDictation() {
+  /*
+   * `resumeAfter` lets the caller state whether reading should pick back up
+   * once the comment is saved. The hold-Space gesture pauses BEFORE dictation
+   * starts (so the pause feels instant), which means by the time we get here
+   * `playing` is already false and can't be used to infer intent.
+   */
+  async function beginDictation(resumeAfter) {
     if (typeof Voice === "undefined" || !Voice.hasKey()) {
       toast("Add your Groq API key in Settings → Voice to dictate", 3200);
       return;
     }
 
-    micResumeAfter = playing;
+    micResumeAfter = typeof resumeAfter === "boolean" ? resumeAfter : playing;
     if (playing) pauseForDictation();
 
     micHighlightId = highlightCurrentBlock();
@@ -869,6 +901,8 @@ const TTS = (function () {
       setRate(RATES[(i + 1) % RATES.length]);
     });
     bar.querySelector("#tts-mic").addEventListener("click", toggleMic);
+    const helpBtn = bar.querySelector("#tts-help-btn");
+    if (helpBtn) helpBtn.addEventListener("click", toggleHelp);
     bar.querySelector("#tts-close").addEventListener("click", () => {
       cancelDictation();
       stop(true);
@@ -920,9 +954,16 @@ const TTS = (function () {
   // SETTINGS
   // ==========================================================================
 
+  /*
+   * ttsCommentOnPause now defaults OFF. It made sense when pausing was the
+   * only way to signal "I have something to say", but hold-Space dictation
+   * covers that directly — and having the panel spring open on every ordinary
+   * pause fights the flow instead of helping it. Still available for anyone
+   * who wants the old behaviour.
+   */
   function getSettings() {
     const s = FolioStore.getSettings();
-    if (s.ttsCommentOnPause === undefined) s.ttsCommentOnPause = true;
+    if (s.ttsCommentOnPause === undefined) s.ttsCommentOnPause = false;
     return s;
   }
 
@@ -1001,32 +1042,205 @@ const TTS = (function () {
     return null;
   }
 
+  /*
+   * Keyboard transport — one thumb on the spacebar, like a game controller.
+   *
+   *   Space (tap)    play / pause
+   *   Space (hold)   pause and start dictating. Recording LATCHES, so let go
+   *                  and keep talking; a later tap saves it and resumes.
+   *   ← →            back / forward 15 seconds
+   *   Shift + ← →    previous / next sentence
+   *   ↑ ↓            faster / slower
+   *   C  or  M       dictate (alias, for when a dedicated key is preferred)
+   *   ?              show this list
+   *   Esc            cancel dictation, or stop reading
+   *
+   * WHICH EDGE EACH ACTION FIRES ON, and why it has to be this way:
+   *
+   * A tap and a hold can't be told apart until the key comes back up, but
+   * pause is the one action that must feel instantaneous. So:
+   *
+   *   - If we're PLAYING, keydown pauses immediately. Should the press turn
+   *     out to be a hold, we're already in the state dictation wants.
+   *   - If we're PAUSED, keydown does nothing and keyup starts playing. A real
+   *     tap releases in well under 100ms, so this still feels instant, and it
+   *     avoids the nonsense of a hold briefly starting playback before
+   *     recording.
+   *
+   * Arrow keys only take over once ENGAGED (playing, or parked at a playhead),
+   * so merely opening a document doesn't hijack normal page scrolling.
+   *
+   * Everything is bare-key — any Cmd/Ctrl/Alt press is handed to the browser
+   * untouched — and these are page listeners, so nothing fires unless Folio
+   * has focus.
+   */
+
+  let spaceDownAt = 0;
+  let spaceHoldTimer = null;
+  let spaceBecameDictation = false;
+  let spaceWasPlaying = false;
+  let spaceIsDown = false;
+
+  function engaged() { return playing || !!curWord; }
+
+  function isTypingTarget(t) {
+    if (!t) return false;
+    const tag = (t.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || t.isContentEditable;
+  }
+
+  function clearSpaceHold() {
+    if (spaceHoldTimer) { clearTimeout(spaceHoldTimer); spaceHoldTimer = null; }
+  }
+
   function initShortcuts() {
     document.addEventListener("keydown", function (e) {
       const readerActive = document.getElementById("view-reader");
       if (!readerActive || !readerActive.classList.contains("active")) return;
       if (!chunks.length) return;
-      // Never steal keys while the user is typing.
-      const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (isTypingTarget(e.target)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-      // While dictating, Space and Escape belong to the mic, not the player —
-      // otherwise you'd resume reading over your own recording.
-      if (micState === "recording") {
-        if (e.code === "Space" || e.key === "m" || e.key === "M") {
-          e.preventDefault(); toggleMic(); return;
-        }
-        if (e.key === "Escape") { e.preventDefault(); cancelDictation(); return; }
+      const isSpace = e.code === "Space" || e.key === " ";
+      const isMicKey = e.key === "c" || e.key === "C" || e.key === "m" || e.key === "M";
+
+      // Mid-transcription: swallow transport keys so a stray tap can't start
+      // playback underneath the pending save.
+      if (micState === "transcribing") {
+        if (isSpace || isMicKey) e.preventDefault();
         return;
       }
 
-      if (e.code === "Space") { e.preventDefault(); toggle(); }
-      else if (e.key === "m" || e.key === "M") { e.preventDefault(); toggleMic(); }
-      else if (e.key === "[")  { e.preventDefault(); cycleRate(-1); }
-      else if (e.key === "]")  { e.preventDefault(); cycleRate(1); }
-      else if (e.key === "ArrowLeft"  && e.shiftKey) { e.preventDefault(); jumpSentence(-1); }
-      else if (e.key === "ArrowRight" && e.shiftKey) { e.preventDefault(); jumpSentence(1); }
+      // ── While recording, Space / C / M all mean "done" ──
+      if (micState === "recording") {
+        if (e.key === "Escape") { e.preventDefault(); cancelDictation(); return; }
+        if (isSpace || isMicKey) {
+          e.preventDefault();
+          if (!e.repeat) finishDictation();
+          return;
+        }
+        return;
+      }
+
+      if (isSpace) {
+        e.preventDefault();
+        if (e.repeat) return;          // OS key-repeat while held
+        spaceIsDown = true;
+        spaceDownAt = Date.now();
+        spaceBecameDictation = false;
+        spaceWasPlaying = playing;
+
+        // Pause now if we're playing — this is the latency-sensitive action.
+        if (playing) pauseForDictation();
+
+        clearSpaceHold();
+        spaceHoldTimer = setTimeout(function () {
+          spaceHoldTimer = null;
+          if (!spaceIsDown) return;
+          spaceBecameDictation = true;
+          beginDictation(spaceWasPlaying);
+        }, SPACE_HOLD_MS);
+        return;
+      }
+
+      if (isMicKey) {
+        e.preventDefault();
+        if (!e.repeat) toggleMic();
+        return;
+      }
+
+      switch (e.key) {
+        case "ArrowLeft":
+          if (!engaged()) return;
+          e.preventDefault();
+          e.shiftKey ? jumpSentence(-1) : seekSeconds(-SEEK_SECONDS);
+          break;
+        case "ArrowRight":
+          if (!engaged()) return;
+          e.preventDefault();
+          e.shiftKey ? jumpSentence(1) : seekSeconds(SEEK_SECONDS);
+          break;
+        case "ArrowUp":
+          if (!engaged()) return;
+          e.preventDefault(); cycleRate(1); toast(rate + "×", 900); break;
+        case "ArrowDown":
+          if (!engaged()) return;
+          e.preventDefault(); cycleRate(-1); toast(rate + "×", 900); break;
+        case "[":
+          e.preventDefault(); cycleRate(-1); toast(rate + "×", 900); break;
+        case "]":
+          e.preventDefault(); cycleRate(1); toast(rate + "×", 900); break;
+        case "?":
+          e.preventDefault(); toggleHelp(); break;
+        case "Escape":
+          if (playing) { e.preventDefault(); pause(); }
+          break;
+      }
     });
+
+    /*
+     * Space release decides what the press meant.
+     *
+     * If the hold timer already fired we're recording — do nothing, because
+     * the recording is latched and the user wants to keep talking with their
+     * hand off the key. Otherwise it was a tap: start playing if we were
+     * paused, or complete the manual-pause behaviour if we were playing.
+     */
+    document.addEventListener("keyup", function (e) {
+      const isSpace = e.code === "Space" || e.key === " ";
+      if (!isSpace || !spaceIsDown) return;
+      spaceIsDown = false;
+      clearSpaceHold();
+
+      if (spaceBecameDictation) return;   // latched; leave it recording
+
+      if (spaceWasPlaying) {
+        // keydown already paused us — finish the manual-pause semantics.
+        offerCommentOnPause();
+      } else {
+        play();
+      }
+    });
+  }
+
+  // ==========================================================================
+  // SHORTCUT HELP OVERLAY
+  // ==========================================================================
+
+  let helpEl = null;
+
+  function toggleHelp() {
+    if (helpEl && helpEl.classList.contains("visible")) {
+      helpEl.classList.remove("visible");
+      return;
+    }
+    if (!helpEl) {
+      helpEl = document.createElement("div");
+      helpEl.id = "tts-help";
+      helpEl.innerHTML = `
+        <div class="tts-help-card">
+          <h3>Reading controls</h3>
+          <dl>
+            <dt><kbd>Space</kbd> <span class="tts-help-hint">tap</span></dt>
+              <dd>Play / pause</dd>
+            <dt><kbd>Space</kbd> <span class="tts-help-hint">hold</span></dt>
+              <dd>Start dictating a comment — let go and keep talking, then tap to save and resume</dd>
+            <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
+            <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Previous / next sentence</dd>
+            <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Faster / slower</dd>
+            <dt><kbd>C</kbd></dt><dd>Dictate (same as holding Space)</dd>
+            <dt><kbd>Esc</kbd></dt><dd>Cancel dictation / stop</dd>
+            <dt><kbd>?</kbd></dt><dd>Close this</dd>
+          </dl>
+          <p class="tts-help-foot">
+            Arrows take over playback once reading has started — before that they scroll normally.
+            Nothing fires unless Folio has focus, so your other apps are untouched.
+          </p>
+        </div>`;
+      helpEl.addEventListener("click", () => helpEl.classList.remove("visible"));
+      document.body.appendChild(helpEl);
+    }
+    helpEl.classList.add("visible");
   }
 
   function init() {
