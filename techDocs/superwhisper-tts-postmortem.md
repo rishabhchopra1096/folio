@@ -75,6 +75,14 @@ The reason these are stubs is the playback engine choice: piping PCM into `node-
 
 Attempt #3 (`94ac407`) routed speed into the model itself. Commit `6d3c932`'s body records the result verbatim:
 
+> [!WARNING]
+> **CORRECTION (2026-08-18): this claim is false.** Later investigation ran the
+> Kokoro ONNX model directly at speed 0.5 / 1.0 / 1.5 / 2.0 and got four
+> different SHA-256 hashes, with output durations scaling exactly
+> inverse-linearly. The `speed` input works. The commit message below recorded a
+> real symptom but misattributed it — the bug was in the caller, not the model.
+> Everything else in this section still stands. See `tts-local-2026.md`.
+
 > **"Kokoro's model ignores its speed input (byte-identical audio at any speed value)"**
 
 and the code comment left behind says the same: `reader-extension/offscreen.js:98` — `headtts.synthesize({ input: text }); // speed is a model no-op; handled at playback`.
