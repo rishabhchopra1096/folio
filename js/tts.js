@@ -81,8 +81,18 @@ const TTS = (function () {
    */
   const WPM_AT_1X = 175;
 
-  // Arrow-key seek distance, in seconds of listening at the current speed.
+  // Shift+arrow seek distance, in seconds of listening at the current speed.
   const SEEK_SECONDS = 15;
+
+  /*
+   * How far into a sentence you must be before Back means "restart this
+   * sentence" rather than "go to the previous one". A few characters is
+   * enough: it only has to be larger than zero, since a Back press lands you
+   * exactly on the sentence start and the next press should therefore step
+   * back. Kept at a couple of words so a Back pressed a fraction too late —
+   * just as a new sentence begins — still takes you to the previous one.
+   */
+  const RESTART_GRACE_CHARS = 12;
 
   // Hold Space longer than this and it starts dictation instead of being a
   // play/pause tap. Recording then LATCHES — you let go and keep talking, and
@@ -644,11 +654,41 @@ const TTS = (function () {
     setRate(RATES[i]);
   }
 
+  /*
+   * Sentence navigation, with the behaviour a music player has:
+   *
+   *   Back, mid-sentence  -> jump to the START of the sentence you're in
+   *   Back, already there -> jump to the PREVIOUS sentence
+   *   Forward             -> always the next sentence
+   *
+   * "Already there" is decided by position, not by timing a double-tap: if
+   * you're within RESTART_GRACE_CHARS of the sentence start you're treated as
+   * being at the start. That makes pressing Back twice do the obvious thing —
+   * the first press lands you exactly at the start, so the second press
+   * necessarily reads as "already there" — without depending on how fast you
+   * press.
+   */
   function jumpSentence(dir) {
-    const pos = curWord ? curWord.ds : 0;
+    if (!sentences.length) return;
+    const pos = currentOffset();
+
     let i = sentences.findIndex((s) => pos >= s.ds && pos < s.de);
-    if (i === -1) i = 0;
-    i = Math.max(0, Math.min(sentences.length - 1, i + dir));
+    if (i === -1) {
+      // Between sentences (a block separator) — take the next one that starts
+      // at or after us, so Back still has something sensible to rewind to.
+      i = sentences.findIndex((s) => s.ds >= pos);
+      if (i === -1) i = sentences.length - 1;
+    }
+
+    if (dir < 0) {
+      const intoSentence = pos - sentences[i].ds;
+      // Far enough in to mean "restart this sentence"; otherwise step back.
+      i = intoSentence > RESTART_GRACE_CHARS ? i : i - 1;
+    } else {
+      i = i + 1;
+    }
+
+    i = Math.max(0, Math.min(sentences.length - 1, i));
     seekToChar(sentences[i].ds);
   }
 
@@ -1411,12 +1451,12 @@ const TTS = (function () {
         case "ArrowLeft":
           if (!engaged()) return;
           e.preventDefault();
-          e.shiftKey ? jumpSentence(-1) : seekSeconds(-SEEK_SECONDS);
+          e.shiftKey ? seekSeconds(-SEEK_SECONDS) : jumpSentence(-1);
           break;
         case "ArrowRight":
           if (!engaged()) return;
           e.preventDefault();
-          e.shiftKey ? jumpSentence(1) : seekSeconds(SEEK_SECONDS);
+          e.shiftKey ? seekSeconds(SEEK_SECONDS) : jumpSentence(1);
           break;
         case "ArrowUp":
           if (!engaged()) return;
@@ -1487,8 +1527,10 @@ const TTS = (function () {
               <dd><b>1.</b> Let go — it keeps recording, hands free<br>
                   <b>2.</b> Say what you think<br>
                   <b>3.</b> Tap <kbd>Space</kbd> to save it and carry on reading</dd>
-            <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
-            <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Previous / next sentence</dd>
+            <dt><kbd>←</kbd></dt>
+              <dd>Restart this sentence — press again for the previous one</dd>
+            <dt><kbd>→</kbd></dt><dd>Next sentence</dd>
+            <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
             <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Faster / slower</dd>
             <dt><kbd>D</kbd> <span class="tts-help-hint">or</span> <kbd>⌥</kbd></dt>
               <dd>Dictate — tap to start, tap again to save. Same result as
