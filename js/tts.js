@@ -746,18 +746,45 @@ const TTS = (function () {
    * valid — only the offset->node mapping goes stale. So we rebuild the index
    * afterwards and deliberately leave chunkIdx/curWord alone.
    */
-  function highlightCurrentBlock() {
+  /*
+   * The range a dictation should attach to.
+   *
+   * If you've selected text by hand, that selection is what you mean — you
+   * went to the trouble of picking it. Only when there's no selection do we
+   * fall back to the paragraph the playhead is in.
+   */
+  function dictationTargetRange() {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      const r = sel.getRangeAt(0);
+      // Only honour selections inside the article — not the sidebar, the
+      // comment box, or anywhere else on the page.
+      if (article && article.contains(r.commonAncestorContainer) && r.toString().trim()) {
+        return r.cloneRange();
+      }
+    }
     if (!curWord) return null;
-    if (typeof Highlights === "undefined" || !Highlights.createHighlightFromRange) return null;
-
     const b = blockAt(curWord.ds);
     if (!b) return null;
-
     const r = document.createRange();
     r.selectNodeContents(b.el);
+    return r;
+  }
 
-    const id = Highlights.createHighlightFromRange(r, "yellow");
+  function highlightCurrentBlock() {
+    if (typeof Highlights === "undefined" || !Highlights.createHighlightFromRange) return null;
+
+    const range = dictationTargetRange();
+    if (!range) return null;
+
+    const id = Highlights.createHighlightFromRange(range, "yellow");
     if (id) {
+      // Drop the selection now that it's been turned into a highlight —
+      // otherwise the blue selection sits on top of the yellow one, and the
+      // colour-swatch toolbar hangs around over the text you're commenting on.
+      const sel = window.getSelection();
+      if (sel) sel.removeAllRanges();
+      if (Highlights.hideToolbar) Highlights.hideToolbar();
       buildIndex(article);   // remap offsets onto the new text nodes
       paint();               // repaint against the rebuilt mapping
     }
@@ -875,7 +902,7 @@ const TTS = (function () {
         micState = "idle";
         updateMic();
         toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3200);
-        micHighlightId = null;
+        discardDictationHighlight();
         if (micResumeAfter) play();
         return;
       }
@@ -888,7 +915,7 @@ const TTS = (function () {
       micState = "idle";
       updateMic();
       toast(escapeForToast(err && err.message ? err.message : "Recording failed"), 3200);
-      micHighlightId = null;
+      discardDictationHighlight();
       if (micResumeAfter) play();
       return;
     }
@@ -899,12 +926,14 @@ const TTS = (function () {
       micState = "idle";
       updateMic();
       if (Voice.isRetryable && Voice.isRetryable(err)) {
-        // Hold the audio and try again when the connection is back.
+        // Hold the audio and try again when the connection is back. The
+        // highlight must SURVIVE — the comment is still coming for it.
         queueForRetry(blob, targetHighlight);
+        micHighlightId = null;
       } else {
         toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3600);
+        discardDictationHighlight();
       }
-      micHighlightId = null;
       if (micResumeAfter) play();
       return;
     }
@@ -923,6 +952,7 @@ const TTS = (function () {
 
     if (!text) {
       toast("Nothing recorded", 1800);
+      discardDictationHighlight();
     } else if (typeof Comments !== "undefined" && Comments.addComment) {
       Comments.addComment(highlightId, text, attachedDocId);
       const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
@@ -931,6 +961,7 @@ const TTS = (function () {
       toast("Saved: " + escapeForToast(preview), 2600);
     } else {
       toast("Could not save the comment", 2600);
+      discardDictationHighlight();
     }
 
     micHighlightId = null;
@@ -1037,12 +1068,36 @@ const TTS = (function () {
     setInterval(function () { if (pending.length) retryPending(); }, 60000);
   }
 
+  /*
+   * Remove the highlight a dictation created, for any path where no comment
+   * will ever be attached to it — cancelled, silent, or permanently failed.
+   * Leaving it behind marks up the document with a passage the user never
+   * actually annotated.
+   *
+   * NOT called when a failed transcription is queued for retry: that comment
+   * is still coming, so the highlight has to survive to receive it.
+   */
+  function discardDictationHighlight() {
+    const id = micHighlightId;
+    micHighlightId = null;
+    if (!id) return;
+    if (typeof Highlights === "undefined" || !Highlights.removeHighlight) return;
+    try {
+      Highlights.removeHighlight(id);
+      // removeHighlight unwraps the <mark>, which re-splits text nodes, so the
+      // offset->node mapping has to be rebuilt exactly as it is after adding one.
+      if (article) { buildIndex(article); paint(); }
+    } catch (err) {
+      console.error("[tts] could not remove dictation highlight:", err);
+    }
+  }
+
   function cancelDictation() {
     if (micState !== "recording") return;
     if (micHandle && typeof Voice !== "undefined") Voice.cancelRecording(micHandle);
     micHandle = null;
     micState = "idle";
-    micHighlightId = null;
+    discardDictationHighlight();
     updateMic();
     hideToast();
     toast("Discarded", 1400);
