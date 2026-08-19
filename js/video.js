@@ -181,6 +181,12 @@ const Video = (function () {
     initShortcuts();
     registerClock();
 
+    /*
+     * Notes taken before the transcript reached them, on a run that finished
+     * while this document was not on screen. Now it is, so they can be linked.
+     */
+    reconcileOnOpen();
+
     // Two player bars stacked on one screen is noise — the video owns playback
     // here, so hide the read-aloud one. Dictation still works; it's routed
     // through the clock seam, not through that bar.
@@ -1109,15 +1115,44 @@ const Video = (function () {
    * exactly one line's window — so we highlight that line and re-point the
    * comment at it, and it becomes indistinguishable from one made afterwards.
    */
+  /*
+   * Link up any notes left waiting by a run that finished elsewhere. Reads the
+   * transcript back out of the document, so it needs no state from that run.
+   */
+  function reconcileOnOpen() {
+    const docId = typeof Reader !== "undefined" ? Reader.getCurrentDocId() : null;
+    if (!docId || typeof Comments === "undefined" || !Comments.listTimed) return;
+    if (!Comments.listTimed(docId).length) return;
+    const segs = existingSegments(docId);
+    if (segs.length) reconcileTimedComments(docId, segs);
+  }
+
   function reconcileTimedComments(docId, segments) {
     if (typeof Comments === "undefined" || !Comments.listTimed) return;
     const timed = Comments.listTimed(docId);
     if (!timed.length || !segments.length) return;
 
-    // Re-render first so the lines actually exist in the DOM to highlight.
-    if (typeof Reader !== "undefined" && Reader.getCurrentDocId() === docId) {
-      indexSegments();
+    /*
+     * ONLY WHEN THIS DOCUMENT IS THE ONE ON SCREEN.
+     *
+     * Highlights.createHighlightFromRange serialises against the live DOM and
+     * saves to Reader.getCurrentDocId() — the document currently OPEN, not the
+     * one passed in here. Reconciling in the background therefore stamped a
+     * stray highlight onto whatever page happened to be open and left the
+     * comment pointing at a highlight that did not exist in its own document.
+     * A transcription takes minutes, so finishing while the reader has moved
+     * on is the normal case, not an edge one.
+     *
+     * The comments keep their timestamps, so nothing is lost by waiting: they
+     * are reconciled the next time the document is opened.
+     */
+    if (typeof Reader === "undefined" || Reader.getCurrentDocId() !== docId) {
+      if (typeof Gemini !== "undefined" && Gemini.log) {
+        Gemini.log("reconcile-deferred", { doc: docId, notes: timed.length });
+      }
+      return;
     }
+    indexSegments(true);
 
     let attached = 0;
     timed.forEach((c) => {
@@ -1137,7 +1172,7 @@ const Video = (function () {
 
     if (attached) {
       // Highlighting splits text nodes, so the offset index has to be rebuilt.
-      indexSegments();
+      indexSegments(true);
       if (typeof TTS !== "undefined" && TTS.toast) {
         TTS.toast(attached === 1
           ? "Linked 1 earlier note to its line"
