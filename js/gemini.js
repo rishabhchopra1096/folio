@@ -48,6 +48,72 @@ const Gemini = (function () {
   const LONG_VIDEO_MINUTES = 30;
 
   // ==========================================================================
+  // DIAGNOSTIC LOG
+  // ==========================================================================
+  /*
+   * A transcription can come back short for several different reasons, and
+   * from the outside they all look the same: fewer lines than expected. Was it
+   * the output-token cap? A repetition loop? The connection dropping? A safety
+   * block? A reload that killed the request? Guessing between those wasted
+   * real time, so every run now records what happened.
+   *
+   * Kept in localStorage so it SURVIVES A RELOAD — which matters most, because
+   * the interesting failures are exactly the ones that end the page session.
+   * Ring-buffered and size-capped so it can never grow into the storage budget
+   * the documents need.
+   *
+   * The API key is never written here. Nothing logs a request body.
+   */
+  const LOG_KEY = "folio_gemini_log";
+  const LOG_MAX_ENTRIES = 400;
+  const LOG_MAX_BYTES = 120000;
+
+  function log(event, fields) {
+    const entry = Object.assign({ t: new Date().toISOString(), ev: event }, fields || {});
+    try {
+      console.log("[gemini]", event, fields || "");
+    } catch { /* ignore */ }
+    try {
+      const all = getLog();
+      all.push(entry);
+      while (all.length > LOG_MAX_ENTRIES) all.shift();
+      let out = JSON.stringify(all);
+      while (out.length > LOG_MAX_BYTES && all.length > 1) {
+        all.shift();
+        out = JSON.stringify(all);
+      }
+      localStorage.setItem(LOG_KEY, out);
+    } catch { /* a full or unavailable store must never break transcription */ }
+    return entry;
+  }
+
+  function getLog() {
+    try {
+      const raw = localStorage.getItem(LOG_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch { return []; }
+  }
+
+  function clearLog() {
+    try { localStorage.removeItem(LOG_KEY); } catch { /* ignore */ }
+  }
+
+  /* The log as readable text, for pasting somewhere useful. */
+  function formatLog() {
+    const all = getLog();
+    if (!all.length) return "No transcription activity recorded yet.";
+    return all.map((e) => {
+      const { t, ev } = e;
+      const rest = Object.keys(e)
+        .filter((k) => k !== "t" && k !== "ev")
+        .map((k) => k + "=" + (typeof e[k] === "string" ? e[k] : JSON.stringify(e[k])))
+        .join("  ");
+      return `${t}  ${ev.padEnd(14)} ${rest}`;
+    }).join("\n");
+  }
+
+  // ==========================================================================
   // KEY STORAGE
   // ==========================================================================
 
@@ -155,6 +221,13 @@ const Gemini = (function () {
     const progress = opts.onProgress || function () {};
     const onSegments = opts.onSegments || null;
     const signal = opts.signal;
+    const runId = "r" + Date.now().toString(36);
+    const t0 = Date.now();
+    const since = () => Date.now() - t0;
+    const why = opts.reason || "start";     // start | retry | resume
+
+    log("request", { run: runId, video: parsed.videoId, model: MODEL, why: why,
+                     doc: opts.docId || null });
 
     const body = {
       contents: [{
@@ -195,12 +268,24 @@ const Gemini = (function () {
         }
       );
     } catch (err) {
-      if (err && err.name === "AbortError") throw err;
+      if (err && err.name === "AbortError") {
+        log("aborted", { run: runId, ms: since(), where: "connect" });
+        throw err;
+      }
+      log("neterror", { run: runId, ms: since(), msg: err.message || "unknown" });
       throw new Error("Network error contacting Gemini: " + (err.message || "unknown"));
     }
 
-    if (!res.ok) throw await describeError(res);
-    if (!res.body) throw new Error("Gemini returned no stream");
+    log("http", { run: runId, status: res.status, ok: res.ok, ms: since() });
+    if (!res.ok) {
+      const e = await describeError(res);
+      log("httperror", { run: runId, status: res.status, msg: e.message });
+      throw e;
+    }
+    if (!res.body) {
+      log("nostream", { run: runId, ms: since() });
+      throw new Error("Gemini returned no stream");
+    }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -209,6 +294,9 @@ const Gemini = (function () {
     const segments = [];
     let finishReason = null;
     let lastPush = 0;
+    let usage = null;
+    let lastLogged = 0;
+    let sawFirst = false;
     const loop = newLoopWatch();
     let loopedAt = -1;
 
@@ -227,7 +315,12 @@ const Gemini = (function () {
       try {
         chunk = await reader.read();
       } catch (err) {
-        if (err && err.name === "AbortError") throw err;
+        if (err && err.name === "AbortError") {
+          log("aborted", { run: runId, ms: since(), segments: segments.length });
+          throw err;
+        }
+        log("streambroke", { run: runId, ms: since(), segments: segments.length,
+                             msg: (err && err.message) || "unknown" });
         break;                     // treat a broken stream as end-of-data
       }
       if (chunk.done) break;
@@ -243,8 +336,16 @@ const Gemini = (function () {
         let evt;
         try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
+        if (evt.usageMetadata) usage = evt.usageMetadata;
+        if (evt.promptFeedback && evt.promptFeedback.blockReason) {
+          log("blocked", { run: runId, reason: evt.promptFeedback.blockReason });
+        }
         const cand = evt.candidates && evt.candidates[0];
-        if (cand && cand.finishReason) finishReason = cand.finishReason;
+        if (cand && cand.finishReason && cand.finishReason !== finishReason) {
+          finishReason = cand.finishReason;
+          log("finishreason", { run: runId, reason: finishReason, ms: since(),
+                                segments: segments.length });
+        }
         const parts = (cand && cand.content && cand.content.parts) || [];
         for (const p of parts) if (p.text) textBuf += p.text;
       }
@@ -258,6 +359,18 @@ const Gemini = (function () {
         if (!seg) continue;
         segments.push(seg);
 
+        if (!sawFirst) {
+          sawFirst = true;
+          log("firstline", { run: runId, ms: since(), at: seg.start });
+        }
+        // A heartbeat roughly every 15s: enough to see where a run stalls
+        // without filling the log on a long video.
+        if (Date.now() - lastLogged > 15000) {
+          lastLogged = Date.now();
+          log("progress", { run: runId, ms: since(), segments: segments.length,
+                            upto: Math.round(seg.start) });
+        }
+
         /*
          * Stop a model that has started repeating itself. Left alone it will
          * happily emit the same handful of sentences until the token budget
@@ -265,7 +378,13 @@ const Gemini = (function () {
          * own end this way, and burned several minutes of generation doing it.
          * Everything before the loop is good, so keep that and stop.
          */
-        if (loop.note(seg.text)) { loopedAt = loop.startedAt; break; }
+        if (loop.note(seg.text)) {
+          loopedAt = loop.startedAt;
+          log("loop", { run: runId, ms: since(), detectedAt: segments.length,
+                        keeping: loopedAt, discarding: segments.length - loopedAt,
+                        lastTime: Math.round(seg.start) });
+          break;
+        }
       }
       if (loopedAt >= 0) break;
       flush(false);
@@ -293,7 +412,18 @@ const Gemini = (function () {
 
     const out = dedupeSorted(segments);
     flush(true);
+
+    log("done", {
+      run: runId, ms: since(), finish: finishReason || "END_OF_STREAM",
+      raw: segments.length, kept: out.length,
+      lastTime: out.length ? Math.round(out[out.length - 1].start) : 0,
+      looped: loopedAt >= 0,
+      promptTokens: usage ? usage.promptTokenCount : null,
+      outputTokens: usage ? usage.candidatesTokenCount : null,
+      thoughtTokens: usage ? usage.thoughtsTokenCount : null,
+    });
     if (!out.length) {
+      log("empty", { run: runId, finish: finishReason });
       throw new Error("Gemini returned no transcript" +
                       (finishReason ? " (" + finishReason + ")" : ""));
     }
@@ -531,6 +661,10 @@ const Gemini = (function () {
     parseYouTube,
     transcribeYouTube,
     formatTime,
+    log,
+    getLog,
+    clearLog,
+    formatLog,
     LONG_VIDEO_MINUTES,
     // exported for tests
     _normalizeSegments: normalizeSegments,

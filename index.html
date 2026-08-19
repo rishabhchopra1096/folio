@@ -230,6 +230,19 @@
         </div>
       </div>
       <div class="setting-group">
+        <label>Video — transcription log</label>
+        <div class="voice-key-btns">
+          <button id="gemini-log-copy-btn" class="backup-btn">Copy log</button>
+          <button id="gemini-log-save-btn" class="backup-btn">Save</button>
+          <button id="gemini-log-clear-btn" class="backup-btn">Clear</button>
+        </div>
+        <div class="voice-key-status" id="gemini-log-status"></div>
+        <div class="backup-hint">
+          Records why each transcription ended — token limits, repetition loops,
+          dropped connections, reloads. Survives a reload. Contains no API key.
+        </div>
+      </div>
+      <div class="setting-group">
         <label>Voice — Groq API key</label>
         <input type="password" id="voice-key-input" class="voice-key-input" placeholder="gsk_..." autocomplete="off" />
         <div class="voice-key-btns">

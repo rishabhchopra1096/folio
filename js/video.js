@@ -395,6 +395,8 @@ const Video = (function () {
              'title="Drag to scrub" aria-label="Seek" />' +
       '<span class="fv-dur">0:00</span>' +
       '<button class="fv-speed" data-act="speed" title="Playback speed">1×</button>' +
+      '<span class="fv-busy" hidden><span class="fv-busy-dot"></span>' +
+        '<span class="fv-busy-text">Transcribing…</span></span>' +
       '<button class="fv-btn fv-retry" data-act="retry" title="Transcript incomplete — click to redo it">' +
         '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' +
       '</button>' +
@@ -523,7 +525,15 @@ const Video = (function () {
     if (!dur || !segments.length) return segments;
     const limit = dur + 5;          // a little slack for rounding
     const i = segments.findIndex((s) => s.start > limit);
-    return i === -1 ? segments : segments.slice(0, i);
+    if (i === -1) return segments;
+    if (typeof Gemini !== "undefined" && Gemini.log) {
+      Gemini.log("trimmed", {
+        duration: Math.round(dur), dropped: segments.length - i,
+        firstBadTime: Math.round(segments[i].start),
+        lastBadTime: Math.round(segments[segments.length - 1].start),
+      });
+    }
+    return segments.slice(0, i);
   }
 
   function cycleSpeed() {
@@ -559,7 +569,7 @@ const Video = (function () {
       "https://www.youtube.com/watch?v=" + holder.dataset.videoId);
     if (!parsed) return;
     notify("Redoing the transcript…");
-    runTranscription(docId, parsed).catch((err) => {
+    runTranscription(docId, parsed, "retry").catch((err) => {
       notify(err && err.message ? err.message : "Transcription failed");
     });
   }
@@ -578,10 +588,43 @@ const Video = (function () {
     return segTimes[segTimes.length - 1] >= dur - 120;
   }
 
+  /*
+   * Show that a transcription is actually running.
+   *
+   * On a first import the "Transcribing…" placeholder block is the sign. On a
+   * RETRY there is no placeholder — the old lines are still on screen — so
+   * pressing retry looked like it did nothing at all for minutes. This is a
+   * persistent indicator rather than a toast, because the run takes long
+   * enough that any toast is long gone while you sit there wondering.
+   */
+  let busy = false;
+
+  function setBusy(on, lines, upto) {
+    busy = !!on;
+    if (!barEl) return;
+    const el = barEl.querySelector(".fv-busy");
+    if (!el) return;
+    el.hidden = !busy;
+    if (busy) {
+      const txt = el.querySelector(".fv-busy-text");
+      if (txt) {
+        txt.textContent = lines
+          ? `Transcribing… ${lines} lines` +
+            (upto != null && typeof Gemini !== "undefined"
+              ? ` (${Gemini.formatTime(upto)})` : "")
+          : "Transcribing…";
+      }
+    }
+    updateRetryVisibility();
+  }
+
   function updateRetryVisibility() {
     if (!barEl) return;
     const b = barEl.querySelector(".fv-retry");
     if (!b) return;
+    // Same mechanism as the branch below — mixing `hidden` with `style.display`
+    // leaves the button stuck once both have been touched.
+    if (busy) { b.style.display = "none"; return; }
     const incomplete = !transcriptLooksComplete();
     b.style.display = incomplete ? "" : "none";
     b.title = segTimes.length
@@ -833,7 +876,7 @@ const Video = (function () {
     if (typeof SidebarUI !== "undefined") SidebarUI.renderPageTree();
     window.location.hash = `#/doc/${meta.id}`;
 
-    return runTranscription(meta.id, parsed);
+    return runTranscription(meta.id, parsed, "start");
   }
 
   function waitingBlock() {
@@ -849,8 +892,10 @@ const Video = (function () {
    * on "Transcribing…" forever — the fetch dies with the page and nothing
    * remembered that work was owed.
    */
-  async function runTranscription(docId, parsed) {
-    markPending(docId, parsed.url);
+  async function runTranscription(docId, parsed, reason) {
+    reason = reason || "start";
+    markPending(docId, parsed.url, reason);
+    setBusy(true);
     const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
 
     let lastCount = 0;
@@ -858,6 +903,8 @@ const Video = (function () {
       segments = trimToDuration(segments);
       if (!segments.length) return;
       lastCount = segments.length;
+      setBusy(true, segments.length, segments[segments.length - 1].start);
+      notePendingProgress(docId, segments.length);
       writeBlocks(docId, buildBlocks(parsed, segments, true));
     };
 
@@ -866,9 +913,12 @@ const Video = (function () {
       segments = await Gemini.transcribeYouTube(parsed.url, {
         onProgress: say,
         onSegments: write,
+        docId: docId,
+        reason: reason,
       });
     } catch (err) {
       clearPending(docId);
+      setBusy(false);
       // Keep whatever streamed in rather than replacing it with an error.
       if (lastCount === 0) {
         writeBlocks(docId, [
@@ -882,6 +932,7 @@ const Video = (function () {
     }
 
     clearPending(docId);
+    setBusy(false);
     segments = trimToDuration(segments);
     if (!segments.length) throw new Error("Transcript had no usable lines.");
     writeBlocks(docId, buildBlocks(parsed, segments, false));
@@ -969,11 +1020,35 @@ const Video = (function () {
 
   // ── Pending registry, so a reload can resume ──────────────────────────────
 
-  function markPending(docId, url) {
+  function markPending(docId, url, reason) {
     const st = FolioStore.getSettings();
     st.pendingTranscripts = st.pendingTranscripts || {};
-    st.pendingTranscripts[docId] = { url: url, at: new Date().toISOString() };
+    const prev = st.pendingTranscripts[docId] || {};
+    st.pendingTranscripts[docId] = {
+      url: url,
+      at: new Date().toISOString(),
+      reason: reason || "start",
+      // Counts only automatic resumes, so an interrupted run that can never
+      // finish gives up instead of restarting on every single page load.
+      resumes: reason === "resume" ? (prev.resumes || 0) + 1 : 0,
+      lines: 0,
+    };
     FolioStore.saveSettings(st);
+  }
+
+  /*
+   * Record how far a run got. Cheap enough at the flush rate the stream uses,
+   * and it means a reload can say "resuming, you had 210 lines" instead of
+   * silently starting over with no sign of what was lost.
+   */
+  function notePendingProgress(docId, lines) {
+    try {
+      const st = FolioStore.getSettings();
+      const rec = st.pendingTranscripts && st.pendingTranscripts[docId];
+      if (!rec || rec.lines === lines) return;
+      rec.lines = lines;
+      FolioStore.saveSettings(st);
+    } catch { /* never let bookkeeping break the stream */ }
   }
 
   function clearPending(docId) {
@@ -985,10 +1060,27 @@ const Video = (function () {
   }
 
   /*
-   * On load, restart anything that was interrupted. Called once from init, and
-   * only acts on documents that really are unfinished — a transcript that
-   * completed just before the reload is left alone.
+   * On load, restart anything that was interrupted.
+   *
+   * THE BUG THIS FIXES. The old test was "does the document have lines, and is
+   * it still showing the Transcribing… placeholder?" — and if it had lines
+   * without the placeholder, the pending record was thrown away. That is
+   * exactly the state a RETRY is in: the previous, incomplete transcript is
+   * still on screen, and no placeholder is ever inserted. So reloading during
+   * a retry silently abandoned it, and the work was lost with no trace.
+   *
+   * A pending record now means one thing only: a run started and did not
+   * finish. Every exit path from runTranscription clears it, success or
+   * failure, so a surviving record is genuinely an interruption.
+   *
+   * WHAT A RELOAD ACTUALLY COSTS. Lines already streamed in are saved as they
+   * arrive, so those survive. The HTTP request itself does not — it dies with
+   * the page, and the tokens already spent on it are gone. Resuming starts a
+   * fresh call. Gemini's clip offsets are too unreliable to restart from the
+   * middle, so there is no way to pay only for the remainder.
    */
+  const MAX_AUTO_RESUMES = 3;
+
   function resumePending() {
     if (typeof Gemini === "undefined" || !Gemini.hasKey()) return;
     const st = FolioStore.getSettings();
@@ -997,22 +1089,46 @@ const Video = (function () {
     if (!ids.length) return;
 
     ids.forEach((docId) => {
+      const rec = pend[docId] || {};
       const doc = FolioStore.getDocument(docId);
-      if (!doc) { clearPending(docId); return; }
-
-      const blocks = (doc.content && doc.content.blocks) || [];
-      const hasLines = blocks.some((b) => b.data && b.data.t != null);
-      const stillWaiting = blocks.some((b) => b.data && /Transcribing…/.test(b.data.text || ""));
-      if (hasLines && !stillWaiting) { clearPending(docId); return; }
-
-      const parsed = Gemini.parseYouTube(pend[docId].url);
-      if (!parsed) { clearPending(docId); return; }
-
-      if (typeof TTS !== "undefined" && TTS.toast) {
-        TTS.toast("Resuming an interrupted transcription…", 3000);
+      if (!doc) {
+        Gemini.log("resume-skip", { doc: docId, why: "document is gone" });
+        clearPending(docId);
+        return;
       }
-      runTranscription(docId, parsed).catch((err) => {
-        console.error("[video] resume failed:", err);
+
+      /*
+       * Give up rather than restarting forever. Something that has failed to
+       * finish three times running will not finish on the fourth, and each
+       * attempt costs real quota.
+       */
+      if ((rec.resumes || 0) >= MAX_AUTO_RESUMES) {
+        Gemini.log("resume-gaveup", { doc: docId, resumes: rec.resumes,
+                                      lines: rec.lines || 0 });
+        clearPending(docId);
+        notify("A transcript kept failing to finish — use ⟳ to try again.");
+        return;
+      }
+
+      const parsed = Gemini.parseYouTube(rec.url || "");
+      if (!parsed) {
+        Gemini.log("resume-skip", { doc: docId, why: "unreadable url" });
+        clearPending(docId);
+        return;
+      }
+
+      Gemini.log("resume", { doc: docId, video: parsed.videoId,
+                             wasDoing: rec.reason || "start",
+                             hadLines: rec.lines || 0,
+                             attempt: (rec.resumes || 0) + 1 });
+
+      const had = rec.lines ? ` — ${rec.lines} lines were saved` : "";
+      if (typeof TTS !== "undefined" && TTS.toast) {
+        TTS.toast("Resuming an interrupted transcription" + had + "…", 3600);
+      }
+      runTranscription(docId, parsed, "resume").catch((err) => {
+        Gemini.log("resume-failed", { doc: docId,
+                                      msg: (err && err.message) || "unknown" });
       });
     });
   }

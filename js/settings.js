@@ -120,6 +120,8 @@ const Settings = (function () {
     initVoiceKeyUI();
     // Video: Gemini API key handlers
     initGeminiKeyUI();
+    // Video: the transcription diagnostic log
+    initGeminiLog();
   }
 
   /*
@@ -207,6 +209,64 @@ const Settings = (function () {
       input.placeholder = "AIza...";
       setStatus(status, "Cleared", "muted");
     });
+  }
+
+  /*
+   * The transcription log: read it, keep it, or throw it away.
+   *
+   * A run that ends short leaves no trace on screen — you just get fewer lines
+   * than you expected. These give you the reason without a DevTools session,
+   * and because the log lives in localStorage it is still there after the
+   * reload that killed the run.
+   */
+  function initGeminiLog() {
+    const copyBtn = document.getElementById("gemini-log-copy-btn");
+    const saveBtn = document.getElementById("gemini-log-save-btn");
+    const clearBtn = document.getElementById("gemini-log-clear-btn");
+    const status = document.getElementById("gemini-log-status");
+    if (!copyBtn || typeof Gemini === "undefined" || !Gemini.formatLog) return;
+
+    const summary = () => {
+      const n = Gemini.getLog().length;
+      return n ? `${n} entries recorded` : "Nothing recorded yet";
+    };
+    setStatus(status, summary(), "muted");
+
+    copyBtn.addEventListener("click", async () => {
+      const text = Gemini.formatLog();
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus(status, "Copied — paste it anywhere", "ok");
+      } catch {
+        // Clipboard access can be refused; falling back to a download beats
+        // telling someone their diagnostics are unreachable.
+        downloadText(text, logFilename());
+        setStatus(status, "Clipboard blocked — saved as a file instead", "muted");
+      }
+    });
+
+    saveBtn.addEventListener("click", () => {
+      downloadText(Gemini.formatLog(), logFilename());
+      setStatus(status, "Saved", "ok");
+    });
+
+    clearBtn.addEventListener("click", () => {
+      Gemini.clearLog();
+      setStatus(status, "Cleared", "muted");
+    });
+  }
+
+  function logFilename() {
+    return "folio-transcription-log-" + new Date().toISOString().slice(0, 10) + ".txt";
+  }
+
+  function downloadText(text, filename) {
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function maskKey(k) {

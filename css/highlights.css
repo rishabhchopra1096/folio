@@ -947,6 +947,36 @@ mark.pulsing {
 /* The read-aloud bar is suppressed on a video document, which has its own. */
 #tts-bar.hidden-by-video { display: none !important; }
 
+/* Running-transcription indicator. Persistent, because a run takes minutes and
+   a toast is long gone while you sit there wondering whether ⟳ did anything. */
+.fv-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.fv-busy[hidden] { display: none; }
+.fv-busy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: fv-busy-pulse 1.2s ease-in-out infinite;
+}
+@keyframes fv-busy-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50%      { opacity: 1;    transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fv-busy-dot { animation: none; opacity: 0.8; }
+}
+
 /* The timestamp peeled off the front of a highlighted transcript line. */
 .comment-stamp {
   display: inline-block;
