@@ -154,9 +154,17 @@ ok("comments.js has one too", /function notice\(/.test(fs.readFileSync(REPO+"/js
 console.log("\n=== a failed or short transcript has a way back ===");
 ok("retry action exists", /case "retry":/.test(src));
 ok("retry re-runs the transcription in place", /function retryTranscription\(\)/.test(src));
-ok("it reuses runTranscription, so comments survive", /retryTranscription[\s\S]{0,600}runTranscription\(docId/.test(src));
+/* Retry now goes through a confirm and a note-preserving step first, so
+   runTranscription is no longer the next thing it does. What matters — that
+   the notes survive the rewrite — is covered in full by redo.selftest. */
+ok("it still ends in a transcription run", /runTranscription\(docId, parsed, "redo"\)/.test(src));
+ok("but pins the notes to their moments first", /pinNoteMoments\(docId\)/.test(src));
 ok("completeness is judged against the video duration", /getDuration/.test(src));
-ok("the button only shows when incomplete", /updateRetryVisibility/.test(src));
+/* It used to show only when the transcript looked incomplete, which hid it
+   exactly where it is most useful: a transcript from an older, worse engine is
+   COMPLETE. */
+ok("the button is managed", /updateRetryVisibility/.test(src));
+ok("and is offered on every video document", /Always offered/.test(src));
 ok("and refreshes as the bar syncs", /updateRetryVisibility\(\);/.test(src));
 ok("it checks for a key before spending one", /Gemini\.hasKey\(\)/.test(src));
 

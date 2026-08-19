@@ -176,7 +176,13 @@ console.log("\n=== resuming fills the gaps instead of starting over ===");
    could sit there transcribing indefinitely, making no progress across
    reloads. */
 ok("existing lines are read back out of the document", /function existingSegments/.test(vsrc));
-ok("a retry or resume keeps them", /reason === "start" \? \[\] : existingSegments\(docId\)/.test(vsrc));
+/* ONLY an interrupted run keeps them. A redo asked for by hand has to redo:
+   keeping the old lines would mark every window "already covered" and change
+   nothing, which is useless when the whole point is replacing a transcript
+   made by a worse engine. */
+ok("an interrupted run keeps them",
+   /const already = reason === "resume" \? existingSegments\(docId\) : \[\]/.test(vsrc));
+ok("a hand-asked redo does not", !/reason === "start" \? \[\] : existingSegments/.test(vsrc));
 ok("and hands them to the transcriber", /existing: already/.test(vsrc));
 ok("the transcriber seeds its results with them", /const all = existing\.slice\(\)/.test(gsrc));
 ok("windows already done are skipped", /function windowCovered/.test(gsrc));

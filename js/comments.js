@@ -529,6 +529,36 @@ const Comments = (function () {
       .filter((c) => typeof c.videoTime === "number" && !c.highlightId);
   }
 
+  /*
+   * Detach a note from its highlight and pin it to a MOMENT instead.
+   *
+   * Used before a transcript is regenerated: the new text will not contain the
+   * old highlight's range, so the anchor has to become the timestamp, which
+   * survives any amount of rewriting. reconcileTimedComments picks it up again
+   * once the new lines land.
+   *
+   * This must run BEFORE any highlight is deleted. Highlights.removeHighlight
+   * deletes the comments attached to a highlight along with it, so unanchoring
+   * first is what keeps the note rather than losing it with its anchor.
+   */
+  function unanchor(docId, commentId, videoTime) {
+    docId = docId || Reader.getCurrentDocId();
+    if (!docId || !commentId) return false;
+    const comments = FolioStore.getComments(docId);
+    const c = comments.find((x) => x.id === commentId);
+    if (!c) return false;
+
+    if (typeof videoTime === "number" && isFinite(videoTime)) c.videoTime = videoTime;
+    // With no moment to re-anchor by, detaching would strand it. Leave it.
+    if (typeof c.videoTime !== "number" || !isFinite(c.videoTime)) return false;
+
+    c.highlightId = null;
+    c.isGeneral = false;
+    c.updatedAt = new Date().toISOString();
+    FolioStore.saveComments(docId, comments);
+    return true;
+  }
+
   // Re-point a comment at a highlight once one exists for its moment.
   function attachToHighlight(docId, commentId, highlightId) {
     docId = docId || Reader.getCurrentDocId();
@@ -1074,5 +1104,6 @@ const Comments = (function () {
     addComment,
     listTimed,
     attachToHighlight,
+    unanchor,
   };
 })();

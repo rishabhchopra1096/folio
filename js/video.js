@@ -652,6 +652,81 @@ const Video = (function () {
    * with it. This re-runs it in place. Existing comments survive, and
    * timestamp-anchored ones get linked to lines when the new transcript lands.
    */
+  /*
+   * Pin every note to a MOMENT before the text it sits on is replaced.
+   *
+   * A note's anchor is a highlight, and a highlight is a range into the
+   * transcript's text. Regenerate the transcript and that range means nothing.
+   * The timestamp survives anything, so it becomes the anchor, and the note is
+   * re-linked to whichever new line covers that moment.
+   *
+   * Where a note has no timestamp — dictated back when only unattached notes
+   * recorded one — the moment is read off the line its highlight sits on.
+   */
+  function pinNoteMoments(docId) {
+    if (typeof Comments === "undefined" || !Comments.unanchor) return { pinned: 0, stranded: 0 };
+    let pinned = 0, stranded = 0;
+    (FolioStore.getComments(docId) || []).forEach((c) => {
+      if (!c.highlightId) return;                    // already a moment, or a general note
+      let t = typeof c.videoTime === "number" && isFinite(c.videoTime) ? c.videoTime : null;
+      if (t == null) {
+        const mark = document.querySelector(
+          'mark[data-highlight-id="' + String(c.highlightId).replace(/"/g, "") + '"]');
+        const line = mark && mark.closest ? mark.closest("[data-t]") : null;
+        if (line) t = parseFloat(line.dataset.t);
+      }
+      if (t == null || !isFinite(t)) { stranded++; return; }
+      if (Comments.unanchor(docId, c.id, t)) pinned++; else stranded++;
+    });
+    return { pinned: pinned, stranded: stranded };
+  }
+
+  /*
+   * Drop the highlights, which point into text that is about to be replaced.
+   *
+   * Deliberately NOT via Highlights.removeHighlight: that deletes the comments
+   * attached to a highlight along with it, which would destroy the very notes
+   * this whole path exists to preserve. Notes are unanchored first, then the
+   * highlight records are simply cleared.
+   */
+  function clearHighlightsForRedo(docId) {
+    try {
+      const n = (FolioStore.getHighlights(docId) || []).length;
+      FolioStore.saveHighlights(docId, []);
+      return n;
+    } catch { return 0; }
+  }
+
+  /* A small confirm, because a redo replaces text and costs money. */
+  function confirmRedo(message, onYes) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    const h = document.createElement("h3");
+    h.textContent = "Redo this transcript?";
+    const p = document.createElement("p");
+    p.textContent = message;
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = document.createElement("button");
+    cancel.className = "modal-btn";
+    cancel.textContent = "Cancel";
+    const go = document.createElement("button");
+    go.className = "modal-btn primary";
+    go.textContent = "Redo";
+    actions.appendChild(cancel);
+    actions.appendChild(go);
+    modal.appendChild(h); modal.appendChild(p); modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    cancel.addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    go.addEventListener("click", () => { close(); onYes(); });
+    go.focus();
+  }
+
   function retryTranscription() {
     const docId = typeof Reader !== "undefined" ? Reader.getCurrentDocId() : null;
     const holder = document.querySelector("#article .folio-video[data-video-id]");
@@ -663,9 +738,28 @@ const Video = (function () {
     const parsed = Gemini.parseYouTube(
       "https://www.youtube.com/watch?v=" + holder.dataset.videoId);
     if (!parsed) return;
-    notify("Redoing the transcript…");
-    runTranscription(docId, parsed, "retry").catch((err) => {
-      notify(err && err.message ? err.message : "Transcription failed");
+    const notes = (FolioStore.getComments(docId) || []).length;
+    const lines = segTimes.length;
+    const msg = (lines ? "The current transcript is replaced. " : "") +
+      (notes
+        ? notes + (notes === 1 ? " note is kept" : " notes are kept") +
+          " and re-linked by timestamp. Highlights on the old text are cleared."
+        : "No notes on this page yet.");
+
+    confirmRedo(msg, () => {
+      const { pinned, stranded } = pinNoteMoments(docId);
+      clearHighlightsForRedo(docId);
+      if (typeof Gemini !== "undefined" && Gemini.log) {
+        Gemini.log("redo", { doc: docId, notes: notes, pinned: pinned, stranded: stranded });
+      }
+      if (stranded) {
+        notify(stranded + (stranded === 1 ? " note has" : " notes have") +
+               " no timestamp and will show as unlinked.");
+      }
+      notify("Redoing the transcript…");
+      runTranscription(docId, parsed, "redo").catch((err) => {
+        notify(err && err.message ? err.message : "Transcription failed");
+      });
     });
   }
 
@@ -720,11 +814,18 @@ const Video = (function () {
     // Same mechanism as the branch below — mixing `hidden` with `style.display`
     // leaves the button stuck once both have been touched.
     if (busy) { b.style.display = "none"; return; }
-    const incomplete = !transcriptLooksComplete();
-    b.style.display = incomplete ? "" : "none";
-    b.title = segTimes.length
-      ? "Transcript stops early — click to redo it"
-      : "No transcript yet — click to generate it";
+    /*
+     * Always offered. It used to appear only when the transcript looked
+     * incomplete, which hid it exactly where it is most wanted: a transcript
+     * produced by an older, worse engine is COMPLETE, and there was no way to
+     * ask for it again without deleting the document and losing the notes.
+     */
+    b.style.display = "";
+    b.title = !segTimes.length
+      ? "No transcript yet — click to generate it"
+      : transcriptLooksComplete()
+        ? "Redo this transcript with the current engine — your notes are kept"
+        : "Transcript stops early — click to redo it";
   }
 
   function openOnYouTube() {
@@ -1024,8 +1125,13 @@ const Video = (function () {
     const lease = setInterval(() => refreshLease(docId), LEASE_REFRESH_MS);
     setBusy(true);
     const knownDuration = storedDuration(docId) || await awaitDuration(8000);
-    // Resuming or retrying keeps what is already there and fills the gaps.
-    const already = reason === "start" ? [] : existingSegments(docId);
+    /*
+     * Only an interrupted run keeps what is there and fills the gaps. A redo
+     * asked for by hand must actually redo: the whole point is to replace a
+     * transcript made by a worse engine, and keeping the old lines would skip
+     * every window as "already covered" and change nothing at all.
+     */
+    const already = reason === "resume" ? existingSegments(docId) : [];
     const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
 
     let lastCount = 0;
