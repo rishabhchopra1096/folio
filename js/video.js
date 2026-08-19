@@ -76,6 +76,14 @@ const Video = (function () {
    */
   const RESTART_GRACE_SEC = 1.5;
 
+  /*
+   * How far past the last transcribed line counts as "outside the transcript".
+   * Beyond this the arrows seek by time rather than snapping back to the last
+   * line, and a comment anchors to its moment rather than to that line.
+   * Comfortably longer than one segment so a normal gap doesn't trip it.
+   */
+  const OUTSIDE_GRACE_SEC = 30;
+
   // ==========================================================================
   // IFRAME API LOADING
   // ==========================================================================
@@ -225,15 +233,35 @@ const Video = (function () {
     if (!segTimes.length) { nudge(dir < 0 ? -10 : 10); return; }
 
     let i = segmentAt(t);
-    if (i < 0) i = 0;
+
+    /*
+     * OUTSIDE the transcript, seek by time instead of by line.
+     *
+     * A transcript can end before the video does — it gets truncated at the
+     * output-token cap on a long video, or it is still streaming. Clamping to
+     * the last line in that situation means pressing FORWARD seeks you
+     * BACKWARD to wherever the transcript stopped, which traps you there and
+     * makes the rest of the video unreachable. Falling back to a plain ±10s
+     * nudge keeps you moving.
+     */
+    const pastEnd = i >= segTimes.length - 1 &&
+                    t > segTimes[segTimes.length - 1] + OUTSIDE_GRACE_SEC;
+    if (pastEnd) { nudge(dir < 0 ? -10 : 10); return; }
+
+    if (i < 0) {
+      // Before the first line — forward joins the transcript, back nudges.
+      if (dir < 0) { nudge(-10); return; }
+      i = -1;
+    }
 
     if (dir < 0) {
       // Far enough into the line to mean "restart it"; otherwise step back.
       i = (t - segTimes[i] > RESTART_GRACE_SEC) ? i : i - 1;
+      if (i < 0) { nudge(-10); return; }
     } else {
       i = i + 1;
+      if (i > segTimes.length - 1) { nudge(10); return; }
     }
-    i = Math.max(0, Math.min(segTimes.length - 1, i));
 
     try { player.seekTo(segTimes[i], true); } catch { /* ignore */ }
     setActive(i);
@@ -552,7 +580,23 @@ const Video = (function () {
       },
       pause: () => { try { player && player.pauseVideo(); } catch { /* ignore */ } },
       resume: () => { try { player && player.playVideo(); } catch { /* ignore */ } },
-      currentBlockEl: () => (activeIdx >= 0 ? segEls[activeIdx] : null),
+      currentBlockEl: () => {
+        if (activeIdx < 0) return null;
+        /*
+         * Past the end of an incomplete transcript there is no correct line —
+         * attaching to the last one would file the comment against text from
+         * minutes earlier. Returning null makes it anchor to the timestamp
+         * instead, so it can be linked properly once the transcript is
+         * finished.
+         */
+        let t = null;
+        try { t = player && player.getCurrentTime(); } catch { /* ignore */ }
+        if (t != null && segTimes.length &&
+            t > segTimes[segTimes.length - 1] + OUTSIDE_GRACE_SEC) {
+          return null;
+        }
+        return segEls[activeIdx] || null;
+      },
       // Where we are in the video, so a comment taken before the transcript
       // exists can still be anchored to a moment and matched up later.
       currentTime: () => {
