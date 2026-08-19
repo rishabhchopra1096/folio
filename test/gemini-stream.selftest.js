@@ -97,9 +97,35 @@ ok("asks for what is SHOWN", /what is SHOWN/.test(src));
 /* The opposite instruction now, deliberately. Asking the model to read
    on-screen text exactly is what produced the invented menus and dialogue —
    it cannot actually read them at one frame per second, so it confabulated. */
-ok("tells it to DESCRIBE what is shown, not transcribe it",
-   /DESCRIBE them briefly in your own words/.test(src));
-ok("and to leave out text it cannot read", /never write out/.test(src));
+/* The prompt now asks for a NARRATIVE you can read instead of watching, not a
+   caption track. Each instruction below came from a measured failure. */
+ok("asks for a document that replaces the video", /REPLACES this video/.test(src));
+ok("forbids summarising", /DO NOT SUMMARISE/.test(src));
+ok("gives a density target, because every model condensed without one",
+   /200 to 300 words for every minute/.test(src));
+ok("asks for paragraphs, not captions", /three to six sentences/.test(src));
+ok("wants what was SAID and what was SHOWN woven together",
+   /everything the narrator SAYS/.test(src) && /everything that HAPPENS ON SCREEN/.test(src));
+ok("bans unresolved references", /Never write 'this guy'/.test(src));
+ok("describes only what is genuinely visible",
+   /Describe only what you can genuinely see/.test(src));
+ok("and says what is happening rather than guessing at unreadable text",
+   /instead of guessing at the words/.test(src));
+
+console.log("\n=== the settings that make the narrative possible ===");
+/* Measured on one 5-minute window, words written per minute of video, against
+   speech that runs at 146: every flash model summarises (76-156) whatever the
+   prompt; only pro at HIGH media resolution reaches 262. */
+ok("defaults to a pro model", /DEFAULT_MODEL = "gemini-3\.1-pro-preview"/.test(src));
+ok("but the model can be overridden — it costs real money",
+   /function setModel/.test(src) && /MODEL_STORAGE/.test(src));
+ok("asks for HIGH media resolution", /MEDIA_RESOLUTION_HIGH/.test(src));
+ok("and actually sends it", /mediaResolution: MEDIA_RESOLUTION/.test(src));
+ok("windows are the size that was measured", /CHUNK_SEC = 300/.test(src));
+ok("windows run concurrently so the wait stays reasonable",
+   /CONCURRENCY = 2/.test(src) && /Promise\.all/.test(src));
+ok("out-of-order completion is safe because results are merged and sorted",
+   /dedupeSorted\(all\.concat\(partial\)\)/.test(src));
 ok("specifies one object per line", /ONE JSON object per line/.test(src));
 ok("no longer says 'spoken audio' only", !/Transcribe the spoken audio of this video/.test(src));
 ok("thinking is NOT disabled — measured slower and truncating without it",

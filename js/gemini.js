@@ -41,7 +41,41 @@ const Gemini = (function () {
    * the request. Pinning also means a new model release can't quietly change
    * either the bill or the output format this code parses.
    */
-  const MODEL = "gemini-2.5-flash";
+  const MODEL_STORAGE = "folio_gemini_model";
+  const DEFAULT_MODEL = "gemini-3.1-pro-preview";
+
+  /*
+   * WHY PRO, AND WHY IT IS WORTH THE MONEY
+   * ======================================
+   * The point of this transcript is that you can READ it instead of watching.
+   * Measured on the same 5-minute window of a real video, words written per
+   * minute of video (the speech itself runs at about 146):
+   *
+   *   2.5-flash, old prompt, default detail    105   <- what shipped, unusable
+   *   3.5-flash, dense prompt, HIGH detail      76
+   *   3.7-flash, dense prompt, HIGH detail      94
+   *   2.5-flash, dense prompt, HIGH detail     156
+   *   3.1-pro,   dense prompt, default detail  164
+   *   3.1-pro,   dense prompt, HIGH detail     262   <- this
+   *
+   * Every flash model summarises no matter how it is asked. Only pro writes an
+   * account dense enough to stand in for watching, and only at HIGH media
+   * resolution — the same model at default detail loses a third of it and
+   * leaves 45-second stretches undescribed.
+   *
+   * Overridable, because it is roughly three times the cost of flash and that
+   * is the user's money to spend.
+   */
+  function getModel() {
+    try { return localStorage.getItem(MODEL_STORAGE) || DEFAULT_MODEL; }
+    catch { return DEFAULT_MODEL; }
+  }
+  function setModel(m) {
+    try {
+      if (!m) localStorage.removeItem(MODEL_STORAGE);
+      else localStorage.setItem(MODEL_STORAGE, String(m).trim());
+    } catch { /* ignore */ }
+  }
 
   // Video length past which we warn before spending the user's quota. Roughly
   // where a request starts taking minutes rather than seconds.
@@ -243,10 +277,22 @@ const Gemini = (function () {
    * returned 600.0-875.0, monotonic and in range. That instruction is load
    * bearing; do not simplify it away.
    */
-  const CHUNK_SEC = 600;          // 10 minutes: proven, and ~4 requests/hour of video
+  const CHUNK_SEC = 300;          // 5 minutes — the window every measurement above used
   const MAX_WINDOWS = 24;         // only used when the duration is unknown
   const CHUNK_TEMPERATURE = 0.4;
-  const CHUNK_MAX_TOKENS = 16384; // ample for 10 minutes; caps the cost of a bad window
+  const CHUNK_MAX_TOKENS = 16384; // ample for 5 minutes; caps the cost of a bad window
+
+  /*
+   * How much detail the model gets per frame. This is the single biggest lever
+   * on whether it can describe what is on screen, and it was never set before:
+   * at default detail the same model and prompt drop from 262 words per minute
+   * to 164, and go blind for 45 seconds at a stretch.
+   */
+  const MEDIA_RESOLUTION = "MEDIA_RESOLUTION_HIGH";
+
+  // Windows run concurrently. HIGH detail on pro costs about 75s per window,
+  // so a 36-minute video would take nine minutes one at a time.
+  const CONCURRENCY = 2;
 
   function planWindows(duration) {
     if (!(duration > 0)) return null;         // unknown — walk until it runs dry
@@ -274,57 +320,107 @@ const Gemini = (function () {
     const duration = Number(opts.durationSec) > 0 ? Number(opts.durationSec) : 0;
 
     const planned = planWindows(duration);
-    log("request", { run: runId, video: parsed.videoId, model: MODEL,
+    log("request", { run: runId, video: parsed.videoId, model: getModel(),
                      why: opts.reason || "start", doc: opts.docId || null,
                      duration: Math.round(duration) || null,
                      chunks: planned ? planned.length : "unknown" });
 
     const all = [];
-    let emptyRun = 0;
     let firstError = null;
+    let doneWindows = 0;
 
-    for (let i = 0; ; i++) {
-      const w = planned
-        ? planned[i]
-        : { from: i * CHUNK_SEC, to: (i + 1) * CHUNK_SEC };
-      if (!w) break;
-      if (!planned && i >= MAX_WINDOWS) break;
+    const push = (segs) => {
+      all.push.apply(all, segs);
+      if (onSegments) onSegments(dedupeSorted(all.slice()));
+    };
 
-      progress(`Transcribing ${formatTime(w.from)}–${formatTime(w.to)}…`);
+    const RETRY_DELAYS = [4000, 12000, 30000];
 
-      let segs;
+    const runWindow = async (w, i, attempt) => {
+      attempt = attempt || 0;
       try {
-        segs = await transcribeWindow(parsed.url, key, w, {
+        const segs = await transcribeWindow(parsed.url, key, w, {
           signal: signal,
           runId: runId,
           index: i,
           progress: progress,
           // Show the transcript growing while a window is still streaming.
+          // Merged and sorted, so windows finishing out of order is fine.
           onPartial: (partial) => {
             if (onSegments) onSegments(dedupeSorted(all.concat(partial)));
           },
         });
+        push(segs);
+        return segs.length;
       } catch (err) {
         if (err && err.name === "AbortError") throw err;
+
+        // Busy or rate-limited: wait and come back to it rather than leaving a
+        // hole in the middle of the document.
+        if (err && err.retryable && attempt < RETRY_DELAYS.length) {
+          const wait = RETRY_DELAYS[attempt];
+          log("chunkretry", { run: runId, chunk: i, from: w.from, to: w.to,
+                              attempt: attempt + 1, waitMs: wait,
+                              msg: (err && err.message) || "unknown" });
+          progress(`${formatTime(w.from)}–${formatTime(w.to)}: busy, retrying…`);
+          await new Promise((r) => setTimeout(r, wait));
+          return runWindow(w, i, attempt + 1);
+        }
+
         /*
-         * One bad window must not cost the rest of the video. Note it, carry
-         * on, and let the retry button deal with the gap — losing ten minutes
-         * beats losing an hour.
+         * Out of retries. One bad window must not cost the rest of the video —
+         * note it, carry on, and let the retry button deal with the gap.
          */
         log("chunkfailed", { run: runId, chunk: i, from: w.from, to: w.to,
+                             attempts: attempt + 1,
                              msg: (err && err.message) || "unknown" });
         if (!firstError) firstError = err;
-        continue;
+        return 0;
       }
+    };
 
-      if (segs.length) {
-        emptyRun = 0;
-        all.push.apply(all, segs);
-        if (onSegments) onSegments(dedupeSorted(all.slice()));
-      } else {
-        emptyRun++;
-        // With no duration to plan against, two silent windows means the end.
-        if (!planned && emptyRun >= 2) break;
+    /*
+     * Counting lives here rather than inside runWindow, because runWindow
+     * recurses on a retry — a `finally` in there would count the same window
+     * several times and run the progress total past its own end.
+     */
+    const finishWindow = async (w, i) => {
+      const n = await runWindow(w, i);
+      doneWindows++;
+      if (planned) progress(`Transcribed ${doneWindows} of ${planned.length} parts…`);
+      return n;
+    };
+
+    if (planned) {
+      /*
+       * Windows run a few at a time. At HIGH detail a five-minute window takes
+       * about 75 seconds, so a 36-minute video would be a nine-minute wait one
+       * at a time. Results are merged and sorted, so out-of-order completion
+       * does not matter.
+       */
+      let next = 0;
+      const worker = async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= planned.length) return;
+          await finishWindow(planned[i], i);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, planned.length) }, worker));
+    } else {
+      /*
+       * Length unknown, so walk forward one window at a time and stop when two
+       * in a row come back silent. Cannot be parallelised — where the end is
+       * only becomes clear by arriving at it.
+       */
+      let emptyRun = 0;
+      for (let i = 0; i < MAX_WINDOWS; i++) {
+        const w = { from: i * CHUNK_SEC, to: (i + 1) * CHUNK_SEC };
+        progress(`Transcribing ${formatTime(w.from)}–${formatTime(w.to)}…`);
+        const n = await finishWindow(w, i);
+        if (n) emptyRun = 0;
+        else if (++emptyRun >= 2) break;
       }
     }
 
@@ -360,12 +456,13 @@ const Gemini = (function () {
       generationConfig: {
         temperature: CHUNK_TEMPERATURE,
         maxOutputTokens: CHUNK_MAX_TOKENS,
+        mediaResolution: MEDIA_RESOLUTION,
       },
     };
 
     let res;
     try {
-      res = await fetch(`${API_BASE}/${MODEL}:streamGenerateContent?alt=sse`, {
+      res = await fetch(`${API_BASE}/${getModel()}:streamGenerateContent?alt=sse`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify(body),
@@ -647,7 +744,22 @@ const Gemini = (function () {
     if (res.status === 400 && /API key/i.test(detail)) {
       return new Error("Gemini rejected the key. Check it in Settings → Video.");
     }
-    if (res.status === 429) return new Error("Gemini rate limit reached. Try again shortly.");
+    if (res.status === 429) {
+      const e = new Error("Gemini rate limit reached. Try again shortly.");
+      e.retryable = true;
+      return e;
+    }
+    if (res.status >= 500) {
+      /*
+       * The pro model is a preview and genuinely runs out of capacity — a live
+       * run lost a whole window to a 503 "high demand". Skipping it leaves a
+       * five-minute hole in the middle of the document, which is exactly the
+       * kind of silent gap this whole exercise is meant to eliminate.
+       */
+      const e = new Error("Gemini is busy (" + res.status + "). " + (detail || ""));
+      e.retryable = true;
+      return e;
+    }
     if (res.status === 403) return new Error("Gemini refused the request. " + detail);
     return new Error(`Gemini error ${res.status}${detail ? ": " + detail : ""}`);
   }
@@ -689,15 +801,31 @@ const Gemini = (function () {
   /*
    * The prompt for ONE window.
    *
-   * The offset sentence is load bearing — see the note above transcribeYouTube.
-   * So is the instruction to DESCRIBE what is on screen rather than transcribe
-   * it word for word: the fabricated stretches were overwhelmingly '[shows]'
-   * lines inventing menu and dialogue text the model could not actually read
-   * at one frame per second.
+   * It asks for a NARRATIVE, not a transcript. The goal is a document you can
+   * read instead of watching, so each line is a paragraph weaving what was
+   * said together with what was on screen.
+   *
+   * Three instructions here are load bearing, each from a measured failure:
+   *
+   *   "this clip begins at N seconds"  — without it a 600s clip came back with
+   *   every timestamp between 0 and 56, and nothing could be anchored.
+   *
+   *   "DO NOT SUMMARISE" plus a words-per-minute target — asked merely for "a
+   *   short paragraph" per stretch, every model condensed. Output ran at 56 to
+   *   105 words per minute against speech that runs at 146, so the reader was
+   *   getting less than was actually said, never mind what was shown.
+   *
+   *   "describe only what you can genuinely see" — the fabricated stretches
+   *   were overwhelmingly invented on-screen text. At one frame per second the
+   *   model cannot read a dialogue box reliably, and asked to do it anyway, it
+   *   made it up.
    */
   function promptFor(from, to) {
     return [
-      "Transcribe this clip for someone who will read it instead of watching it.",
+      "You are writing the document that REPLACES this video.",
+      "The reader will never watch it. They cannot see the screen or hear the",
+      "audio. Everything they understand, they understand because you wrote it",
+      "down.",
       "",
       "Output ONE JSON object per line. No array brackets, no code fences, no",
       "commentary. Each line must be exactly:",
@@ -708,25 +836,28 @@ const Gemini = (function () {
       `and ends at ${Math.round(to)} seconds.`,
       "- `start` is SECONDS FROM THE START OF THE WHOLE VIDEO, so every start",
       `  must be between ${Math.round(from)} and ${Math.round(to)}.`,
-      "- Cover the clip from beginning to end, in order, with increasing start.",
+      "- Emit a line roughly every 15 seconds of video, in order.",
       "",
-      "What to include:",
-      "- Everything spoken, as clean readable prose.",
-      "- What is SHOWN but not said, when it genuinely adds meaning: a menu",
-      "  opened, an action taken, a result that appears. Prefix those with",
-      "  '[shows] ' and DESCRIBE them briefly in your own words.",
-      "- Do NOT transcribe on-screen text word for word, and never write out",
-      "  text you cannot clearly read. If you are unsure what it says, say what",
-      "  is happening instead, or leave it out.",
+      "DO NOT SUMMARISE. This is the single most important instruction.",
+      "A summary is useless to the reader — they need to know what actually",
+      "happened, in the order it happened, in enough detail to picture it.",
+      "Expect to write roughly 200 to 300 words for every minute of video. If",
+      "you are writing much less than that, you are leaving things out.",
       "",
-      "Rules:",
-      "- Split at natural sentence or thought boundaries, never fixed intervals.",
-      "- Roughly one to three sentences per line.",
-      "- Punctuate and capitalise properly. Drop filler words and stutters.",
+      "Each line is one paragraph of flowing narrative, three to six sentences,",
+      "weaving together in the order they occur:",
+      "- everything the narrator SAYS, in their own voice, cleaned up but",
+      "  complete — their reasoning, asides and jokes, not just conclusions;",
+      "- everything that HAPPENS ON SCREEN — where we are, what is chosen, what",
+      "  changes, what results, and any name or number that carries meaning.",
+      "",
+      "It must read as a continuous account, not as captions:",
+      "- Name things. Never write 'this guy', 'here', or 'that one'.",
+      "- If the narrator refers to something visible, say what it is.",
+      "- Describe only what you can genuinely see. If text is too small or too",
+      "  fast to read, say what is happening instead of guessing at the words.",
+      "- Never repeat a sentence you have already written.",
       "- Never put a timestamp inside the text field.",
-      "- Never repeat a line you have already emitted. If nothing new is",
-      "  happening, emit nothing rather than restating what you just said.",
-      "- Emit nothing at all if the clip has no speech and nothing notable shown.",
     ].join("\n");
   }
 
@@ -807,6 +938,9 @@ const Gemini = (function () {
     getKey, setKey, clearKey, hasKey,
     parseYouTube,
     transcribeYouTube,
+    getModel,
+    setModel,
+    DEFAULT_MODEL,
     formatTime,
     log,
     getLog,
