@@ -124,7 +124,14 @@ ok("it has a visible thumb", /fv-seek::-webkit-slider-thumb/.test(cssSrc));
 
 console.log("\n=== the player is no longer confined to the prose column ===");
 ok("video layout drops the text max-width", /max-width: none !important/.test(cssSrc));
-ok("player is larger than before", /--video-max-h: 62vh/.test(cssSrc));
+/* This used to pin 62vh as "bigger than before". It was measured against the
+   wrong thing: at 62vh the player plus its control bar left the transcript
+   about 180px, so the line being spoken was routinely off-screen. The real
+   constraint is that BOTH halves are usable, which video-layout.selftest
+   checks in full. */
+const maxH = parseFloat((cssSrc.match(/--video-max-h: (\d+)vh/) || [])[1]);
+ok("the player is still the larger half", maxH >= 40, maxH + "vh");
+ok("but not so tall that the transcript is unusable", maxH <= 46, maxH + "vh");
 ok("still capped so it can't outgrow the window", /1400px/.test(cssSrc));
 ok("transcript keeps a readable measure", /width: min\(100%, 78ch\)/.test(cssSrc));
 

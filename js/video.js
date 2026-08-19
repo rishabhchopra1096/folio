@@ -356,6 +356,12 @@ const Video = (function () {
     holder.appendChild(shield);
 
     article.dataset.videoLayout = "1";
+    /*
+     * Lets the stylesheet drop #article-wrap's padding, which is 24px top and
+     * 120px bottom. Left on, the page was 96px taller than the window and the
+     * transcript was clipped at both ends.
+     */
+    document.body.dataset.videoDoc = "1";
     transcriptEl = scroller;
   }
 
@@ -375,6 +381,7 @@ const Video = (function () {
     if (ttsBar) ttsBar.classList.remove("hidden-by-video");
     const art = document.getElementById("article");
     if (art) delete art.dataset.videoLayout;
+    delete document.body.dataset.videoDoc;
     if (typeof TTS !== "undefined" && TTS.setExternalClock) TTS.setExternalClock(null);
   }
 
@@ -832,17 +839,35 @@ const Video = (function () {
    * player out from under the viewport and clipped it; the transcript is its
    * own scroll container precisely so the video can stay put.
    */
+  /*
+   * Keep the line being spoken comfortably inside the reading area.
+   *
+   * The old band was 20%-80% of the box, which is fine in a tall box and
+   * useless in a short one: the transcript was about 180px, so "inside the
+   * band" could still mean half the paragraph was cut off, and a paragraph
+   * taller than the band never satisfied it at all. Now a line is only left
+   * alone if it fits ENTIRELY in the comfortable zone, and a paragraph too
+   * tall to fit is aligned to its top so you can at least read its beginning.
+   */
   function keepInView(el) {
     const box = transcriptEl;
     if (!box) return;
     const br = box.getBoundingClientRect();
     const er = el.getBoundingClientRect();
-    const top = er.top - br.top + box.scrollTop;
     const band = br.height;
-    // Only move once the line has drifted out of the middle of the box.
-    if (er.top < br.top + band * 0.2 || er.bottom > br.top + band * 0.8) {
-      box.scrollTo({ top: Math.max(0, top - band * 0.35), behavior: "smooth" });
-    }
+    const topEdge = br.top + band * 0.15;
+    const bottomEdge = br.top + band * 0.85;
+
+    const fits = er.height <= band * 0.7;
+    const comfortable = fits
+      ? er.top >= topEdge && er.bottom <= bottomEdge
+      : er.top >= topEdge && er.top <= br.top + band * 0.4;
+    if (comfortable) return;
+
+    const top = er.top - br.top + box.scrollTop;
+    // Tall paragraphs sit near the top; short ones are centred.
+    const offset = fits ? (band - er.height) / 2 : band * 0.18;
+    box.scrollTo({ top: Math.max(0, top - offset), behavior: "smooth" });
   }
 
   // ==========================================================================
