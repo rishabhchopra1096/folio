@@ -321,6 +321,32 @@ const csrc = fs.readFileSync(REPO + "/css/highlights.css", "utf8");
 ok("the indicator is styled", /\.fv-busy \{/.test(csrc));
 ok("and respects reduced motion", /prefers-reduced-motion[\s\S]{0,120}fv-busy-dot/.test(csrc));
 
+console.log("\n=== the model is visible and switchable ===");
+/* It was overridable only by hand-setting a localStorage key, which in
+   practice means not overridable at all — and there was no way to see which
+   model a transcript had used without reading the diagnostic log. */
+["index.html", "index-electron.html"].forEach((f) => {
+  const h = fs.readFileSync(REPO + "/" + f, "utf8");
+  ok(f + " offers both models",
+     /data-model="gemini-3\.7-flash"/.test(h) && /data-model="gemini-3\.1-pro-preview"/.test(h));
+  ok(f + " shows what each costs", /\$0\.37 per 30 minutes/.test(h));
+  /* settings.js wires EVERY .theme-btn to applyTheme(btn.dataset.t). Borrowing
+     that class for these buttons made picking a model call applyTheme
+     (undefined) and change the theme. */
+  ok(f + " does not reuse the theme-button class", !/theme-btn model-btn/.test(h));
+});
+const ssrc2 = fs.readFileSync(REPO + "/js/settings.js", "utf8");
+ok("the control is wired up", /initGeminiModel\(\);/.test(ssrc2));
+ok("it marks the model in use", /classList\.toggle\("active", b\.dataset\.model === current\)/.test(ssrc2));
+ok("choosing the default clears the override rather than pinning it",
+   /b\.dataset\.model === Gemini\.DEFAULT_MODEL \? "" : b\.dataset\.model/.test(ssrc2));
+ok("a hand-set custom model is still reported honestly", /\(custom\)/.test(ssrc2));
+ok("gemini exposes what the control needs",
+   /DEFAULT_MODEL,/.test(gsrc) && /getModel,/.test(gsrc) && /setModel,/.test(gsrc));
+const csrc2 = fs.readFileSync(REPO + "/css/components.css", "utf8");
+ok("the buttons are styled on their own class", /\.model-btn \{/.test(csrc2));
+ok("and why they are separate is recorded", /would have made picking a model change the theme/.test(csrc2));
+
 console.log("\n=== the log is reachable without DevTools ===");
 ["index.html", "index-electron.html"].forEach((f) => {
   const h2 = fs.readFileSync(REPO + "/" + f, "utf8");

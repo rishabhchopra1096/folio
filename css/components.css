@@ -128,6 +128,30 @@
   font-weight: 500;
 }
 
+/* Transcription model choice. A separate class from .theme-btn deliberately:
+   settings.js wires every .theme-btn to applyTheme(), so borrowing that class
+   for styling would have made picking a model change the theme. */
+.model-btns { display: flex; gap: 8px; }
+.model-btn {
+  flex: 1;
+  padding: 6px 4px;
+  border-radius: 6px;
+  border: 1.5px solid var(--line);
+  background: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--font-ui);
+  color: var(--ink-soft);
+  text-align: center;
+  transition: border-color 0.2s, color 0.2s;
+}
+.model-btn:hover { border-color: var(--accent); color: var(--accent); }
+.model-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
 /* Backup buttons (Export / Import) in the settings panel */
 .backup-btns { display: flex; gap: 8px; }
 .backup-btn {

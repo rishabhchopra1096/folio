@@ -120,7 +120,8 @@ const Settings = (function () {
     initVoiceKeyUI();
     // Video: Gemini API key handlers
     initGeminiKeyUI();
-    // Video: the transcription diagnostic log
+    // Video: which model transcribes, and the diagnostic log
+    initGeminiModel();
     initGeminiLog();
   }
 
@@ -209,6 +210,36 @@ const Settings = (function () {
       input.placeholder = "AIza...";
       setStatus(status, "Cleared", "muted");
     });
+  }
+
+  /*
+   * Which model transcribes a video, and what it costs.
+   *
+   * This was overridable only by setting a localStorage key by hand, which
+   * means in practice it was not overridable at all — and worse, there was no
+   * way to see which model a transcript had actually used without reading the
+   * diagnostic log. Given how much the choice costs, it belongs on screen.
+   */
+  function initGeminiModel() {
+    const status = document.getElementById("gemini-model-status");
+    const btns = Array.from(document.querySelectorAll(".model-btn"));
+    if (!btns.length || typeof Gemini === "undefined" || !Gemini.getModel) return;
+
+    const paint = () => {
+      const current = Gemini.getModel();
+      btns.forEach((b) => b.classList.toggle("active", b.dataset.model === current));
+      const known = btns.some((b) => b.dataset.model === current);
+      setStatus(status, known ? "Using " + current : "Using " + current + " (custom)",
+                "muted");
+    };
+
+    btns.forEach((b) => {
+      b.addEventListener("click", () => {
+        Gemini.setModel(b.dataset.model === Gemini.DEFAULT_MODEL ? "" : b.dataset.model);
+        paint();
+      });
+    });
+    paint();
   }
 
   /*

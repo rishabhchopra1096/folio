@@ -242,6 +242,18 @@
         </div>
       </div>
       <div class="setting-group">
+        <label>Video — transcription model</label>
+        <div class="model-btns">
+          <button class="model-btn" data-model="gemini-3.7-flash">Fast</button>
+          <button class="model-btn" data-model="gemini-3.1-pro-preview">Pro</button>
+        </div>
+        <div class="voice-key-status" id="gemini-model-status"></div>
+        <div class="backup-hint">
+          Fast costs about $0.37 per 30 minutes of video. Pro is about $0.97 and
+          measured no better — its apparent lead was run-to-run variance.
+        </div>
+      </div>
+      <div class="setting-group">
         <label>Voice — Groq API key</label>
         <input type="password" id="voice-key-input" class="voice-key-input" placeholder="gsk_..." autocomplete="off" />
         <div class="voice-key-btns">
