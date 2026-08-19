@@ -73,36 +73,44 @@ ok("back before the first line nudges", /if \(i < 0\) \{ nudge\(-10\); return; \
 ok("currentBlockEl returns null past the end", /return null;[\s\S]{0,80}return segEls\[activeIdx\]/.test(src));
 
 
-console.log("\n=== speed reaches 3x by trying, not by trusting the API's list ===");
-/* getAvailablePlaybackRates() reports the IFrame API's advertised list, which
-   stops at 2x even though youtube.com itself offers 3x. Trusting it is what
-   capped playback. So: set the rate, read it back, and only give up on values
-   the player genuinely refuses. */
-const SP = JSON.parse(src.match(/let SPEEDS = (\[[^\]]*\])/)[1]);
-ok("ladder reaches 3x", Math.max(...SP) === 3, JSON.stringify(SP));
-ok("does NOT overwrite the ladder from the API list",
-   !/SPEEDS = usable/.test(src) && !/SPEEDS = rates/.test(src));
-ok("sets then verifies by reading back", /getPlaybackRate\(\);[\s\S]{0,160}Math\.abs\(got - rate\)/.test(src));
-ok("remembers refusals", /refusedSpeeds\.add\(rate\)/.test(src));
-ok("and clears one that later works", /refusedSpeeds\.delete\(rate\)/.test(src));
-ok("offers only rates not refused", /function usableSpeeds\(\)/.test(src));
-ok("walks past a refused rung rather than stopping", /for \(let step = 1; step <= ladder\.length/.test(src));
+console.log("\n=== the speed ladder is fixed, and stepping it always works ===");
+/* This was broken twice. First I capped it by trusting
+   getAvailablePlaybackRates(). Then I tried to beat the cap by setting a rate
+   and reading it back to see if it stuck — but setPlaybackRate is
+   ASYNCHRONOUS, so the readback returned the OLD rate, every rate looked
+   refused, the ladder emptied, and the speed keys died entirely after one
+   press. A fixed ladder, set directly, is the whole fix. */
+const SP = JSON.parse(src.match(/const SPEEDS = (\[[^\]]*\])/)[1]);
+ok("ladder is the plain one", JSON.stringify(SP) === "[0.75,1,1.25,1.5,1.75,2]", JSON.stringify(SP));
+ok("no readback-after-set anywhere", !/getPlaybackRate\(\);[\s\S]{0,120}Math\.abs\(got - rate\)/.test(src));
+ok("no blacklist of 'refused' rates", !/refusedSpeeds/.test(src));
+ok("no runtime discovery of the ladder", !/getAvailablePlaybackRates/.test(src));
+ok("stepping sets the rate directly", /player\.setPlaybackRate\(SPEEDS\[i\]\)/.test(src));
+ok("why it stops at 2x is written down", /setPlaybackRate\(3\)\s*->\s*2\s*ignored/.test(src));
+ok("and why the probe broke playback is too", /ASYNCHRONOUS/.test(src));
 
-// The walk must terminate and stay in range for every ladder position.
-const L = SP;
-function walk(startIdx, dir, refused) {
-  for (let step=1; step<=L.length; step++) {
-    const j = Math.max(0, Math.min(L.length-1, startIdx + dir*step));
-    if (j === startIdx) return null;
-    if (!refused.has(L[j])) return L[j];
-  }
-  return null;
+// Stepping must move by exactly one rung and never get stuck or go out of range.
+function step(cur, dir) {
+  let i = SP.indexOf(cur);
+  if (i === -1) i = SP.indexOf(1);
+  i = Math.max(0, Math.min(SP.length - 1, i + dir));
+  return SP[i];
 }
-ok("with 2.5 refused, stepping up from 2 reaches 3",
-   walk(L.indexOf(2), 1, new Set([2.5])) === 3, String(walk(L.indexOf(2),1,new Set([2.5]))));
-ok("with nothing refused, up from 2 gives 2.5",
-   walk(L.indexOf(2), 1, new Set()) === 2.5, String(walk(L.indexOf(2),1,new Set())));
-ok("at the top, walking up terminates", walk(L.length-1, 1, new Set()) === null);
+ok("1 -> up -> 1.25", step(1, 1) === 1.25, String(step(1, 1)));
+ok("1.25 -> up -> 1.5", step(1.25, 1) === 1.5, String(step(1.25, 1)));
+ok("1 -> down -> 0.75", step(1, -1) === 0.75, String(step(1, -1)));
+ok("2 is the top and stays there", step(2, 1) === 2, String(step(2, 1)));
+ok("0.75 is the floor and stays there", step(0.75, -1) === 0.75, String(step(0.75, -1)));
+ok("an unknown rate falls back to 1 then steps", step(0.5, 1) === 1.25, String(step(0.5, 1)));
+// Walking the whole ladder up and back must visit every rung.
+let walkRate = SP[0], walked = [walkRate];
+for (let n = 0; n < SP.length; n++) {
+  walkRate = step(walkRate, 1);
+  if (walked[walked.length - 1] !== walkRate) walked.push(walkRate);
+}
+ok("stepping up reaches every rung",
+   JSON.stringify(walked) === JSON.stringify(SP), JSON.stringify(walked));
+ok("every rung is <= 2x", SP.every((x) => x <= 2));
 
 console.log("\n=== there is a visible, draggable seek bar ===");
 ok("scrubber exists in the bar", /class="fv-seek"/.test(src));

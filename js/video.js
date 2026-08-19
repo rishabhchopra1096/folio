@@ -67,14 +67,11 @@ const Video = (function () {
   let seeking = false;       // true while the user is dragging the scrubber
 
   /*
-   * Fallback speed ladder. The real one is whatever the player reports through
-   * getAvailablePlaybackRates(), which is asked for on ready — YouTube has
-   * been extending the top end (3x, and 4x in places), and hardcoding a list
-   * would silently cap you below what the player can actually do.
-   * setPlaybackRate ignores a value that isn't on the player's list, so using
-   * its own list is the only way to be sure a step takes effect.
+   * The speed ladder. Fixed, and matching what the embedded player actually
+   * accepts — see the note above stepSpeed for why it stops at 2x and why
+   * nothing here tries to discover the list at runtime.
    */
-  let SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
   /*
    * How far into a line you must be before Back restarts it rather than
@@ -169,7 +166,6 @@ const Video = (function () {
       events: {
         onReady: () => {
           mounted = true;
-          adoptPlayerSpeeds();
           syncBar();
           startPolling();
         },
@@ -284,38 +280,16 @@ const Video = (function () {
 
   function stepSpeed(dir) {
     if (!player) return;
-    const ladder = usableSpeeds();
-    if (!ladder.length) return;
-    let cur;
-    try { cur = player.getPlaybackRate(); } catch { return; }
-
-    let i = nearestIn(ladder, cur);
-    // Walk in the requested direction until something sticks, so one refused
-    // rung doesn't block the ones beyond it.
-    let tried = false;
-    for (let step = 1; step <= ladder.length; step++) {
-      const j = Math.max(0, Math.min(ladder.length - 1, i + dir * step));
-      if (j === i) break;
-      tried = true;
-      const got = setSpeed(ladder[j]);
-      if (got != null && Math.abs(got - ladder[j]) < 0.01) {
-        syncBar();
-        if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(ladder[j] + "×", 900);
-        return;
-      }
-      if (!refusedSpeeds.has(ladder[j])) break;
-    }
-
-    // Walked the whole ladder and nothing above stuck — say so rather than
-    // leaving a dead key press to be interpreted as a bug.
-    if (tried && dir > 0) tellCeiling(cur);
+    try {
+      let i = SPEEDS.indexOf(player.getPlaybackRate());
+      if (i === -1) i = SPEEDS.indexOf(1);
+      i = Math.max(0, Math.min(SPEEDS.length - 1, i + dir));
+      player.setPlaybackRate(SPEEDS[i]);
+      syncBar();
+      if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(SPEEDS[i] + "×", 900);
+    } catch { /* ignore */ }
   }
 
-  function nearestIn(list, rate) {
-    let best = 0, bestD = Infinity;
-    list.forEach((r, i) => { const d = Math.abs(r - rate); if (d < bestD) { bestD = d; best = i; } });
-    return best;
-  }
 
 
   /*
@@ -480,68 +454,32 @@ const Video = (function () {
   }
 
   /*
-   * PLAYBACK RATE: the embed really does stop at 2x. Measured, not assumed.
+   * PLAYBACK RATE: set it and move on. No probing, no readback.
    *
-   * I previously blamed getAvailablePlaybackRates() for the 2x cap, on the
-   * theory that it under-reported what the player could do because
-   * youtube.com's own UI offers 3x. That was wrong, and shipping it without
-   * checking was worse. Driving a real embed of a real video, playing:
+   * I tried to unlock 3x by setting a rate optimistically and reading it back
+   * to see whether it stuck. That was broken twice over.
+   *
+   * First, the ceiling is real. Driving a live embed of a real video, playing:
    *
    *   advertised = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
-   *   setPlaybackRate(1.5) -> 1.5      accepted
-   *   setPlaybackRate(2)   -> 2        accepted
-   *   setPlaybackRate(2.5) -> 2        IGNORED
-   *   setPlaybackRate(3)   -> 2        IGNORED
+   *   setPlaybackRate(2)   -> 2     accepted
+   *   setPlaybackRate(2.5) -> 2     ignored
+   *   setPlaybackRate(3)   -> 2     ignored
    *
-   * The advertised list was accurate. Per the IFrame API contract an
-   * unsupported rate is silently ignored, and 3x on youtube.com is a
-   * first-party feature the embed API does not expose. The <video> element
-   * that could be driven past it lives in a cross-origin iframe, so it is out
-   * of reach. 2x is the ceiling here, and no amount of client code changes it.
+   * An unsupported rate is silently ignored per the IFrame API contract, 3x on
+   * youtube.com is a first-party feature the embed does not expose, and the
+   * <video> element that could be driven past it is cross-origin. 2x is it.
    *
-   * We still PROBE rather than trust the list: set the rate, read it back, and
-   * only give up on what is genuinely refused. That costs nothing, adapts by
-   * itself if YouTube ever lifts the cap, and — because a refusal is now
-   * surfaced instead of swallowed — stops this turning into a silent mystery
-   * a third time.
+   * Second — and this is what actually broke playback — setPlaybackRate is
+   * ASYNCHRONOUS. It posts a message into the iframe. getPlaybackRate() called
+   * on the next line still returns the OLD rate, so every rate looked refused,
+   * every rate got blacklisted, and after a couple of presses the ladder was
+   * empty and the speed keys did nothing at all. The probe only appeared to
+   * work when I measured it with a 1.5s wait between set and read.
+   *
+   * So: a fixed ladder, set directly, trusting the player. If YouTube ever
+   * exposes more, add the rungs here.
    */
-  const refusedSpeeds = new Set();
-  let ceilingTold = false;
-
-  function adoptPlayerSpeeds() {
-    if (!player || typeof player.getAvailablePlaybackRates !== "function") return;
-    try {
-      console.log("[video] embed advertises:", player.getAvailablePlaybackRates().join(", "));
-    } catch { /* ignore */ }
-  }
-
-  /* Set a rate and confirm it took. Returns the rate actually in effect. */
-  function setSpeed(rate) {
-    if (!player) return null;
-    try {
-      player.setPlaybackRate(rate);
-      const got = player.getPlaybackRate();
-      if (Math.abs(got - rate) > 0.01) {
-        refusedSpeeds.add(rate);
-        return got;
-      }
-      refusedSpeeds.delete(rate);
-      return got;
-    } catch {
-      return null;
-    }
-  }
-
-  // Said once, when you ask for more than the embed will give.
-  function tellCeiling(at) {
-    if (ceilingTold) return;
-    ceilingTold = true;
-    notify("YouTube's embedded player won't go past " + at + "\u00d7.");
-  }
-
-  function usableSpeeds() {
-    return SPEEDS.filter((r) => !refusedSpeeds.has(r));
-  }
 
   function togglePlay() {
     if (!player) return;
@@ -591,10 +529,12 @@ const Video = (function () {
   function cycleSpeed() {
     if (!player) return;
     try {
-      const ladder = usableSpeeds();
-      const next = ladder[(nearestIn(ladder, player.getPlaybackRate()) + 1) % ladder.length];
-      setSpeed(next);
+      let i = SPEEDS.indexOf(player.getPlaybackRate());
+      if (i === -1) i = SPEEDS.indexOf(1);
+      const next = SPEEDS[(i + 1) % SPEEDS.length];
+      player.setPlaybackRate(next);
       syncBar();
+      if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(next + "×", 900);
     } catch { /* ignore */ }
   }
 

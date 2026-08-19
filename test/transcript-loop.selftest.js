@@ -162,13 +162,13 @@ ok("a line past the end falls back to a time nudge",
    /if \(dur && segTimes\[i\] > dur\)/.test(vsrc));
 ok("the streaming write trims too", /segments = trimToDuration\(segments\);/.test(vsrc));
 
-console.log("\n=== the 2x ceiling is recorded as measured, not guessed ===");
-ok("the wrong explanation is gone",
-   !/even though youtube\.com's own UI offers 3x/.test(vsrc));
-ok("the measurement is written down", /setPlaybackRate\(3\)\s*->\s*2\s*IGNORED/.test(vsrc));
-ok("the ceiling is surfaced to the user", /function tellCeiling/.test(vsrc));
-ok("and only said once", /if \(ceilingTold\) return;/.test(vsrc));
-ok("we still probe rather than trust the list", /refusedSpeeds\.add\(rate\)/.test(vsrc));
+console.log("\n=== the speed probe that broke playback is gone ===");
+ok("no refused-rate blacklist", !/refusedSpeeds/.test(vsrc));
+ok("no immediate readback after set", !/Math\.abs\(got - rate\)/.test(vsrc));
+ok("no runtime ladder discovery", !/getAvailablePlaybackRates/.test(vsrc));
+ok("the ladder is a plain constant", /const SPEEDS = \[0\.75, 1, 1\.25, 1\.5, 1\.75, 2\];/.test(vsrc));
+ok("the measurement is still recorded for whoever tries next",
+   /setPlaybackRate\(3\)\s*->\s*2\s*ignored/.test(vsrc));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
