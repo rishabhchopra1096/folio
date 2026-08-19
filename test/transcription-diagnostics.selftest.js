@@ -170,6 +170,38 @@ ok("and its record is cleared", !h.settings.pendingTranscripts.doc_v);
 h = harness(null, docWithLines);
 ok("nothing pending means nothing happens", h.calls.length === 0);
 
+console.log("\n=== resuming fills the gaps instead of starting over ===");
+/* A resume used to re-transcribe the whole video from zero, so every reload
+   discarded all the work so far and re-billed the lot. On a long video it
+   could sit there transcribing indefinitely, making no progress across
+   reloads. */
+ok("existing lines are read back out of the document", /function existingSegments/.test(vsrc));
+ok("a retry or resume keeps them", /reason === "start" \? \[\] : existingSegments\(docId\)/.test(vsrc));
+ok("and hands them to the transcriber", /existing: already/.test(vsrc));
+ok("the transcriber seeds its results with them", /const all = existing\.slice\(\)/.test(gsrc));
+ok("windows already done are skipped", /function windowCovered/.test(gsrc));
+ok("a half-finished window is NOT treated as done",
+   /inside\.length < 3/.test(gsrc) && /0\.6/.test(gsrc));
+ok("and it says how much it is skipping", /alreadyDone: skipped/.test(gsrc));
+ok("a fully covered video does no work at all", /nothing-to-do/.test(gsrc));
+
+// The window-covered rule, exercised directly.
+const wcSrc = gsrc.match(/function windowCovered\(w, existing\) \{[\s\S]*?\n  \}/)[0];
+const windowCovered = eval("(" + wcSrc.replace(/^function /, "function ") + ")");
+const full = [];
+for (let t = 0; t < 300; t += 15) full.push({ start: t });
+ok("a fully transcribed window counts as done",
+   windowCovered({ from: 0, to: 300 }, full));
+ok("an empty window does not", !windowCovered({ from: 0, to: 300 }, []));
+ok("two stray lines do not", !windowCovered({ from: 0, to: 300 }, [{start:5},{start:9}]));
+ok("a window abandoned a third of the way in does not",
+   !windowCovered({ from: 0, to: 300 }, full.filter(s => s.start < 100)));
+ok("lines from a different window do not count",
+   !windowCovered({ from: 300, to: 600 }, full));
+
+ok("the recorded duration survives a streaming write",
+   /if \(duration > 0\) vd\.duration = Math\.round\(duration\)/.test(vsrc));
+
 console.log("\n=== resume attempts are counted, not infinite ===");
 ok("a cap exists", /MAX_AUTO_RESUMES/.test(vsrc));
 ok("only automatic resumes increment it",

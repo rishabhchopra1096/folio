@@ -63,6 +63,19 @@ ok("flushing clears the pending doc so it cannot loop",
 ok("and it will not render a document you have navigated away from",
    /if \(Reader\.getCurrentDocId\(\) !== docId\) return;/.test(video));
 
+console.log("\n=== the 'done' signal can never be forgotten ===");
+/* Four error paths used to set micState directly and announce nothing. A
+   render deferred while dictating was then stranded permanently: the lines
+   were safely in storage but the page said "Transcribing…" forever. */
+// The `let micState = "idle"` declaration matches too, so exclude it.
+const idleAssignments = (tts.match(/(?<!let )micState = "idle"/g) || []).length;
+ok("exactly one place returns the mic to idle", idleAssignments === 1,
+   idleAssignments + " assignments outside the declaration");
+ok("and it lives inside micIdle()",
+   /function micIdle\(\) \{\s*micState = "idle";\s*announceDictationEnd\(\);/.test(tts));
+ok("every other path goes through it", (tts.match(/micIdle\(\);/g) || []).length >= 5);
+ok("the failure it prevents is written down", /stranded a deferred render/.test(tts));
+
 console.log("\n=== the audio still has its other safety nets ===");
 ok("a failed upload is queued rather than dropped", /queueForRetry\(blob, targetHighlight\)/.test(tts));
 ok("capture is separate from upload, so a network error cannot bin the audio",

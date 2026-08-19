@@ -893,7 +893,7 @@ const TTS = (function () {
             '<kbd>Esc</kbd> to discard', 0);
     } catch (err) {
       micHandle = null;
-      micState = "idle";
+      micIdle();
       updateMic();
       toast(escapeForToast(err && err.message ? err.message : "Could not start recording"), 3200);
       if (micResumeAfter) resumeAfterDictation();
@@ -941,7 +941,7 @@ const TTS = (function () {
       try {
         text = await Voice.stopRecording(h);
       } catch (err) {
-        micState = "idle";
+        micIdle();
         updateMic();
         toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3200);
         discardDictationHighlight();
@@ -954,7 +954,7 @@ const TTS = (function () {
     try {
       blob = await Voice.stopRecordingRaw(h);
     } catch (err) {
-      micState = "idle";
+      micIdle();
       updateMic();
       toast(escapeForToast(err && err.message ? err.message : "Recording failed"), 3200);
       discardDictationHighlight();
@@ -965,7 +965,7 @@ const TTS = (function () {
     try {
       text = await Voice.transcribe(blob);
     } catch (err) {
-      micState = "idle";
+      micIdle();
       updateMic();
       if (Voice.isRetryable && Voice.isRetryable(err)) {
         // Hold the audio and try again when the connection is back. The
@@ -989,7 +989,7 @@ const TTS = (function () {
    * toast, or it stays on screen forever.
    */
   function saveDictation(text, highlightId) {
-    micState = "idle";
+    micIdle();
     updateMic();
     announceDictationEnd();
 
@@ -1155,6 +1155,20 @@ const TTS = (function () {
     else play();
   }
 
+  /*
+   * The ONLY way to return the mic to idle.
+   *
+   * Anything holding off work while a dictation runs — Video.writeBlocks holds
+   * its re-render back — needs to hear that it finished. Four error paths used
+   * to set micState directly and say nothing, which stranded a deferred render
+   * permanently: the transcript was safely in storage but the page went on
+   * saying "Transcribing…" forever, with a reload the only way out.
+   */
+  function micIdle() {
+    micState = "idle";
+    announceDictationEnd();
+  }
+
   /* True while a recording is being captured or uploaded. */
   function isDictating() {
     return micState === "recording" || micState === "transcribing";
@@ -1174,7 +1188,7 @@ const TTS = (function () {
     if (micState !== "recording") return;
     if (micHandle && typeof Voice !== "undefined") Voice.cancelRecording(micHandle);
     micHandle = null;
-    micState = "idle";
+    micIdle();
     discardDictationHighlight();
     updateMic();
     hideToast();

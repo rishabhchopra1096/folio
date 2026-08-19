@@ -527,6 +527,28 @@ const Video = (function () {
     } catch { /* not worth breaking playback over */ }
   }
 
+  /*
+   * The lines this document already has, as segments.
+   *
+   * A resume used to re-transcribe the whole video from the beginning, so
+   * every reload threw away all the work done so far and started again — the
+   * exact opposite of what resuming is for, and expensive at pro rates.
+   */
+  function existingSegments(docId) {
+    try {
+      const doc = FolioStore.getDocument(docId);
+      const blocks = (doc && doc.content && doc.content.blocks) || [];
+      const el = document.createElement("div");
+      return blocks
+        .filter((b) => b.type === "paragraph" && b.data && b.data.t != null)
+        .map((b) => {
+          el.innerHTML = String(b.data.text == null ? "" : b.data.text);
+          return { start: Number(b.data.t), text: el.textContent || "" };
+        })
+        .filter((s) => isFinite(s.start) && s.text.trim());
+    } catch { return []; }
+  }
+
   /* The length recorded in the document, if we have ever seen it. */
   function storedDuration(docId) {
     try {
@@ -956,6 +978,9 @@ const Video = (function () {
     reason = reason || "start";
     markPending(docId, parsed.url, reason);
     setBusy(true);
+    const knownDuration = storedDuration(docId) || await awaitDuration(8000);
+    // Resuming or retrying keeps what is already there and fills the gaps.
+    const already = reason === "start" ? [] : existingSegments(docId);
     const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
 
     let lastCount = 0;
@@ -965,7 +990,7 @@ const Video = (function () {
       lastCount = segments.length;
       setBusy(true, segments.length, segments[segments.length - 1].start);
       notePendingProgress(docId, segments.length);
-      writeBlocks(docId, buildBlocks(parsed, segments, true));
+      writeBlocks(docId, buildBlocks(parsed, segments, true, knownDuration));
     };
 
     let segments;
@@ -978,7 +1003,8 @@ const Video = (function () {
         // Chunking needs to know how long the video is. Without it the
         // transcriber walks forward blindly until two windows come back empty,
         // which works but wastes a request or two at the end.
-        durationSec: storedDuration(docId) || await awaitDuration(8000),
+        durationSec: knownDuration,
+        existing: already,
       });
     } catch (err) {
       clearPending(docId);
@@ -999,7 +1025,7 @@ const Video = (function () {
     setBusy(false);
     segments = trimToDuration(segments);
     if (!segments.length) throw new Error("Transcript had no usable lines.");
-    writeBlocks(docId, buildBlocks(parsed, segments, false));
+    writeBlocks(docId, buildBlocks(parsed, segments, false, knownDuration));
 
     // Comments taken while the transcript was still generating were anchored
     // to a moment in the video rather than to a line, because no lines existed
@@ -1016,9 +1042,14 @@ const Video = (function () {
     return docId;
   }
 
-  function buildBlocks(parsed, segments, stillGoing) {
-    const out = [{ type: "video", data: { provider: "youtube",
-      videoId: parsed.videoId, url: parsed.url, start: parsed.start } }];
+  function buildBlocks(parsed, segments, stillGoing, duration) {
+    const vd = { provider: "youtube", videoId: parsed.videoId,
+                 url: parsed.url, start: parsed.start };
+    // Carried through deliberately: this block is rebuilt on every streaming
+    // write, and without this the length recorded from the player was wiped
+    // seconds after it was learned.
+    if (duration > 0) vd.duration = Math.round(duration);
+    const out = [{ type: "video", data: vd }];
     for (const s of segments) {
       out.push({ type: "paragraph", data: { text: escapeHtml(s.text), t: s.start } });
     }

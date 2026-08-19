@@ -303,6 +303,27 @@ const Gemini = (function () {
     return out;
   }
 
+  /*
+   * Has this window already been transcribed?
+   *
+   * A resume used to redo the whole video from the start, so every reload threw
+   * away everything done so far and began again — which is why a long video
+   * could sit there "transcribing" indefinitely, making no progress across
+   * reloads and re-billing the whole thing each time.
+   *
+   * "Done" means the existing lines actually SPAN the window, not merely that
+   * a couple landed in it: a window abandoned a third of the way through must
+   * be redone, or the gap becomes permanent.
+   */
+  function windowCovered(w, existing) {
+    if (!existing || !existing.length) return false;
+    const inside = existing.filter((s) => s.start >= w.from && s.start < w.to);
+    if (inside.length < 3) return false;
+    const lo = Math.min.apply(null, inside.map((s) => s.start));
+    const hi = Math.max.apply(null, inside.map((s) => s.start));
+    return (hi - lo) >= (w.to - w.from) * 0.6;
+  }
+
   async function transcribeYouTube(url, opts) {
     opts = opts || {};
     const key = getKey();
@@ -319,15 +340,23 @@ const Gemini = (function () {
     const since = () => Date.now() - t0;
     const duration = Number(opts.durationSec) > 0 ? Number(opts.durationSec) : 0;
 
+    /*
+     * Lines this document already has. They are kept, and the windows they
+     * cover are skipped, so resuming costs only the missing parts.
+     */
+    const existing = Array.isArray(opts.existing) ? opts.existing.slice() : [];
+
     const planned = planWindows(duration);
     log("request", { run: runId, video: parsed.videoId, model: getModel(),
                      why: opts.reason || "start", doc: opts.docId || null,
                      duration: Math.round(duration) || null,
-                     chunks: planned ? planned.length : "unknown" });
+                     chunks: planned ? planned.length : "unknown",
+                     had: existing.length });
 
-    const all = [];
+    const all = existing.slice();     // keep what is already there
     let firstError = null;
     let doneWindows = 0;
+    let totalToDo = 0;
 
     const push = (segs) => {
       all.push.apply(all, segs);
@@ -387,7 +416,7 @@ const Gemini = (function () {
     const finishWindow = async (w, i) => {
       const n = await runWindow(w, i);
       doneWindows++;
-      if (planned) progress(`Transcribed ${doneWindows} of ${planned.length} parts…`);
+      if (totalToDo) progress(`Transcribed ${doneWindows} of ${totalToDo} parts…`);
       return n;
     };
 
@@ -398,16 +427,30 @@ const Gemini = (function () {
        * at a time. Results are merged and sorted, so out-of-order completion
        * does not matter.
        */
+      const todo = planned
+        .map((w, i) => ({ w: w, i: i }))
+        .filter((x) => !windowCovered(x.w, existing));
+      totalToDo = todo.length;
+      const skipped = planned.length - todo.length;
+      if (skipped) {
+        log("skipping", { run: runId, alreadyDone: skipped, toDo: todo.length });
+        progress(`${skipped} of ${planned.length} parts already done — filling the rest…`);
+      }
+      if (!todo.length) {
+        log("nothing-to-do", { run: runId, chunks: planned.length });
+        return dedupeSorted(all);
+      }
+
       let next = 0;
       const worker = async () => {
         for (;;) {
-          const i = next++;
-          if (i >= planned.length) return;
-          await finishWindow(planned[i], i);
+          const k = next++;
+          if (k >= todo.length) return;
+          await finishWindow(todo[k].w, todo[k].i);
         }
       };
       await Promise.all(
-        Array.from({ length: Math.min(CONCURRENCY, planned.length) }, worker));
+        Array.from({ length: Math.min(CONCURRENCY, todo.length) }, worker));
     } else {
       /*
        * Length unknown, so walk forward one window at a time and stop when two
