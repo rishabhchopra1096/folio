@@ -246,6 +246,21 @@ const Editor = (function () {
         // Don't interfere with pastes into a code block — users want raw text there
         if (e.target && e.target.closest && e.target.closest(".ce-code__textarea, textarea")) return;
 
+        // ── A bare YouTube link becomes a video document ──
+        // Matches the behaviour people expect from Notion: pasting the link is
+        // the request, no dialog in between.
+        if (typeof Gemini !== "undefined" && typeof Video !== "undefined") {
+          const maybeUrl = e.clipboardData ? e.clipboardData.getData("text/plain").trim() : "";
+          if (maybeUrl && !/\s/.test(maybeUrl) && Gemini.parseYouTube(maybeUrl)) {
+            e.preventDefault();
+            e.stopPropagation();
+            Video.importUrl(maybeUrl).catch((err) => {
+              alert(err && err.message ? err.message : "Could not import that video");
+            });
+            return;
+          }
+        }
+
         // ── Image pastes (Cmd+V from screenshot, photo, etc.) ──
         // Check clipboardData.items for an image file BEFORE looking at text:
         // some apps put both an image and a text fallback ("[image]") on the

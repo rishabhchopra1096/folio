@@ -32,9 +32,16 @@ const Gemini = (function () {
   const KEY_STORAGE = "folio_gemini_key";
   const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-  // Flash is the right tier here: video understanding is the expensive part,
-  // and a bigger model buys little for straight transcription.
-  const MODEL = "gemini-flash-latest";
+  /*
+   * Pinned to 2.5-flash deliberately, NOT "gemini-flash-latest".
+   *
+   * "latest" silently follows whatever is newest — currently 3.7-flash — which
+   * costs more per video for no benefit here. Straight transcription is not a
+   * reasoning task, and video understanding is already the expensive part of
+   * the request. Pinning also means a new model release can't quietly change
+   * either the bill or the output format this code parses.
+   */
+  const MODEL = "gemini-2.5-flash";
 
   // Video length past which we warn before spending the user's quota. Roughly
   // where a request starts taking minutes rather than seconds.

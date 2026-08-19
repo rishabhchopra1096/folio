@@ -62,6 +62,11 @@ const Video = (function () {
   let activeIdx = -1;
 
   let apiPromise = null;
+  let transcriptEl = null;   // the independently scrolling transcript
+  let barEl = null;          // our on-page control bar
+
+  // Playback speeds our bar cycles through. YouTube supports these natively.
+  const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
   // ==========================================================================
   // IFRAME API LOADING
@@ -108,6 +113,7 @@ const Video = (function () {
     const holder = document.querySelector("#article .folio-video[data-video-id]");
     if (!holder) return;
 
+    restructure(holder);
     indexSegments();
 
     let YT;
@@ -119,11 +125,8 @@ const Video = (function () {
       return;
     }
 
-    // The placeholder is replaced wholesale by the iframe, so give the API its
-    // own child to take over and keep our wrapper intact for styling.
     const target = document.createElement("div");
-    holder.innerHTML = "";
-    holder.appendChild(target);
+    holder.insertBefore(target, holder.firstChild);
 
     const startAt = parseInt(holder.dataset.start || "0", 10) || 0;
 
@@ -131,21 +134,117 @@ const Video = (function () {
       videoId: holder.dataset.videoId,
       playerVars: {
         start: startAt,
-        rel: 0,             // don't suggest unrelated videos at the end
+        rel: 0,
         modestbranding: 1,
         playsinline: 1,
+        // Our own bar drives playback, so YouTube's chrome is redundant and its
+        // controls are the thing that steals keyboard focus.
+        controls: 0,
+        disablekb: 1,
       },
       events: {
-        onReady: () => { mounted = true; startPolling(); },
+        onReady: () => { mounted = true; syncBar(); startPolling(); },
         onStateChange: (e) => {
-          // Poll only while playing; no need to burn timers on a paused video.
+          syncBar();
           if (e.data === PLAYING) startPolling(); else stopPolling(true);
         },
       },
     });
 
     initTranscriptClicks();
+    initShortcuts();
     registerClock();
+  }
+
+  /*
+   * Video shortcuts. Space and the dictate key are handled by TTS (which routes
+   * them to us through the clock seam); these are the extras. All bare-key and
+   * skipped while typing, and — critically — they work because YouTube's own
+   * chrome is off, so focus never leaves the document.
+   */
+  function initShortcuts() {
+    if (document.body.dataset.videoKeys) return;
+    document.body.dataset.videoKeys = "1";
+
+    document.addEventListener("keydown", function (e) {
+      if (!mounted) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+      switch (e.key) {
+        case "k": case "K": e.preventDefault(); togglePlay(); break;
+        case "j": case "J": e.preventDefault(); nudge(-10); break;
+        case "l": case "L": e.preventDefault(); nudge(10); break;
+        case "ArrowLeft":   e.preventDefault(); nudge(-5); break;
+        case "ArrowRight":  e.preventDefault(); nudge(5); break;
+        case "ArrowUp":     e.preventDefault(); stepSpeed(1); break;
+        case "ArrowDown":   e.preventDefault(); stepSpeed(-1); break;
+      }
+    });
+  }
+
+  function stepSpeed(dir) {
+    if (!player) return;
+    try {
+      let i = SPEEDS.indexOf(player.getPlaybackRate());
+      if (i === -1) i = SPEEDS.indexOf(1);
+      i = Math.max(0, Math.min(SPEEDS.length - 1, i + dir));
+      player.setPlaybackRate(SPEEDS[i]);
+      syncBar();
+      if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(SPEEDS[i] + "×", 900);
+    } catch { /* ignore */ }
+  }
+
+  /*
+   * Rearrange what the reader emitted into a fixed player above an
+   * independently scrolling transcript.
+   *
+   * Two problems this solves. The page used to scroll as a whole, so the video
+   * drifted off the top of the viewport and got clipped. And a 16:9 player at
+   * full column width is tall enough to leave no room for the transcript at
+   * all.
+   *
+   * Nodes are MOVED, not recreated, so every existing text-node reference stays
+   * valid — which matters because saved highlights are keyed to text-node
+   * order. Document order is preserved too, so a TreeWalker sees exactly the
+   * same sequence as before.
+   */
+  function restructure(holder) {
+    const article = document.getElementById("article");
+    if (!article || article.dataset.videoLayout) return;
+
+    const wrap = document.createElement("div");
+    wrap.className = "folio-video-wrap";
+
+    const scroller = document.createElement("div");
+    scroller.className = "folio-transcript";
+
+    // Everything after the video becomes the scrolling transcript.
+    const after = [];
+    let seen = false;
+    Array.from(article.childNodes).forEach((n) => {
+      if (n === holder) { seen = true; return; }
+      if (seen) after.push(n);
+    });
+
+    article.insertBefore(wrap, holder);
+    wrap.appendChild(holder);
+    wrap.appendChild(buildBar());
+    after.forEach((n) => scroller.appendChild(n));
+    article.appendChild(scroller);
+
+    // A shield over the player: clicks toggle playback through the API instead
+    // of landing inside the cross-origin iframe, which would move keyboard
+    // focus there and silently kill every shortcut — including the dictate key.
+    const shield = document.createElement("div");
+    shield.className = "folio-video-shield";
+    shield.title = "Click to play/pause";
+    shield.addEventListener("click", (e) => { e.preventDefault(); togglePlay(); });
+    holder.appendChild(shield);
+
+    article.dataset.videoLayout = "1";
+    transcriptEl = scroller;
   }
 
   function detach() {
@@ -158,7 +257,116 @@ const Video = (function () {
     segEls = [];
     segTimes = [];
     activeIdx = -1;
+    transcriptEl = null;
+    barEl = null;
+    const art = document.getElementById("article");
+    if (art) delete art.dataset.videoLayout;
     if (typeof TTS !== "undefined" && TTS.setExternalClock) TTS.setExternalClock(null);
+  }
+
+  // ==========================================================================
+  // OUR OWN CONTROL BAR
+  // ==========================================================================
+
+  /*
+   * YouTube's native chrome is switched off (controls: 0) and replaced with
+   * this. Two reasons, both load-bearing:
+   *
+   *  - Clicking into a cross-origin iframe moves keyboard focus there, and from
+   *    that point every page shortcut silently stops working — which is exactly
+   *    why pressing Option did nothing after starting the video. Owning the
+   *    controls means you never have to click inside the player.
+   *  - The speed setting lived in YouTube's gear menu, which was effectively
+   *    unreachable in this layout. Here it's a visible chip.
+   */
+  function buildBar() {
+    const bar = document.createElement("div");
+    bar.className = "folio-video-bar";
+    bar.innerHTML =
+      '<button class="fv-btn" data-act="back" title="Back 10s">' +
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>' +
+      '</button>' +
+      '<button class="fv-btn fv-play" data-act="play" title="Play/pause (K)">' +
+        '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
+      '</button>' +
+      '<button class="fv-btn" data-act="fwd" title="Forward 10s">' +
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>' +
+      '</button>' +
+      '<span class="fv-time">0:00</span>' +
+      '<button class="fv-speed" data-act="speed" title="Playback speed">1×</button>' +
+      '<button class="fv-btn" data-act="yt" title="Open on YouTube">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>' +
+      '</button>';
+
+    bar.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act]");
+      if (!b) return;
+      e.preventDefault();
+      switch (b.dataset.act) {
+        case "play":  togglePlay(); break;
+        case "back":  nudge(-10); break;
+        case "fwd":   nudge(10); break;
+        case "speed": cycleSpeed(); break;
+        case "yt":    openOnYouTube(); break;
+      }
+    });
+
+    barEl = bar;
+    return bar;
+  }
+
+  function togglePlay() {
+    if (!player) return;
+    try {
+      player.getPlayerState() === PLAYING ? player.pauseVideo() : player.playVideo();
+    } catch { /* not ready */ }
+  }
+
+  function nudge(sec) {
+    if (!player) return;
+    try { player.seekTo(Math.max(0, player.getCurrentTime() + sec), true); } catch { /* ignore */ }
+  }
+
+  function cycleSpeed() {
+    if (!player) return;
+    try {
+      const cur = player.getPlaybackRate();
+      let i = SPEEDS.indexOf(cur);
+      if (i === -1) i = SPEEDS.indexOf(1);
+      const next = SPEEDS[(i + 1) % SPEEDS.length];
+      player.setPlaybackRate(next);
+      syncBar();
+    } catch { /* ignore */ }
+  }
+
+  function openOnYouTube() {
+    const holder = document.querySelector("#article .folio-video[data-video-id]");
+    if (!holder) return;
+    let t = 0;
+    try { t = Math.floor(player.getCurrentTime()); } catch { /* ignore */ }
+    window.open(`https://www.youtube.com/watch?v=${holder.dataset.videoId}&t=${t}`, "_blank", "noopener");
+  }
+
+  // Reflect real player state onto the bar rather than tracking it ourselves.
+  function syncBar() {
+    if (!barEl || !player) return;
+    let state = -1, rate = 1, t = 0;
+    try {
+      state = player.getPlayerState();
+      rate = player.getPlaybackRate();
+      t = player.getCurrentTime();
+    } catch { return; }
+
+    const btn = barEl.querySelector(".fv-play");
+    if (btn) {
+      btn.innerHTML = state === PLAYING
+        ? '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+    }
+    const sp = barEl.querySelector(".fv-speed");
+    if (sp) sp.textContent = (Math.round(rate * 100) / 100) + "×";
+    const tm = barEl.querySelector(".fv-time");
+    if (tm && typeof Gemini !== "undefined") tm.textContent = Gemini.formatTime(t);
   }
 
   // ==========================================================================
@@ -207,6 +415,7 @@ const Video = (function () {
     if (!player || typeof player.getCurrentTime !== "function") return;
     let t;
     try { t = player.getCurrentTime(); } catch { return; }
+    syncBar();
     const i = segmentAt(t);
     if (i === activeIdx) return;
     setActive(i);
@@ -226,13 +435,21 @@ const Video = (function () {
     activeIdx = -1;
   }
 
-  // Scroll only when the line has drifted out of a comfortable band, so the
-  // page isn't yanked on every single line.
+  /*
+   * Scroll the TRANSCRIPT, never the window. Scrolling the page moved the
+   * player out from under the viewport and clipped it; the transcript is its
+   * own scroll container precisely so the video can stay put.
+   */
   function keepInView(el) {
-    const r = el.getBoundingClientRect();
-    const h = window.innerHeight;
-    if (r.top < h * 0.25 || r.bottom > h * 0.85) {
-      window.scrollBy({ top: r.top - h * 0.45, behavior: "smooth" });
+    const box = transcriptEl;
+    if (!box) return;
+    const br = box.getBoundingClientRect();
+    const er = el.getBoundingClientRect();
+    const top = er.top - br.top + box.scrollTop;
+    const band = br.height;
+    // Only move once the line has drifted out of the middle of the box.
+    if (er.top < br.top + band * 0.2 || er.bottom > br.top + band * 0.8) {
+      box.scrollTo({ top: Math.max(0, top - band * 0.35), behavior: "smooth" });
     }
   }
 

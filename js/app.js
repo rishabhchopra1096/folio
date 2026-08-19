@@ -279,7 +279,10 @@ const App = (function () {
       if (!text || /\s/.test(text)) return;
       if (!Gemini.parseYouTube(text)) return;
       e.preventDefault();
-      Video.promptImport(text);
+      // No dialog — pasting a link IS the request, the way it is in Notion.
+      Video.importUrl(text).catch((err) => {
+        alert(err && err.message ? err.message : "Could not import that video");
+      });
     });
 
     // Welcome screen new page button

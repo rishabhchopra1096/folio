@@ -857,10 +857,17 @@ const TTS = (function () {
       return;
     }
 
+    /*
+     * Whether to resume afterwards must come from the CALLER when it knows,
+     * because hold-Space pauses on keydown — before this runs — so reading the
+     * clock here would always see "already paused" and wrongly decide not to
+     * resume. Only fall back to inspecting state when no answer was given.
+     */
     if (clockActive()) {
-      // The video is the clock — remember whether IT was running, and stop it.
-      micResumeAfter = externalClock.isPlaying();
-      if (micResumeAfter) externalClock.pause();
+      micResumeAfter = typeof resumeAfter === "boolean"
+        ? resumeAfter
+        : externalClock.isPlaying();
+      if (externalClock.isPlaying()) externalClock.pause();
     } else {
       micResumeAfter = typeof resumeAfter === "boolean" ? resumeAfter : playing;
       if (playing) pauseForDictation();
@@ -1514,10 +1521,15 @@ const TTS = (function () {
         spaceIsDown = true;
         spaceDownAt = Date.now();
         spaceBecameDictation = false;
-        spaceWasPlaying = playing;
+        spaceWasPlaying = clockActive() ? externalClock.isPlaying() : playing;
 
         // Pause now if we're playing — this is the latency-sensitive action.
-        if (playing) pauseForDictation();
+        // On a video document the video is the thing that's playing.
+        if (clockActive()) {
+          if (externalClock.isPlaying()) externalClock.pause();
+        } else if (playing) {
+          pauseForDictation();
+        }
 
         clearSpaceHold();
         spaceHoldTimer = setTimeout(function () {
@@ -1532,6 +1544,13 @@ const TTS = (function () {
       if (isMicKey) {
         e.preventDefault();
         if (!e.repeat) toggleMic();
+        return;
+      }
+
+      // On a video document the arrows and speed chip belong to the player,
+      // which owns its own controls; don't drive the reader instead.
+      if (clockActive()) {
+        if (e.key === "Escape") { e.preventDefault(); externalClock.pause(); }
         return;
       }
 
@@ -1579,6 +1598,13 @@ const TTS = (function () {
       clearSpaceHold();
 
       if (spaceBecameDictation) return;   // latched; leave it recording
+
+      if (clockActive()) {
+        // Video document: keydown already paused it, so a tap either leaves it
+        // paused or starts it again.
+        if (!spaceWasPlaying) externalClock.resume();
+        return;
+      }
 
       if (spaceWasPlaying) {
         // keydown already paused us — finish the manual-pause semantics.
@@ -1676,6 +1702,10 @@ const TTS = (function () {
     init, attach, detach,
     play, pause, toggle, stop,
     setRate, cycleRate, seekToChar, jumpSentence,
+    // Lets a video register itself as the clock the dictation loop drives.
+    setExternalClock,
+    // Providers reuse the player's status line.
+    toast,
     isPlaying: () => playing,
     isSupported: () => WebSpeechProvider.available(),
   };
