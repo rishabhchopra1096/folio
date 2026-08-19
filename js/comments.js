@@ -572,6 +572,15 @@ const Comments = (function () {
   // HELPERS
   // ==========================================================================
 
+  /*
+   * Non-blocking notice — see Video.notify. A modal in the middle of watching
+   * or dictating is worse than the problem it reports.
+   */
+  function notice(msg) {
+    if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(escapeHtml(String(msg)), 3600);
+    else console.warn("[folio]", msg);
+  }
+
   function escapeHtml(str) {
     const div = document.createElement("div");
     div.textContent = str;
@@ -601,7 +610,7 @@ const Comments = (function () {
   function exportAnnotations() {
     const docId = Reader.getCurrentDocId();
     if (!docId) {
-      alert("Open a document first — export operates on the currently open page.");
+      notice("Open a document first — export works on the page you're viewing.");
       return;
     }
 
@@ -620,7 +629,7 @@ const Comments = (function () {
     }
 
     if (!highlights.length && !comments.length) {
-      alert("No highlights or comments to export yet.");
+      notice("Nothing to export yet.");
       return;
     }
 
@@ -739,7 +748,7 @@ const Comments = (function () {
 
   async function startVoice(btn) {
     if (!Voice.hasKey()) {
-      alert("Set your Groq API key in Settings → Voice first.\n\nGet a free key at https://console.groq.com/keys");
+      notice("Add your Groq API key in Settings → Voice to dictate.");
       return;
     }
     try {
@@ -747,7 +756,7 @@ const Comments = (function () {
       setMicState(btn, "recording");
     } catch (err) {
       voiceHandle = null;
-      alert(err && err.message ? err.message : "Couldn't start recording");
+      notice(err && err.message ? err.message : "Couldn't start recording");
     }
   }
 
@@ -761,7 +770,7 @@ const Comments = (function () {
       transcript = await Voice.stopRecording(handle);
     } catch (err) {
       setMicState(btn, "idle");
-      alert(err && err.message ? err.message : "Transcription failed");
+      notice(err && err.message ? err.message : "Transcription failed");
       return;
     }
     setMicState(btn, "idle");

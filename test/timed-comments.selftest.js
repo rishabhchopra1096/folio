@@ -47,10 +47,21 @@ global.Highlights = {
 const csrc = fs.readFileSync(REPO+"/js/comments.js","utf8");
 const Comments = eval(csrc + "; Comments;");
 global.Comments = Comments;
-const vsrc = fs.readFileSync(REPO+"/js/video.js","utf8").replace(
-  "  return {\n    attach,",
-  "  return {\n    __reconcile: reconcileTimedComments, __indexForTime: indexForTime,\n    attach,");
+/* Inject test hooks on a stable anchor, and ASSERT the injection landed —
+   anchoring on the first exported name meant that renaming or adding an export
+   silently disabled the hooks, and the test then failed much later with a
+   confusing "not a function". */
+const HOOK = "  return {\n    __reconcile: reconcileTimedComments, __indexForTime: indexForTime,\n";
+const rawV = fs.readFileSync(REPO+"/js/video.js","utf8");
+const marker = "  return {\n";
+const lastReturn = rawV.lastIndexOf(marker);
+if (lastReturn === -1) { console.error("could not find the Video export block"); process.exit(1); }
+const vsrc = rawV.slice(0, lastReturn) + HOOK + rawV.slice(lastReturn + marker.length);
 const Video = eval(vsrc + "; Video;");
+if (typeof Video.__indexForTime !== "function" || typeof Video.__reconcile !== "function") {
+  console.error("test hooks failed to inject — the export block shape changed");
+  process.exit(1);
+}
 
 let pass=0,fail=0;
 const ok=(n,c,x)=>{c?(pass++,console.log("  ✓ "+n)):(fail++,console.log("  ✗ "+n+(x?"  → "+x:"")));};

@@ -283,7 +283,7 @@ const App = (function () {
       e.preventDefault();
       // No dialog — pasting a link IS the request, the way it is in Notion.
       Video.importUrl(text).catch((err) => {
-        alert(err && err.message ? err.message : "Could not import that video");
+        Video.notify(err && err.message ? err.message : "Could not import that video");
       });
     });
 

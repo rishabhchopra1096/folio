@@ -255,7 +255,7 @@ const Editor = (function () {
             e.preventDefault();
             e.stopPropagation();
             Video.importUrl(maybeUrl).catch((err) => {
-              alert(err && err.message ? err.message : "Could not import that video");
+              if (typeof Video !== "undefined") Video.notify(err && err.message ? err.message : "Could not import that video");
             });
             return;
           }
@@ -328,7 +328,7 @@ const Editor = (function () {
       checkStorageQuota();
     } catch (err) {
       console.error("Image paste failed:", err);
-      alert("Couldn't paste that image — " + (err.message || "unknown error"));
+      if (typeof TTS !== "undefined" && TTS.toast) TTS.toast("Couldn't paste that image — " + (err.message || "unknown error"), 4000);
     }
   }
 
@@ -425,10 +425,13 @@ const Editor = (function () {
     if (total > 6 * 1024 * 1024) {
       storageWarned = true;
       const mb = (total / 1024 / 1024).toFixed(1);
+      // Long and prominent, but still non-blocking — a modal here would stop a
+      // video mid-sentence to deliver news that can wait ten seconds.
       setTimeout(() => {
-        alert(
-          `Folio is using ${mb}MB of browser storage — getting close to the browser's limit (~5-10MB).\n\nOpen Settings → Backup and Export your pages now. The browser may start refusing new edits if storage fills up.`
-        );
+        const msg = `Storage is ${mb}MB, near the browser's ~5-10MB limit. ` +
+                    `Open Settings → Backup → Export all now, before edits start failing.`;
+        if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(msg, 12000);
+        else console.warn("[folio]", msg);
       }, 100);
     }
   }

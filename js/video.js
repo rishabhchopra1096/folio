@@ -65,8 +65,15 @@ const Video = (function () {
   let transcriptEl = null;   // the independently scrolling transcript
   let barEl = null;          // our on-page control bar
 
-  // Playback speeds our bar cycles through. YouTube supports these natively.
-  const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
+  /*
+   * Fallback speed ladder. The real one is whatever the player reports through
+   * getAvailablePlaybackRates(), which is asked for on ready — YouTube has
+   * been extending the top end (3x, and 4x in places), and hardcoding a list
+   * would silently cap you below what the player can actually do.
+   * setPlaybackRate ignores a value that isn't on the player's list, so using
+   * its own list is the only way to be sure a step takes effect.
+   */
+  let SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
   /*
    * How far into a line you must be before Back restarts it rather than
@@ -159,7 +166,12 @@ const Video = (function () {
         disablekb: 1,
       },
       events: {
-        onReady: () => { mounted = true; syncBar(); startPolling(); },
+        onReady: () => {
+          mounted = true;
+          adoptPlayerSpeeds();
+          syncBar();
+          startPolling();
+        },
         onStateChange: (e) => {
           syncBar();
           if (e.data === PLAYING) startPolling(); else stopPolling(true);
@@ -270,13 +282,23 @@ const Video = (function () {
   function stepSpeed(dir) {
     if (!player) return;
     try {
-      let i = SPEEDS.indexOf(player.getPlaybackRate());
-      if (i === -1) i = SPEEDS.indexOf(1);
+      const cur = player.getPlaybackRate();
+      // Nearest rung, so an off-ladder current rate still steps sensibly.
+      let i = nearestSpeedIndex(cur);
       i = Math.max(0, Math.min(SPEEDS.length - 1, i + dir));
       player.setPlaybackRate(SPEEDS[i]);
       syncBar();
       if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(SPEEDS[i] + "×", 900);
     } catch { /* ignore */ }
+  }
+
+  function nearestSpeedIndex(rate) {
+    let best = 0, bestD = Infinity;
+    SPEEDS.forEach((r, i) => {
+      const d = Math.abs(r - rate);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
   }
 
   /*
@@ -379,6 +401,9 @@ const Video = (function () {
       '</button>' +
       '<span class="fv-time">0:00</span>' +
       '<button class="fv-speed" data-act="speed" title="Playback speed">1×</button>' +
+      '<button class="fv-btn fv-retry" data-act="retry" title="Transcript incomplete — click to redo it">' +
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' +
+      '</button>' +
       '<button class="fv-btn" data-act="yt" title="Open on YouTube">' +
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>' +
       '</button>';
@@ -392,12 +417,28 @@ const Video = (function () {
         case "back":  hopLine(-1); break;
         case "fwd":   hopLine(1); break;
         case "speed": cycleSpeed(); break;
+        case "retry": retryTranscription(); break;
         case "yt":    openOnYouTube(); break;
       }
     });
 
     barEl = bar;
     return bar;
+  }
+
+  /*
+   * Use the speeds the player actually offers. Keeps anything at or below 3x —
+   * beyond that the audio is unusable for following along, and the ladder gets
+   * tedious to step through.
+   */
+  function adoptPlayerSpeeds() {
+    if (!player || typeof player.getAvailablePlaybackRates !== "function") return;
+    let rates;
+    try { rates = player.getAvailablePlaybackRates(); } catch { return; }
+    if (!Array.isArray(rates) || !rates.length) return;
+    const usable = rates.filter((r) => r >= 0.5 && r <= 3).sort((a, b) => a - b);
+    if (usable.length) SPEEDS = usable;
+    console.log("[video] playback speeds:", SPEEDS.join(", "));
   }
 
   function togglePlay() {
@@ -415,13 +456,61 @@ const Video = (function () {
   function cycleSpeed() {
     if (!player) return;
     try {
-      const cur = player.getPlaybackRate();
-      let i = SPEEDS.indexOf(cur);
-      if (i === -1) i = SPEEDS.indexOf(1);
-      const next = SPEEDS[(i + 1) % SPEEDS.length];
+      const next = SPEEDS[(nearestSpeedIndex(player.getPlaybackRate()) + 1) % SPEEDS.length];
       player.setPlaybackRate(next);
       syncBar();
     } catch { /* ignore */ }
+  }
+
+  /*
+   * Redo the transcription for the document on screen.
+   *
+   * A transcript can end early — truncated at the output cap on a long video,
+   * or failed outright — and until now there was no way back from that except
+   * deleting the document and starting over, which would take your comments
+   * with it. This re-runs it in place. Existing comments survive, and
+   * timestamp-anchored ones get linked to lines when the new transcript lands.
+   */
+  function retryTranscription() {
+    const docId = typeof Reader !== "undefined" ? Reader.getCurrentDocId() : null;
+    const holder = document.querySelector("#article .folio-video[data-video-id]");
+    if (!docId || !holder || typeof Gemini === "undefined") return;
+    if (!Gemini.hasKey()) {
+      notify("Add your Gemini API key in Settings → Video first.");
+      return;
+    }
+    const parsed = Gemini.parseYouTube(
+      "https://www.youtube.com/watch?v=" + holder.dataset.videoId);
+    if (!parsed) return;
+    notify("Redoing the transcript…");
+    runTranscription(docId, parsed).catch((err) => {
+      notify(err && err.message ? err.message : "Transcription failed");
+    });
+  }
+
+  /*
+   * Is the transcript plausibly finished? Used to decide whether to offer the
+   * retry button. "Plausibly" because we can only compare the last line
+   * against the video's duration — if the transcript stops more than a couple
+   * of minutes short, it was cut off.
+   */
+  function transcriptLooksComplete() {
+    if (!segTimes.length) return false;
+    let dur = 0;
+    try { dur = player && player.getDuration ? player.getDuration() : 0; } catch { /* ignore */ }
+    if (!dur) return true;                       // can't tell — don't nag
+    return segTimes[segTimes.length - 1] >= dur - 120;
+  }
+
+  function updateRetryVisibility() {
+    if (!barEl) return;
+    const b = barEl.querySelector(".fv-retry");
+    if (!b) return;
+    const incomplete = !transcriptLooksComplete();
+    b.style.display = incomplete ? "" : "none";
+    b.title = segTimes.length
+      ? "Transcript stops early — click to redo it"
+      : "No transcript yet — click to generate it";
   }
 
   function openOnYouTube() {
@@ -452,6 +541,7 @@ const Video = (function () {
     if (sp) sp.textContent = (Math.round(rate * 100) / 100) + "×";
     const tm = barEl.querySelector(".fv-time");
     if (tm && typeof Gemini !== "undefined") tm.textContent = Gemini.formatTime(t);
+    updateRetryVisibility();
   }
 
   // ==========================================================================
@@ -604,6 +694,18 @@ const Video = (function () {
         try { return player.getCurrentTime(); } catch { return null; }
       },
     });
+  }
+
+  /*
+   * Non-blocking notice. alert() halts the page and demands a click, which is
+   * intolerable while you're watching something — it stops the video and
+   * breaks your train of thought. Falls back to alert only if the toast
+   * machinery isn't there at all.
+   */
+  function notify(msg) {
+    const m = String(msg || "");
+    if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(escapeHtml(m), 4000);
+    else if (typeof console !== "undefined") console.warn("[folio]", m);
   }
 
   function escapeHtml(s) {
@@ -846,11 +948,12 @@ const Video = (function () {
     try {
       await importUrl(url);
     } catch (err) {
-      alert(err && err.message ? err.message : "Could not import that video");
+      notify(err && err.message ? err.message : "Could not import that video");
     }
   }
 
   return {
+    notify,
     attach,
     detach,
     importUrl,

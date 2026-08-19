@@ -936,3 +936,7 @@ mark.pulsing {
 
 /* The read-aloud bar is suppressed on a video document, which has its own. */
 #tts-bar.hidden-by-video { display: none !important; }
+
+/* Retry appears only when the transcript is short of the video's end. */
+.fv-btn.fv-retry { color: var(--accent); }
+.fv-btn.fv-retry:hover { background: var(--accent); color: var(--paper); }
