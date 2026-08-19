@@ -362,6 +362,7 @@ const Gemini = (function () {
 
     const all = existing.slice();     // keep what is already there
     let firstError = null;
+    let stopped = false;              // a failure no other window can survive
     let doneWindows = 0;
     let totalToDo = 0;
 
@@ -392,6 +393,18 @@ const Gemini = (function () {
         return segs.length;
       } catch (err) {
         if (err && err.name === "AbortError") throw err;
+
+        /*
+         * Out of credit, wrong plan, disabled key: every remaining window will
+         * fail in exactly the same way, so stop the run rather than grinding
+         * through the rest and reporting a vague partial result.
+         */
+        if (err && err.terminal) {
+          log("terminal", { run: runId, chunk: i, msg: err.message });
+          if (!firstError) firstError = err;
+          stopped = true;
+          throw err;
+        }
 
         // Busy or rate-limited: wait and come back to it rather than leaving a
         // hole in the middle of the document.
@@ -454,9 +467,11 @@ const Gemini = (function () {
       let next = 0;
       const worker = async () => {
         for (;;) {
+          if (stopped) return;
           const k = next++;
           if (k >= todo.length) return;
-          await finishWindow(todo[k].w, todo[k].i);
+          try { await finishWindow(todo[k].w, todo[k].i); }
+          catch (err) { if (err && err.terminal) return; throw err; }
         }
       };
       await Promise.all(
@@ -798,11 +813,26 @@ const Gemini = (function () {
       return new Error("Gemini rejected the key. Check it in Settings → Video.");
     }
     if (res.status === 429) {
-      const e = new Error("Gemini rate limit reached. Try again shortly.");
+      /*
+       * 429 IS TWO COMPLETELY DIFFERENT FAILURES WEARING ONE STATUS CODE.
+       *
+       * "Your prepayment credits are depleted" arrives as a 429, and so does a
+       * genuine per-minute rate limit. This code used to print "rate limit
+       * reached, try again shortly" for both and throw Google's actual message
+       * away — so a run that had simply run out of money reported a temporary
+       * blip, retried four times per window, and gave up on four windows with
+       * nobody any the wiser. Retrying an empty account cannot ever work.
+       */
+      if (/credit|depleted|billing|payment|plan|exceeded your current quota/i.test(detail)) {
+        const e = new Error("Gemini has stopped accepting requests: " +
+                            (detail || "your account is out of credit."));
+        e.terminal = true;         // no amount of waiting fixes this
+        return e;
+      }
+      const e = new Error("Gemini rate limit reached" + (detail ? ": " + detail : "."));
       e.retryable = true;
-      // A quota refuses in milliseconds and keeps refusing. Backing off in
-      // seconds just burns the attempts — a live run spent all four inside
-      // 50 seconds and gave up on four windows.
+      // A real rate limit refuses in milliseconds and keeps refusing, so back
+      // off in tens of seconds rather than burning the attempts in under one.
       e.slow = true;
       return e;
     }

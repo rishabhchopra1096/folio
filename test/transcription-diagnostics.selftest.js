@@ -252,6 +252,32 @@ const slow = [15000, 45000, 90000, 150000].reduce((a, b) => a + b, 0);
 ok("the slow ladder actually waits meaningfully longer", slow > fast * 3,
    `${fast}ms vs ${slow}ms`);
 
+console.log("\n=== 429 is two different failures wearing one status code ===");
+/* "Your prepayment credits are depleted" arrives as a 429, exactly like a real
+   per-minute rate limit. The old code printed "rate limit reached, try again
+   shortly" for both and threw Google's real message away — so a run that had
+   simply run out of money looked like a temporary blip and was retried four
+   times per window. */
+ok("Google's actual message is no longer discarded",
+   !/new Error\("Gemini rate limit reached\. Try again shortly\."\)/.test(gsrc));
+ok("the real detail is passed through", /"Gemini rate limit reached" \+ \(detail \? ": " \+ detail : "\."\)/.test(gsrc));
+ok("an out-of-credit 429 is recognised", /credit\|depleted\|billing\|payment/.test(gsrc));
+ok("and marked terminal, because waiting cannot fix it", /e\.terminal = true;/.test(gsrc));
+ok("a terminal failure stops the whole run", /if \(err && err\.terminal\) \{/.test(gsrc));
+ok("other windows stop too rather than each failing the same way",
+   /if \(stopped\) return;/.test(gsrc));
+ok("it is logged distinctly from a retry", /log\("terminal"/.test(gsrc));
+
+// The classifier, exercised directly.
+const CLASSIFY = /credit|depleted|billing|payment|plan|exceeded your current quota/i;
+[["Your prepayment credits are depleted.", true],
+ ["You exceeded your current quota, please check your plan and billing details.", true],
+ ["Resource has been exhausted (e.g. check quota).", false],
+ ["Requests per minute exceeded for this model.", false],
+].forEach(([msg, terminal]) => {
+  ok(`${terminal ? "terminal" : "retryable"}: ${msg.slice(0, 46)}`, CLASSIFY.test(msg) === terminal);
+});
+
 console.log("\n=== resume attempts are counted, not infinite ===");
 ok("a cap exists", /MAX_AUTO_RESUMES/.test(vsrc));
 ok("only automatic resumes increment it",
