@@ -209,6 +209,8 @@ const Gemini = (function () {
     const segments = [];
     let finishReason = null;
     let lastPush = 0;
+    const loop = newLoopWatch();
+    let loopedAt = -1;
 
     const flush = (force) => {
       if (!onSegments || !segments.length) return;
@@ -253,13 +255,34 @@ const Gemini = (function () {
         const raw = textBuf.slice(0, mnl);
         textBuf = textBuf.slice(mnl + 1);
         const seg = parseJsonlLine(raw);
-        if (seg) segments.push(seg);
+        if (!seg) continue;
+        segments.push(seg);
+
+        /*
+         * Stop a model that has started repeating itself. Left alone it will
+         * happily emit the same handful of sentences until the token budget
+         * runs out — one real video produced 28 MINUTES of transcript past its
+         * own end this way, and burned several minutes of generation doing it.
+         * Everything before the loop is good, so keep that and stop.
+         */
+        if (loop.note(seg.text)) { loopedAt = loop.startedAt; break; }
       }
+      if (loopedAt >= 0) break;
       flush(false);
     }
 
-    // Whatever is left may be a final line with no trailing newline.
-    const tail = parseJsonlLine(textBuf);
+    if (loopedAt >= 0) {
+      segments.length = Math.max(0, loopedAt);
+      try { await reader.cancel(); } catch { /* already closed */ }
+      progress("Stopped early — the model began repeating itself");
+    }
+
+    /*
+     * Whatever is left may be a final line with no trailing newline — but not
+     * if we stopped for a loop, or we would push one of the repeated lines
+     * straight back on after having just trimmed them off.
+     */
+    const tail = loopedAt >= 0 ? null : parseJsonlLine(textBuf);
     if (tail) segments.push(tail);
 
     if (finishReason === "MAX_TOKENS") {
@@ -275,6 +298,89 @@ const Gemini = (function () {
                       (finishReason ? " (" + finishReason + ")" : ""));
     }
     return out;
+  }
+
+  /*
+   * WATCHING FOR A DEGENERATE REPETITION LOOP
+   * =========================================
+   * A large model transcribing a long video can fall into a cycle, emitting
+   * the same run of sentences over and over with the timestamps marching on.
+   * It looks like a transcript, so nothing downstream questions it.
+   *
+   * The naive test — "how many segments in a row have I seen before?" — false
+   * positives badly on exactly the content that triggered this. A Pokémon
+   * playthrough really does say "Wow, critical hit." dozens of times.
+   *
+   * So we require an ORDERED mirror: this segment repeats earlier segment j,
+   * the next repeats j+1, and so on, wrapping when the cycle starts over.
+   * Genuine speech does not replay eighteen sentences in the same order.
+   */
+  const LOOP_RUN = 18;
+
+  function newLoopWatch() {
+    const firstSeen = new Map();   // normalised text -> earliest index it appeared
+    let n = 0;                     // how many segments we have inspected
+    let run = 0;                   // length of the current ordered mirror
+    let expect = -1;               // index the NEXT segment should mirror
+    let mirrorStart = -1;          // index this run started mirroring
+    let period = 0;                // cycle length, once one wrap has happened
+    let startedAt = -1;            // index in OUR stream where the run began
+    let lastKey = null;            // previous line, for the period-1 case
+    let sameRun = 0;               // how many times it has repeated back-to-back
+    let sameStart = -1;
+
+    const reset = (i, j) => {
+      if (j < 0) { run = 0; expect = -1; mirrorStart = -1; period = 0; startedAt = -1; return; }
+      run = 1; mirrorStart = j; expect = j + 1; period = 0; startedAt = i;
+    };
+
+    return {
+      get startedAt() { return startedAt; },
+      /* Returns true once the run is long enough to call it a loop. */
+      note(text) {
+        const k = String(text == null ? "" : text)
+          .toLowerCase().replace(/\s+/g, " ").trim();
+        const i = n++;
+        if (!k) return false;
+
+        /*
+         * The simplest loop of all: one line, over and over. The cycle rule
+         * below deliberately ignores a period of 1 — otherwise "the same
+         * sentence said twice" would start a run — so it is caught here
+         * instead, where a long enough streak is unambiguous.
+         */
+        if (k === lastKey) { sameRun++; } else { sameRun = 1; sameStart = i; lastKey = k; }
+        if (sameRun >= LOOP_RUN) { startedAt = sameStart + 1; return true; }
+
+        if (!firstSeen.has(k)) {
+          firstSeen.set(k, i);
+          reset(i, -1);
+          return false;
+        }
+        const j = firstSeen.get(k);
+
+        if (j === expect) {
+          run++;
+          expect = j + 1;
+        } else if (j === mirrorStart && expect - mirrorStart > 1 &&
+                   (period === 0 || expect - mirrorStart === period)) {
+          /*
+           * The cycle has started over. Guarded three ways, because a loose
+           * wrap rule is worse than none: the run must have consumed at least
+           * two segments (so "the same line twice" is not a cycle), and once a
+           * period is established every later wrap must match it. Without the
+           * period check, four lines in random order kept the run alive by
+           * chance and a genuine transcript could be cut short.
+           */
+          period = expect - mirrorStart;
+          run++;
+          expect = mirrorStart + 1;
+        } else {
+          reset(i, j);
+        }
+        return run >= LOOP_RUN;
+      },
+    };
   }
 
   async function describeError(res) {
@@ -428,6 +534,8 @@ const Gemini = (function () {
     LONG_VIDEO_MINUTES,
     // exported for tests
     _normalizeSegments: normalizeSegments,
+    _newLoopWatch: newLoopWatch,
+    _LOOP_RUN: LOOP_RUN,
     _toSeconds: toSeconds,
   };
 })();

@@ -276,6 +276,8 @@ const Video = (function () {
       if (i > segTimes.length - 1) { nudge(10); return; }
     }
 
+    const dur = videoDuration();
+    if (dur && segTimes[i] > dur) { nudge(dir < 0 ? -10 : 10); return; }
     try { player.seekTo(segTimes[i], true); } catch { /* ignore */ }
     setActive(i);
   }
@@ -290,9 +292,11 @@ const Video = (function () {
     let i = nearestIn(ladder, cur);
     // Walk in the requested direction until something sticks, so one refused
     // rung doesn't block the ones beyond it.
+    let tried = false;
     for (let step = 1; step <= ladder.length; step++) {
       const j = Math.max(0, Math.min(ladder.length - 1, i + dir * step));
       if (j === i) break;
+      tried = true;
       const got = setSpeed(ladder[j]);
       if (got != null && Math.abs(got - ladder[j]) < 0.01) {
         syncBar();
@@ -301,6 +305,10 @@ const Video = (function () {
       }
       if (!refusedSpeeds.has(ladder[j])) break;
     }
+
+    // Walked the whole ladder and nothing above stuck — say so rather than
+    // leaving a dead key press to be interpreted as a bug.
+    if (tried && dir > 0) tellCeiling(cur);
   }
 
   function nearestIn(list, rate) {
@@ -472,33 +480,42 @@ const Video = (function () {
   }
 
   /*
-   * Use the speeds the player actually offers. Keeps anything at or below 3x —
-   * beyond that the audio is unusable for following along, and the ladder gets
-   * tedious to step through.
-   */
-  /*
-   * Rates the player has actually refused, so we stop offering them.
+   * PLAYBACK RATE: the embed really does stop at 2x. Measured, not assumed.
    *
-   * getAvailablePlaybackRates() is NOT the right source: it returns the
-   * IFrame API's advertised list, which stops at 2x even though youtube.com's
-   * own UI offers 3x. Trusting it capped playback at 2x. So we try the rate we
-   * want, read it back, and only give up on a value the player genuinely
-   * refused.
+   * I previously blamed getAvailablePlaybackRates() for the 2x cap, on the
+   * theory that it under-reported what the player could do because
+   * youtube.com's own UI offers 3x. That was wrong, and shipping it without
+   * checking was worse. Driving a real embed of a real video, playing:
+   *
+   *   advertised = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+   *   setPlaybackRate(1.5) -> 1.5      accepted
+   *   setPlaybackRate(2)   -> 2        accepted
+   *   setPlaybackRate(2.5) -> 2        IGNORED
+   *   setPlaybackRate(3)   -> 2        IGNORED
+   *
+   * The advertised list was accurate. Per the IFrame API contract an
+   * unsupported rate is silently ignored, and 3x on youtube.com is a
+   * first-party feature the embed API does not expose. The <video> element
+   * that could be driven past it lives in a cross-origin iframe, so it is out
+   * of reach. 2x is the ceiling here, and no amount of client code changes it.
+   *
+   * We still PROBE rather than trust the list: set the rate, read it back, and
+   * only give up on what is genuinely refused. That costs nothing, adapts by
+   * itself if YouTube ever lifts the cap, and — because a refusal is now
+   * surfaced instead of swallowed — stops this turning into a silent mystery
+   * a third time.
    */
   const refusedSpeeds = new Set();
+  let ceilingTold = false;
 
   function adoptPlayerSpeeds() {
-    // Nothing to adopt — the ladder is ours, and rates are proven by trying.
     if (!player || typeof player.getAvailablePlaybackRates !== "function") return;
     try {
-      console.log("[video] API advertises:", player.getAvailablePlaybackRates().join(", "),
-                  "— trying beyond it anyway");
+      console.log("[video] embed advertises:", player.getAvailablePlaybackRates().join(", "));
     } catch { /* ignore */ }
   }
 
-  /*
-   * Set a rate and confirm it took. Returns the rate actually in effect.
-   */
+  /* Set a rate and confirm it took. Returns the rate actually in effect. */
   function setSpeed(rate) {
     if (!player) return null;
     try {
@@ -506,7 +523,6 @@ const Video = (function () {
       const got = player.getPlaybackRate();
       if (Math.abs(got - rate) > 0.01) {
         refusedSpeeds.add(rate);
-        console.warn("[video] player refused", rate + "x", "— now at", got + "x");
         return got;
       }
       refusedSpeeds.delete(rate);
@@ -514,6 +530,13 @@ const Video = (function () {
     } catch {
       return null;
     }
+  }
+
+  // Said once, when you ask for more than the embed will give.
+  function tellCeiling(at) {
+    if (ceilingTold) return;
+    ceilingTold = true;
+    notify("YouTube's embedded player won't go past " + at + "\u00d7.");
   }
 
   function usableSpeeds() {
@@ -529,7 +552,40 @@ const Video = (function () {
 
   function nudge(sec) {
     if (!player) return;
-    try { player.seekTo(Math.max(0, player.getCurrentTime() + sec), true); } catch { /* ignore */ }
+    try { player.seekTo(clampToVideo(player.getCurrentTime() + sec), true); } catch { /* ignore */ }
+  }
+
+  /* The player's duration, or 0 when it isn't ready to say. */
+  function videoDuration() {
+    try {
+      const d = player && player.getDuration();
+      return d && isFinite(d) && d > 0 ? d : 0;
+    } catch { return 0; }
+  }
+
+  // Never seek outside the video. A hallucinated transcript can carry
+  // timestamps well past the end, and seeking there strands the playhead.
+  function clampToVideo(t) {
+    const dur = videoDuration();
+    if (!isFinite(t) || t < 0) t = 0;
+    return dur ? Math.min(t, Math.max(0, dur - 1)) : t;
+  }
+
+  /*
+   * Drop transcript segments that start after the video ends.
+   *
+   * A model that falls into a repetition loop keeps marching the timestamps
+   * forward, so a 52-minute video came back with lines stamped up to 1:21:01.
+   * Those lines are not merely mislabelled, they are invented — there is no
+   * video there for them to describe. Cut at the first one; the timestamps are
+   * ascending, so everything after it is invented too.
+   */
+  function trimToDuration(segments) {
+    const dur = videoDuration();
+    if (!dur || !segments.length) return segments;
+    const limit = dur + 5;          // a little slack for rounding
+    const i = segments.findIndex((s) => s.start > limit);
+    return i === -1 ? segments : segments.slice(0, i);
   }
 
   function cycleSpeed() {
@@ -859,6 +915,7 @@ const Video = (function () {
 
     let lastCount = 0;
     const write = (segments) => {
+      segments = trimToDuration(segments);
       if (!segments.length) return;
       lastCount = segments.length;
       writeBlocks(docId, buildBlocks(parsed, segments, true));
@@ -885,6 +942,8 @@ const Video = (function () {
     }
 
     clearPending(docId);
+    segments = trimToDuration(segments);
+    if (!segments.length) throw new Error("Transcript had no usable lines.");
     writeBlocks(docId, buildBlocks(parsed, segments, false));
 
     // Comments taken while the transcript was still generating were anchored

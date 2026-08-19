@@ -947,6 +947,19 @@ mark.pulsing {
 /* The read-aloud bar is suppressed on a video document, which has its own. */
 #tts-bar.hidden-by-video { display: none !important; }
 
+/* The timestamp peeled off the front of a highlighted transcript line. */
+.comment-stamp {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-style: normal;
+  font-size: 0.9em;
+}
+
 /* Scrubber — replaces the YouTube seek bar we gave up with controls:0 */
 .fv-seek {
   flex: 1 1 auto;

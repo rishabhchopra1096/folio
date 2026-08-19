@@ -990,14 +990,16 @@ const TTS = (function () {
       discardDictationHighlight();
     } else if (typeof Comments !== "undefined" && Comments.addComment) {
       /*
-       * With no highlight — which on a video means the transcript hasn't
-       * arrived yet — record where in the video this was said, so it can be
-       * matched to its line once the transcript lands.
+       * Record WHERE IN THE VIDEO this was said — always, not just when there
+       * is no highlight to hang it on.
+       *
+       * The moment is the only unambiguous anchor a video comment has. Line
+       * text is not: a transcript that repeats itself matches the same words
+       * in dozens of places, and the export then files notes under the wrong
+       * one. Storing it costs a number and settles the question forever.
        */
       let at = null;
-      if (!highlightId && clockActive() && externalClock.currentTime) {
-        at = externalClock.currentTime();
-      }
+      if (clockActive() && externalClock.currentTime) at = externalClock.currentTime();
       Comments.addComment(highlightId, text, attachedDocId, at);
       const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
       // The toast renders HTML (for the <kbd> hints), so transcript text —
@@ -1039,7 +1041,11 @@ const TTS = (function () {
   let retrying = false;
 
   function queueForRetry(blob, highlightId) {
-    pending.push({ blob: blob, highlightId: highlightId,
+    // Capture the moment NOW. By the time this uploads the video has moved on,
+    // so asking the clock at retry time would stamp it with the wrong instant.
+    let at = null;
+    if (clockActive() && externalClock.currentTime) at = externalClock.currentTime();
+    pending.push({ blob: blob, highlightId: highlightId, videoTime: at,
                    docId: attachedDocId, tries: 1 });
     updatePendingUI();
     toast('<span class="tts-rec-dot"></span>Offline — recording held, ' +
@@ -1068,7 +1074,7 @@ const TTS = (function () {
         const text = await Voice.transcribe(item.blob);
         if (text && typeof Comments !== "undefined" && Comments.addComment) {
           // Attach to the doc it came from, not whatever is open now.
-          Comments.addComment(item.highlightId, text, item.docId);
+          Comments.addComment(item.highlightId, text, item.docId, item.videoTime);
           saved++;
         }
       } catch (err) {

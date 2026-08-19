@@ -350,7 +350,18 @@ const Comments = (function () {
       } else if (isOrphan) {
         contextHtml = '<div class="comment-context-label muted">(highlight removed)</div>';
       } else {
-        contextHtml = `<div class="comment-highlight-text">${escapeHtml(hl.text)}</div>`;
+        /*
+         * A transcript line carries its timestamp in a chip at the front, and
+         * selecting the line sweeps the chip's text into the highlight — which
+         * rendered as "20:14Excellent. No nickname…", the stamp glued to the
+         * first word. Peel it back off and show it as a stamp.
+         */
+        const m = /^(\d{1,2}:\d{2}(?::\d{2})?)\s*(.*)$/s.exec(hl.text || "");
+        contextHtml = m
+          ? `<div class="comment-highlight-text">` +
+            `<span class="comment-stamp">${escapeHtml(m[1])}</span>` +
+            `${escapeHtml(m[2])}</div>`
+          : `<div class="comment-highlight-text">${escapeHtml(hl.text)}</div>`;
       }
 
       const entry = document.createElement("div");
@@ -487,7 +498,14 @@ const Comments = (function () {
      * transcript arrives that timestamp identifies the line, and the comment
      * gets re-pointed at it — see Video.reconcileTimedComments.
      */
-    if (typeof videoTime === "number" && isFinite(videoTime) && !highlightId) {
+    /*
+     * Kept whether or not a highlight exists. It used to be stored only for
+     * comments with no highlight, on the reasoning that an attached comment
+     * already knows its line — but that threw away the one piece of
+     * information that is unambiguous. When a transcript repeats itself, the
+     * line text matches in eighty places and the moment matches in one.
+     */
+    if (typeof videoTime === "number" && isFinite(videoTime)) {
       rec.videoTime = videoTime;
     }
     comments.push(rec);
@@ -837,6 +855,47 @@ const Comments = (function () {
      * substring test for a hand-made partial selection.
      */
     const lineComments = new Map();     // block index -> comments
+    const addTo = (idx, cs) => {
+      if (!lineComments.has(idx)) lineComments.set(idx, []);
+      lineComments.get(idx).push.apply(lineComments.get(idx), cs);
+    };
+
+    /*
+     * Timestamped comments are placed by WHEN THEY WERE SPOKEN, which is exact.
+     *
+     * Matching on text used to do this job, and it is wrong in a way that only
+     * shows up on a bad transcript: it takes the FIRST line whose text
+     * matches. When the model loops and emits the same sentence eighty times,
+     * every comment in the second half of the video lands on the first copy.
+     * A real export put notes recorded at 20:14 and 25:32 under the line at
+     * 6:50. The panel had it right the whole time because it reads videoTime.
+     */
+    const timeline = [];                // [{t, idx}] over transcript lines
+    blocks.forEach((b, i) => {
+      if (b.type === "paragraph" && b.data.t != null) timeline.push({ t: b.data.t, idx: i });
+    });
+    const lineAt = (t) => {
+      let best = -1;
+      for (const e of timeline) { if (e.t <= t + 0.5) best = e.idx; else break; }
+      return best;
+    };
+
+    comments.forEach((c) => {
+      if (typeof c.videoTime !== "number" || !isFinite(c.videoTime)) return;
+      if (!timeline.length) return;
+      const idx = lineAt(c.videoTime);
+      if (idx === -1) return;           // spoken before the first line
+      addTo(idx, [c]);
+      if (c.highlightId != null) {
+        const rest = (byHighlight.get(c.highlightId) || []).filter((x) => x !== c);
+        if (rest.length) byHighlight.set(c.highlightId, rest);
+        else byHighlight.delete(c.highlightId);
+      } else {
+        const k = general.indexOf(c);
+        if (k !== -1) general.splice(k, 1);
+      }
+    });
+
     highlights.forEach((hl) => {
       const cs = byHighlight.get(hl.id);
       if (!cs || !cs.length) return;
@@ -852,8 +911,7 @@ const Comments = (function () {
         }
       });
       if (best === -1) { general.push.apply(general, cs); return; }
-      if (!lineComments.has(best)) lineComments.set(best, []);
-      lineComments.get(best).push.apply(lineComments.get(best), cs);
+      addTo(best, cs);
       byHighlight.delete(hl.id);          // claimed
     });
 
@@ -893,7 +951,14 @@ const Comments = (function () {
       out.push(`**[${stamp}]** ${stripTags(b.data.text || "")}`);
       const cs = lineComments.get(i);
       if (cs && cs.length) {
-        cs.forEach((c) => out.push(`  > 💬 ${flatten(c.text)}`));
+        cs.forEach((c) => {
+          // Its own stamp, when known — so you can always see the moment a
+          // note was made rather than trusting where it got filed.
+          const at = typeof c.videoTime === "number" && isFinite(c.videoTime) &&
+                     typeof Gemini !== "undefined"
+            ? `[${Gemini.formatTime(c.videoTime)}] ` : "";
+          out.push(`  > 💬 ${at}${flatten(c.text)}`);
+        });
       }
       out.push("");
     });
