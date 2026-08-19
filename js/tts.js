@@ -835,6 +835,7 @@ const TTS = (function () {
    * you in the flow of listening rather than pulling you into the UI.
    */
   let micState = "idle";       // 'idle' | 'recording' | 'transcribing'
+  let micDocId = null;         // the document the current recording belongs to
   let micHandle = null;        // Voice module recording handle
   let micHighlightId = null;   // the paragraph this dictation belongs to
   let micResumeAfter = false;  // was it reading when the mic was pressed?
@@ -874,6 +875,12 @@ const TTS = (function () {
     }
 
     micHighlightId = highlightCurrentBlock();
+    /*
+     * Pin the document NOW. `attachedDocId` is cleared by detach(), which can
+     * fire while you are still talking, and a comment saved afterwards would
+     * otherwise be filed against whatever happens to be open.
+     */
+    micDocId = attachedDocId;
 
     try {
       micHandle = await Voice.startRecording();
@@ -984,6 +991,7 @@ const TTS = (function () {
   function saveDictation(text, highlightId) {
     micState = "idle";
     updateMic();
+    announceDictationEnd();
 
     if (!text) {
       toast("Nothing recorded", 1800);
@@ -1000,7 +1008,7 @@ const TTS = (function () {
        */
       let at = null;
       if (clockActive() && externalClock.currentTime) at = externalClock.currentTime();
-      Comments.addComment(highlightId, text, attachedDocId, at);
+      Comments.addComment(highlightId, text, micDocId || attachedDocId, at);
       const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
       // The toast renders HTML (for the <kbd> hints), so transcript text —
       // which comes back from the speech API — has to be escaped.
@@ -1046,7 +1054,7 @@ const TTS = (function () {
     let at = null;
     if (clockActive() && externalClock.currentTime) at = externalClock.currentTime();
     pending.push({ blob: blob, highlightId: highlightId, videoTime: at,
-                   docId: attachedDocId, tries: 1 });
+                   docId: micDocId || attachedDocId, tries: 1 });
     updatePendingUI();
     toast('<span class="tts-rec-dot"></span>Offline — recording held, ' +
           'will retry when you reconnect', 4200);
@@ -1147,6 +1155,21 @@ const TTS = (function () {
     else play();
   }
 
+  /* True while a recording is being captured or uploaded. */
+  function isDictating() {
+    return micState === "recording" || micState === "transcribing";
+  }
+
+  /*
+   * Anything that would disturb the page while someone is talking waits for
+   * this — see Video.writeBlocks, which holds its re-render back.
+   */
+  function announceDictationEnd() {
+    try {
+      document.dispatchEvent(new CustomEvent("folio:dictation-end"));
+    } catch { /* ignore */ }
+  }
+
   function cancelDictation() {
     if (micState !== "recording") return;
     if (micHandle && typeof Voice !== "undefined") Voice.cancelRecording(micHandle);
@@ -1156,6 +1179,7 @@ const TTS = (function () {
     updateMic();
     hideToast();
     toast("Discarded", 1400);
+    announceDictationEnd();
     if (micResumeAfter) resumeAfterDictation();
   }
 
@@ -1340,7 +1364,23 @@ const TTS = (function () {
   }
 
   function detach() {
-    cancelDictation();   // release the mic before the DOM goes away
+    /*
+     * NEVER cancel a recording here.
+     *
+     * This used to call cancelDictation(), and it silently destroyed voice
+     * notes. detach() runs on every re-render, and a streaming transcript
+     * re-renders the document every 1.5 seconds — so while a transcription was
+     * in progress, any recording was killed within a second and a half of
+     * starting. Recording during transcription was simply impossible, and the
+     * audio was gone with it.
+     *
+     * A recording does not depend on the DOM. Only the highlight it will
+     * attach to does, and losing that costs a line of context, not the note.
+     * So finish it: transcribe and save to the document it began in.
+     */
+    if (micState === "recording") {
+      finishDictation().catch(() => { /* the retry queue owns it from here */ });
+    }
     stop(true);
     hideBar();
     attachedDocId = null;
@@ -1721,6 +1761,7 @@ const TTS = (function () {
     setExternalClock,
     // Providers reuse the player's status line.
     toast,
+    isDictating,
     isPlaying: () => playing,
     isSupported: () => WebSpeechProvider.available(),
   };

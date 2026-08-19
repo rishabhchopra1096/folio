@@ -194,6 +194,15 @@ const Video = (function () {
    * skipped while typing, and — critically — they work because YouTube's own
    * chrome is off, so focus never leaves the document.
    */
+  /*
+   * A dictation just ended, so any transcript update held back while it was
+   * running can now be drawn.
+   */
+  document.addEventListener("folio:dictation-end", () => {
+    // After the save has settled, so the comment is on the page it lands on.
+    setTimeout(flushDeferredRender, 0);
+  });
+
   function initShortcuts() {
     if (document.body.dataset.videoKeys) return;
     document.body.dataset.videoKeys = "1";
@@ -1188,12 +1197,35 @@ const Video = (function () {
     });
   }
 
-  // Persist blocks and re-render if that document is the one on screen.
+  /*
+   * Persist blocks and re-render if that document is the one on screen.
+   *
+   * THE RE-RENDER WAITS WHILE YOU ARE TALKING. A streaming transcript writes
+   * every 1.5 seconds, every write re-rendered the document, and a re-render
+   * tore down the dictation — so recording a voice note during a transcription
+   * destroyed it within a second and a half. Storage is still updated on every
+   * write, so nothing is lost if the page dies; only the DOM update is held
+   * back, and it runs the moment the dictation finishes.
+   */
+  let deferredRenderDoc = null;
+
   function writeBlocks(docId, blocks) {
     FolioStore.updateDocument(docId, { content: { time: Date.now(), blocks: blocks } });
-    if (typeof Reader !== "undefined" && Reader.getCurrentDocId() === docId) {
-      Reader.renderDocument(docId);
+    if (typeof Reader === "undefined" || Reader.getCurrentDocId() !== docId) return;
+
+    if (typeof TTS !== "undefined" && TTS.isDictating && TTS.isDictating()) {
+      deferredRenderDoc = docId;
+      return;
     }
+    Reader.renderDocument(docId);
+  }
+
+  function flushDeferredRender() {
+    const docId = deferredRenderDoc;
+    deferredRenderDoc = null;
+    if (!docId || typeof Reader === "undefined") return;
+    if (Reader.getCurrentDocId() !== docId) return;
+    Reader.renderDocument(docId);
   }
 
   /*
