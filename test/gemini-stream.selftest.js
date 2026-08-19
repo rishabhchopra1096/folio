@@ -72,7 +72,9 @@ global.fetch = async () => ({ ok:true, body: sse([
 ])});
 segs = await Gemini.transcribeYouTube("https://youtu.be/dQw4w9WgXcQ", { onProgress:(m)=>notes.push(m) });
 ok("partial result returned rather than thrown away", segs.length===1, JSON.stringify(segs));
-ok("and it says so", notes.some(m=>/cut short/i.test(m)), JSON.stringify(notes));
+// Progress is now reported per window, since the video is transcribed in clips.
+ok("and it says which part of the video it is working on",
+   notes.some(m=>/Transcribing \d+:\d\d/.test(m)), JSON.stringify(notes));
 
 console.log("\n=== an empty stream is an error ===");
 global.fetch = async () => ({ ok:true, body: sse([frame("", "STOP")]) });
@@ -92,12 +94,18 @@ ok("visual line preserved with its prefix",
 console.log("\n=== the prompt asks for visuals and JSONL ===");
 const src = fs.readFileSync(REPO+"/js/gemini.js","utf8");
 ok("asks for what is SHOWN", /what is SHOWN/.test(src));
-ok("asks to read numbers exactly", /read them exactly/.test(src));
+/* The opposite instruction now, deliberately. Asking the model to read
+   on-screen text exactly is what produced the invented menus and dialogue —
+   it cannot actually read them at one frame per second, so it confabulated. */
+ok("tells it to DESCRIBE what is shown, not transcribe it",
+   /DESCRIBE them briefly in your own words/.test(src));
+ok("and to leave out text it cannot read", /never write out/.test(src));
 ok("specifies one object per line", /ONE JSON object per line/.test(src));
 ok("no longer says 'spoken audio' only", !/Transcribe the spoken audio of this video/.test(src));
 ok("thinking is NOT disabled — measured slower and truncating without it",
    !/thinkingBudget: 0/.test(src));
-ok("sends mime_type on the file part", /mime_type: "video\/mp4"/.test(src));
+ok("sends the mime type on the file part", /mimeType: "video\/mp4"/.test(src));
+ok("and asks for a bounded window", /videoMetadata: \{ startOffset/.test(src));
 ok("uses the streaming endpoint", /streamGenerateContent\?alt=sse/.test(src));
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

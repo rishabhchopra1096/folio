@@ -166,6 +166,7 @@ const Video = (function () {
       events: {
         onReady: () => {
           mounted = true;
+          rememberDuration();
           syncBar();
           startPolling();
         },
@@ -493,6 +494,56 @@ const Video = (function () {
   function nudge(sec) {
     if (!player) return;
     try { player.seekTo(clampToVideo(player.getCurrentTime() + sec), true); } catch { /* ignore */ }
+  }
+
+  /*
+   * Write the video's length into its block, once, the first time the player
+   * knows it.
+   *
+   * Chunked transcription needs the length to plan its windows. Reading it
+   * from the document means a retry or a resume can start immediately instead
+   * of waiting around for a player that may not even be on screen yet.
+   */
+  function rememberDuration() {
+    const docId = typeof Reader !== "undefined" ? Reader.getCurrentDocId() : null;
+    const dur = Math.round(videoDuration());
+    if (!docId || !dur) return;
+    try {
+      const doc = FolioStore.getDocument(docId);
+      const blocks = (doc && doc.content && doc.content.blocks) || [];
+      const vb = blocks.find((b) => b.type === "video");
+      if (!vb || vb.data.duration === dur) return;
+      vb.data.duration = dur;
+      FolioStore.saveDocument(docId, { time: Date.now(), blocks: blocks });
+    } catch { /* not worth breaking playback over */ }
+  }
+
+  /* The length recorded in the document, if we have ever seen it. */
+  function storedDuration(docId) {
+    try {
+      const doc = FolioStore.getDocument(docId);
+      const blocks = (doc && doc.content && doc.content.blocks) || [];
+      const vb = blocks.find((b) => b.type === "video");
+      const d = vb && vb.data && Number(vb.data.duration);
+      return d > 0 ? d : 0;
+    } catch { return 0; }
+  }
+
+  /*
+   * Wait briefly for the player to know the video's length.
+   *
+   * On a fresh import the transcription starts as the player is still coming
+   * up, so asking immediately usually returns 0. A short poll is enough, and
+   * giving up quietly is fine — the transcriber copes with an unknown length.
+   */
+  async function awaitDuration(ms) {
+    const until = Date.now() + (ms || 0);
+    for (;;) {
+      const d = videoDuration();
+      if (d) return d;
+      if (Date.now() >= until) return 0;
+      await new Promise((r) => setTimeout(r, 250));
+    }
   }
 
   /* The player's duration, or 0 when it isn't ready to say. */
@@ -915,6 +966,10 @@ const Video = (function () {
         onSegments: write,
         docId: docId,
         reason: reason,
+        // Chunking needs to know how long the video is. Without it the
+        // transcriber walks forward blindly until two windows come back empty,
+        // which works but wastes a request or two at the end.
+        durationSec: storedDuration(docId) || await awaitDuration(8000),
       });
     } catch (err) {
       clearPending(docId);

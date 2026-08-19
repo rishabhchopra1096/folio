@@ -70,7 +70,8 @@ Gemini.clearLog();
 ok("says so when empty", /No transcription activity/.test(Gemini.formatLog()));
 
 console.log("\n=== every way a run can end is distinguishable ===");
-[["request", "a run started"], ["http", "the HTTP response"],
+[["request", "a run started"], ["http", "the HTTP response"], ["chunkdone", "each window"],
+ ["chunkfailed", "a window that failed"],
  ["httperror", "a rejected request"], ["neterror", "a dead connection"],
  ["firstline", "time to first line"], ["progress", "where it got to"],
  ["finishreason", "why the model stopped"], ["loop", "a repetition loop"],
@@ -85,6 +86,7 @@ console.log("\n=== every way a run can end is distinguishable ===");
 });
 ok("token usage is captured, so MAX_TOKENS is explainable",
    /outputTokens: usage \? usage\.candidatesTokenCount/.test(gsrc));
+ok("per-window cost is visible", /promptTokens: usage \? usage\.promptTokenCount/.test(gsrc));
 ok("thinking tokens too", /thoughtTokens/.test(gsrc));
 
 console.log("\n=== a reload during a RETRY resumes instead of abandoning ===");
@@ -138,7 +140,7 @@ const retryState = { url: "https://www.youtube.com/watch?v=TJgg3eMUp7M",
                      reason: "retry", resumes: 0, lines: 210 };
 // A document that already HAS lines and no placeholder — the retry case.
 const docWithLines = { meta: { title: "x" }, content: { blocks: [
-  { type: "video", data: { videoId: "TJgg3eMUp7M" } },
+  { type: "video", data: { videoId: "TJgg3eMUp7M", duration: 2158 } },
   { type: "paragraph", data: { text: "A real transcribed line.", t: 0 } },
   { type: "paragraph", data: { text: "Another one.", t: 9 } },
 ]}};

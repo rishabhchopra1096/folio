@@ -52,6 +52,38 @@ ok("cuts at the first repeat, not later", r.at === 3 + CYCLE.length,
 ok("stops within three cycles, not twenty",
    r.i < 3 + CYCLE.length * 3, "fired at segment " + r.i);
 
+console.log("\n=== the SECOND real loop: identical except for the numbers ===");
+/* A 36-minute video came back with ~14 minutes of a fabricated battle on
+   repeat. Verbatim matching never fired once, because the level and stats
+   counted up every cycle so no two lines were ever byte-identical. The loop
+   also interleaved: a fixed line alternating with the varying one. */
+const DIGLETT = [];
+for (let lvl = 13; lvl < 60; lvl++) {
+  DIGLETT.push("All right. I'm going to jump down here so that I can fight this guy.");
+  DIGLETT.push("[shows] Hey! You're not wearing shorts! YOUNGSTER wants to fight! " +
+    "YOUNGSTER sent out DIGLETT! L13. Go! NIDORAN\u2640! L" + lvl + ". " +
+    "Enemy DIGLETT fainted! NIDORAN\u2640 gained 133 EXP. Points! " +
+    "NIDORAN\u2640 grew to level " + (lvl + 1) + "! ATTACK " + (2 * lvl) +
+    " DEFENSE " + (2 * lvl - 4) + " SPEED " + (2 * lvl - 3) + " SPECIAL " + (2 * lvl - 4) + ".");
+}
+const opening = ["Welcome back to more Pokemon Red.",
+                 "In the last episode I did a lot of grinding.",
+                 "Let me go to the Mart here."];
+const dg = run(opening.concat(DIGLETT));
+ok("the numeric-varying loop is caught", dg.fired);
+ok("the genuine opening is kept", dg.at >= opening.length, "cut at " + dg.at);
+ok("it stops early rather than after fourteen minutes",
+   dg.i < opening.length + 45, "fired at segment " + dg.i);
+
+// Prove WHY the old detector missed it: nothing repeats verbatim.
+const verbatimDupes = DIGLETT.length - new Set(DIGLETT).size;
+ok("only the fixed half repeats verbatim — the other half never does",
+   verbatimDupes === DIGLETT.length / 2 - 1,
+   verbatimDupes + " verbatim duplicates out of " + DIGLETT.length);
+ok("collapsing digits is what makes the cycle visible",
+   new Set(DIGLETT.map((x) => x.toLowerCase().replace(/\d+/g, "#"))).size === 2,
+   String(new Set(DIGLETT.map((x) => x.toLowerCase().replace(/\d+/g, "#"))).size));
+
 console.log("\n=== a single pass through the same lines is NOT a loop ===");
 ok("one pass is fine", !run(["intro"].concat(CYCLE)).fired);
 ok("two passes still under threshold is fine",
@@ -130,8 +162,10 @@ ok("it breaks out of the read loop", /if \(loopedAt >= 0\) break;/.test(gsrc));
 ok("the repeated tail is trimmed off", /segments\.length = Math\.max\(0, loopedAt\)/.test(gsrc));
 ok("the download is cancelled, not left running", /await reader\.cancel\(\)/.test(gsrc));
 ok("the trailing partial line is NOT re-added after trimming",
-   /loopedAt >= 0 \? null : parseJsonlLine\(textBuf\)/.test(gsrc));
+   /reader\.cancel\(\)[\s\S]{0,400}\} else \{[\s\S]{0,400}parseJsonlLine\(textBuf\)/.test(gsrc));
 ok("the user is told why it stopped", /began repeating itself/.test(gsrc));
+ok("only that window is discarded, not the whole video",
+   /one bad window must not cost the rest/i.test(gsrc));
 
 console.log("\n=== duration backstop in video.js ===");
 const vsrc = fs.readFileSync(REPO + "/js/video.js", "utf8");

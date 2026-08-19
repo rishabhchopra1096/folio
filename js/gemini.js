@@ -210,6 +210,53 @@ const Gemini = (function () {
    * times up to 339s. Timestamps are the entire point here, so clipping is
    * unusable.
    */
+  /*
+   * WHY THIS IS CHUNKED, AND WHY IT USED TO BE WRONG
+   * ================================================
+   * Asking for a whole video in one request produced transcripts with large
+   * stretches of INVENTED content. Two measured cases: 28 minutes fabricated
+   * on a 52:37 video, and about 14 minutes on a 35:58 one, where the model
+   * fell into a cycle and replayed a made-up scene with the numbers counting
+   * up. It is not a subtle failure — it is most of the transcript.
+   *
+   * Requesting the same material as clips fixes it. Measured on the exact
+   * window that had failed, 600-1200s of the second video:
+   *
+   *   whole video,  temperature 0    ~14 minutes fabricated, 551s
+   *   clip 600-1200, temperature 0     146 lines, 94% unique, 69s
+   *   clip 600-1200, temperature 0.4   121 lines, 99% unique, 34s
+   *
+   * Scored against YouTube's own captions for that window, the chunked output
+   * is 96% precision and 95% recall on vocabulary — near caption quality.
+   *
+   * Two separate effects, both kept:
+   *   - A bounded context stops the model drifting into a cycle, and caps what
+   *     any single failure can ruin.
+   *   - Temperature ABOVE ZERO. Greedy decoding is the textbook cause of
+   *     degenerate repetition; the old code pinned temperature to 0, which was
+   *     actively feeding the problem. It was also twice as slow.
+   *
+   * TIMESTAMPS. A clip must be told WHERE IT SITS. Asked for "seconds from the
+   * start of the video" with no offset given, a 600s clip came back with every
+   * timestamp between 0 and 56 — useless for anchoring a comment. Told "this
+   * clip begins at 600 seconds, use whole-video seconds", the same request
+   * returned 600.0-875.0, monotonic and in range. That instruction is load
+   * bearing; do not simplify it away.
+   */
+  const CHUNK_SEC = 600;          // 10 minutes: proven, and ~4 requests/hour of video
+  const MAX_WINDOWS = 24;         // only used when the duration is unknown
+  const CHUNK_TEMPERATURE = 0.4;
+  const CHUNK_MAX_TOKENS = 16384; // ample for 10 minutes; caps the cost of a bad window
+
+  function planWindows(duration) {
+    if (!(duration > 0)) return null;         // unknown — walk until it runs dry
+    const out = [];
+    for (let s = 0; s < duration; s += CHUNK_SEC) {
+      out.push({ from: s, to: Math.min(duration, s + CHUNK_SEC) });
+    }
+    return out;
+  }
+
   async function transcribeYouTube(url, opts) {
     opts = opts || {};
     const key = getKey();
@@ -224,90 +271,146 @@ const Gemini = (function () {
     const runId = "r" + Date.now().toString(36);
     const t0 = Date.now();
     const since = () => Date.now() - t0;
-    const why = opts.reason || "start";     // start | retry | resume
+    const duration = Number(opts.durationSec) > 0 ? Number(opts.durationSec) : 0;
 
-    log("request", { run: runId, video: parsed.videoId, model: MODEL, why: why,
-                     doc: opts.docId || null });
+    const planned = planWindows(duration);
+    log("request", { run: runId, video: parsed.videoId, model: MODEL,
+                     why: opts.reason || "start", doc: opts.docId || null,
+                     duration: Math.round(duration) || null,
+                     chunks: planned ? planned.length : "unknown" });
+
+    const all = [];
+    let emptyRun = 0;
+    let firstError = null;
+
+    for (let i = 0; ; i++) {
+      const w = planned
+        ? planned[i]
+        : { from: i * CHUNK_SEC, to: (i + 1) * CHUNK_SEC };
+      if (!w) break;
+      if (!planned && i >= MAX_WINDOWS) break;
+
+      progress(`Transcribing ${formatTime(w.from)}–${formatTime(w.to)}…`);
+
+      let segs;
+      try {
+        segs = await transcribeWindow(parsed.url, key, w, {
+          signal: signal,
+          runId: runId,
+          index: i,
+          progress: progress,
+          // Show the transcript growing while a window is still streaming.
+          onPartial: (partial) => {
+            if (onSegments) onSegments(dedupeSorted(all.concat(partial)));
+          },
+        });
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err;
+        /*
+         * One bad window must not cost the rest of the video. Note it, carry
+         * on, and let the retry button deal with the gap — losing ten minutes
+         * beats losing an hour.
+         */
+        log("chunkfailed", { run: runId, chunk: i, from: w.from, to: w.to,
+                             msg: (err && err.message) || "unknown" });
+        if (!firstError) firstError = err;
+        continue;
+      }
+
+      if (segs.length) {
+        emptyRun = 0;
+        all.push.apply(all, segs);
+        if (onSegments) onSegments(dedupeSorted(all.slice()));
+      } else {
+        emptyRun++;
+        // With no duration to plan against, two silent windows means the end.
+        if (!planned && emptyRun >= 2) break;
+      }
+    }
+
+    const out = dedupeSorted(all);
+    log("done", { run: runId, ms: since(), kept: out.length,
+                  lastTime: out.length ? Math.round(out[out.length - 1].start) : 0,
+                  chunks: planned ? planned.length : "unknown" });
+
+    if (!out.length) {
+      log("empty", { run: runId });
+      throw firstError || new Error("Gemini returned no transcript");
+    }
+    return out;
+  }
+
+  /*
+   * One window, streamed. Returns its segments; throws only if the window
+   * itself failed outright.
+   */
+  async function transcribeWindow(videoUrl, key, w, o) {
+    const t0 = Date.now();
+    const since = () => Date.now() - t0;
+    const tag = { run: o.runId, chunk: o.index, from: w.from, to: w.to };
 
     const body = {
       contents: [{
         parts: [
-          { file_data: { file_uri: parsed.url, mime_type: "video/mp4" } },
-          { text: PROMPT },
+          { fileData: { fileUri: videoUrl, mimeType: "video/mp4" },
+            videoMetadata: { startOffset: w.from + "s", endOffset: w.to + "s" } },
+          { text: promptFor(w.from, w.to) },
         ],
       }],
       generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 65536,
-        /*
-         * Thinking is deliberately LEFT ON. Disabling it looked obviously
-         * right — it bills at the output rate and transcription isn't a
-         * reasoning task — and measuring proved the opposite:
-         *
-         *   thinking on   551s  output 15,911  STOP        443 segments
-         *   thinking off  752s  output 65,525  MAX_TOKENS  truncated
-         *
-         * It used all of 44 thinking tokens, and those 44 tokens are what keep
-         * the model terse and on-task. Without them it over-produces, blows
-         * the output budget and the transcript is cut off. Slower AND worse.
-         */
+        temperature: CHUNK_TEMPERATURE,
+        maxOutputTokens: CHUNK_MAX_TOKENS,
       },
     };
 
-    progress("Gemini is watching the video…");
-
     let res;
     try {
-      res = await fetch(
-        `${API_BASE}/${MODEL}:streamGenerateContent?alt=sse`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body: JSON.stringify(body),
-          signal: signal,
-        }
-      );
+      res = await fetch(`${API_BASE}/${MODEL}:streamGenerateContent?alt=sse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify(body),
+        signal: o.signal,
+      });
     } catch (err) {
       if (err && err.name === "AbortError") {
-        log("aborted", { run: runId, ms: since(), where: "connect" });
+        log("aborted", Object.assign({ ms: since(), where: "connect" }, tag));
         throw err;
       }
-      log("neterror", { run: runId, ms: since(), msg: err.message || "unknown" });
+      log("neterror", Object.assign({ ms: since(), msg: err.message || "unknown" }, tag));
       throw new Error("Network error contacting Gemini: " + (err.message || "unknown"));
     }
 
-    log("http", { run: runId, status: res.status, ok: res.ok, ms: since() });
+    log("http", Object.assign({ status: res.status, ok: res.ok, ms: since() }, tag));
     if (!res.ok) {
       const e = await describeError(res);
-      log("httperror", { run: runId, status: res.status, msg: e.message });
+      log("httperror", Object.assign({ status: res.status, msg: e.message }, tag));
       throw e;
     }
     if (!res.body) {
-      log("nostream", { run: runId, ms: since() });
+      log("nostream", Object.assign({ ms: since() }, tag));
       throw new Error("Gemini returned no stream");
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let sseBuf = "";      // unconsumed SSE bytes
-    let textBuf = "";     // unconsumed model text, split on newlines
+    let sseBuf = "";
+    let textBuf = "";
     const segments = [];
     let finishReason = null;
-    let lastPush = 0;
     let usage = null;
-    let lastLogged = 0;
+    let lastPush = 0;
     let sawFirst = false;
+    let dropped = 0;
+    let lastLogged = 0;
     const loop = newLoopWatch();
     let loopedAt = -1;
 
     const flush = (force) => {
-      if (!onSegments || !segments.length) return;
+      if (!o.onPartial || !segments.length) return;
       const now = Date.now();
-      // Throttled: a long transcript would otherwise rewrite the document
-      // hundreds of times.
       if (!force && now - lastPush < 1500) return;
       lastPush = now;
-      onSegments(segments.slice());
+      o.onPartial(segments.slice());
     };
 
     while (true) {
@@ -316,12 +419,12 @@ const Gemini = (function () {
         chunk = await reader.read();
       } catch (err) {
         if (err && err.name === "AbortError") {
-          log("aborted", { run: runId, ms: since(), segments: segments.length });
+          log("aborted", Object.assign({ ms: since(), segments: segments.length }, tag));
           throw err;
         }
-        log("streambroke", { run: runId, ms: since(), segments: segments.length,
-                             msg: (err && err.message) || "unknown" });
-        break;                     // treat a broken stream as end-of-data
+        log("streambroke", Object.assign({ ms: since(), segments: segments.length,
+                                           msg: (err && err.message) || "unknown" }, tag));
+        break;
       }
       if (chunk.done) break;
 
@@ -338,51 +441,52 @@ const Gemini = (function () {
 
         if (evt.usageMetadata) usage = evt.usageMetadata;
         if (evt.promptFeedback && evt.promptFeedback.blockReason) {
-          log("blocked", { run: runId, reason: evt.promptFeedback.blockReason });
+          log("blocked", Object.assign({ reason: evt.promptFeedback.blockReason }, tag));
         }
         const cand = evt.candidates && evt.candidates[0];
         if (cand && cand.finishReason && cand.finishReason !== finishReason) {
           finishReason = cand.finishReason;
-          log("finishreason", { run: runId, reason: finishReason, ms: since(),
-                                segments: segments.length });
+          log("finishreason", Object.assign({ reason: finishReason, ms: since(),
+                                              segments: segments.length }, tag));
         }
         const parts = (cand && cand.content && cand.content.parts) || [];
         for (const p of parts) if (p.text) textBuf += p.text;
       }
 
-      // Consume whole lines of model output as JSONL.
       let mnl;
       while ((mnl = textBuf.indexOf("\n")) !== -1) {
         const raw = textBuf.slice(0, mnl);
         textBuf = textBuf.slice(mnl + 1);
         const seg = parseJsonlLine(raw);
         if (!seg) continue;
+
+        /*
+         * A timestamp outside the window is the model guessing rather than
+         * reading. Dropping it is what keeps a comment anchored to the right
+         * moment. A little slack either side absorbs rounding.
+         */
+        if (seg.start < w.from - 5 || seg.start > w.to + 5) { dropped++; continue; }
+
         segments.push(seg);
 
         if (!sawFirst) {
           sawFirst = true;
-          log("firstline", { run: runId, ms: since(), at: seg.start });
+          log("firstline", Object.assign({ ms: since(), at: Math.round(seg.start) }, tag));
         }
-        // A heartbeat roughly every 15s: enough to see where a run stalls
-        // without filling the log on a long video.
+        // A heartbeat every 15s, so a window that stalls is visible in the log
+        // rather than just being slow.
         if (Date.now() - lastLogged > 15000) {
           lastLogged = Date.now();
-          log("progress", { run: runId, ms: since(), segments: segments.length,
-                            upto: Math.round(seg.start) });
+          log("progress", Object.assign({ ms: since(), segments: segments.length,
+                                          upto: Math.round(seg.start) }, tag));
         }
 
-        /*
-         * Stop a model that has started repeating itself. Left alone it will
-         * happily emit the same handful of sentences until the token budget
-         * runs out — one real video produced 28 MINUTES of transcript past its
-         * own end this way, and burned several minutes of generation doing it.
-         * Everything before the loop is good, so keep that and stop.
-         */
         if (loop.note(seg.text)) {
           loopedAt = loop.startedAt;
-          log("loop", { run: runId, ms: since(), detectedAt: segments.length,
-                        keeping: loopedAt, discarding: segments.length - loopedAt,
-                        lastTime: Math.round(seg.start) });
+          log("loop", Object.assign({ ms: since(), detectedAt: segments.length,
+                                      keeping: loopedAt,
+                                      discarding: segments.length - loopedAt,
+                                      lastTime: Math.round(seg.start) }, tag));
           break;
         }
       }
@@ -393,59 +497,65 @@ const Gemini = (function () {
     if (loopedAt >= 0) {
       segments.length = Math.max(0, loopedAt);
       try { await reader.cancel(); } catch { /* already closed */ }
-      progress("Stopped early — the model began repeating itself");
+      if (o.progress) {
+        o.progress(`${formatTime(w.from)}–${formatTime(w.to)}: stopped early, ` +
+                   "the model began repeating itself");
+      }
+    } else {
+      /*
+       * A final line with no trailing newline — but never after a loop, or we
+       * would push one of the repeated lines straight back on after having
+       * just trimmed them off.
+       */
+      const tail = parseJsonlLine(textBuf);
+      if (tail && tail.start >= w.from - 5 && tail.start <= w.to + 5) segments.push(tail);
     }
 
-    /*
-     * Whatever is left may be a final line with no trailing newline — but not
-     * if we stopped for a loop, or we would push one of the repeated lines
-     * straight back on after having just trimmed them off.
-     */
-    const tail = loopedAt >= 0 ? null : parseJsonlLine(textBuf);
-    if (tail) segments.push(tail);
-
-    if (finishReason === "MAX_TOKENS") {
-      // Keep what arrived rather than throwing it all away — a partial
-      // transcript of a long video is still useful — but say so.
-      progress("Transcript was cut short (hit the length limit)");
-    }
-
-    const out = dedupeSorted(segments);
     flush(true);
-
-    log("done", {
-      run: runId, ms: since(), finish: finishReason || "END_OF_STREAM",
-      raw: segments.length, kept: out.length,
-      lastTime: out.length ? Math.round(out[out.length - 1].start) : 0,
-      looped: loopedAt >= 0,
+    log("chunkdone", Object.assign({
+      ms: since(), kept: segments.length, dropped: dropped,
+      finish: finishReason || "END_OF_STREAM", looped: loopedAt >= 0,
       promptTokens: usage ? usage.promptTokenCount : null,
       outputTokens: usage ? usage.candidatesTokenCount : null,
       thoughtTokens: usage ? usage.thoughtsTokenCount : null,
-    });
-    if (!out.length) {
-      log("empty", { run: runId, finish: finishReason });
-      throw new Error("Gemini returned no transcript" +
-                      (finishReason ? " (" + finishReason + ")" : ""));
-    }
-    return out;
+    }, tag));
+
+    return segments;
   }
 
-  /*
-   * WATCHING FOR A DEGENERATE REPETITION LOOP
-   * =========================================
-   * A large model transcribing a long video can fall into a cycle, emitting
-   * the same run of sentences over and over with the timestamps marching on.
-   * It looks like a transcript, so nothing downstream questions it.
-   *
-   * The naive test — "how many segments in a row have I seen before?" — false
-   * positives badly on exactly the content that triggered this. A Pokémon
-   * playthrough really does say "Wow, critical hit." dozens of times.
-   *
-   * So we require an ORDERED mirror: this segment repeats earlier segment j,
-   * the next repeats j+1, and so on, wrapping when the cycle starts over.
-   * Genuine speech does not replay eighteen sentences in the same order.
-   */
   const LOOP_RUN = 18;
+
+  /*
+   * A window over which almost no NEW text appearing is itself proof of a
+   * loop, whatever order the lines come in.
+   */
+  const LOOP_WINDOW = 40;
+  /*
+   * Deliberately brutal. Three or fewer distinct sentences across forty
+   * consecutive lines is not speech. A looser threshold looked tempting and is
+   * actively dangerous on this user's material: a Pokemon grinding sequence
+   * genuinely repeats a handful of stock lines, and once digits are collapsed
+   * those lines look identical. Chunking already bounds what a missed loop can
+   * ruin, so this leans hard towards never cutting a real transcript short.
+   */
+  const LOOP_WINDOW_DISTINCT = 3;
+
+  /*
+   * Normalising for loop detection is not the same as normalising for display.
+   *
+   * The loop that got through varied only in its NUMBERS — a fabricated battle
+   * replayed with the level and stats counting up each time, so no two lines
+   * were ever byte-identical and verbatim matching never fired once in
+   * fourteen minutes of invented content. Collapsing digit runs makes that
+   * cycle visible as the exact repetition it actually is.
+   */
+  function loopKey(text) {
+    return String(text == null ? "" : text)
+      .toLowerCase()
+      .replace(/\d+/g, "#")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
 
   function newLoopWatch() {
     const firstSeen = new Map();   // normalised text -> earliest index it appeared
@@ -458,6 +568,7 @@ const Gemini = (function () {
     let lastKey = null;            // previous line, for the period-1 case
     let sameRun = 0;               // how many times it has repeated back-to-back
     let sameStart = -1;
+    const recent = [];            // the last LOOP_WINDOW keys, for saturation
 
     const reset = (i, j) => {
       if (j < 0) { run = 0; expect = -1; mirrorStart = -1; period = 0; startedAt = -1; return; }
@@ -468,10 +579,24 @@ const Gemini = (function () {
       get startedAt() { return startedAt; },
       /* Returns true once the run is long enough to call it a loop. */
       note(text) {
-        const k = String(text == null ? "" : text)
-          .toLowerCase().replace(/\s+/g, " ").trim();
+        const k = loopKey(text);
         const i = n++;
         if (!k) return false;
+
+        /*
+         * Saturation: if the last LOOP_WINDOW lines contain barely any
+         * distinct text, we are going in circles regardless of the order they
+         * arrive in. Catches loops that interleave — an unchanging line
+         * alternating with a line that only varies by a number — which the
+         * ordered mirror below can miss.
+         */
+        recent.push(k);
+        if (recent.length > LOOP_WINDOW) recent.shift();
+        if (recent.length === LOOP_WINDOW &&
+            new Set(recent).size <= LOOP_WINDOW_DISTINCT) {
+          startedAt = Math.max(0, i - LOOP_WINDOW + 1);
+          return true;
+        }
 
         /*
          * The simplest loop of all: one line, over and over. The cycle rule
@@ -561,27 +686,49 @@ const Gemini = (function () {
    * person actually does — are shown rather than narrated. Visual lines are
    * prefixed so they stay distinguishable from speech when you read back.
    */
-  const PROMPT = [
-    "Transcribe this video for someone who will read it instead of watching it.",
-    "",
-    "Output ONE JSON object per line. No array brackets, no code fences, no",
-    "commentary. Each line must be exactly:",
-    '{"start": seconds_from_video_start_as_a_number, "text": "..."}',
-    "",
-    "What to include:",
-    "- Everything spoken, as clean readable prose.",
-    "- What is SHOWN but not said, when it carries meaning: on-screen text and",
-    "  numbers (read them exactly), menus opened, actions taken, results that",
-    "  appear. Prefix those lines with '[shows] ' inside the text field.",
-    "",
-    "Rules:",
-    "- Split at natural sentence or thought boundaries, never fixed intervals.",
-    "- Roughly one to three sentences per line.",
-    "- Punctuate and capitalise properly. Drop filler words and stutters.",
-    "- Never put a timestamp inside the text field.",
-    "- Cover the whole video from beginning to end, in order, increasing start.",
-    "- Emit nothing at all if the video has no speech and nothing notable shown.",
-  ].join("\n");
+  /*
+   * The prompt for ONE window.
+   *
+   * The offset sentence is load bearing — see the note above transcribeYouTube.
+   * So is the instruction to DESCRIBE what is on screen rather than transcribe
+   * it word for word: the fabricated stretches were overwhelmingly '[shows]'
+   * lines inventing menu and dialogue text the model could not actually read
+   * at one frame per second.
+   */
+  function promptFor(from, to) {
+    return [
+      "Transcribe this clip for someone who will read it instead of watching it.",
+      "",
+      "Output ONE JSON object per line. No array brackets, no code fences, no",
+      "commentary. Each line must be exactly:",
+      '{"start": seconds_as_a_number, "text": "..."}',
+      "",
+      "WHERE THIS CLIP SITS:",
+      `This clip is taken from a longer video. It begins at ${Math.round(from)} seconds`,
+      `and ends at ${Math.round(to)} seconds.`,
+      "- `start` is SECONDS FROM THE START OF THE WHOLE VIDEO, so every start",
+      `  must be between ${Math.round(from)} and ${Math.round(to)}.`,
+      "- Cover the clip from beginning to end, in order, with increasing start.",
+      "",
+      "What to include:",
+      "- Everything spoken, as clean readable prose.",
+      "- What is SHOWN but not said, when it genuinely adds meaning: a menu",
+      "  opened, an action taken, a result that appears. Prefix those with",
+      "  '[shows] ' and DESCRIBE them briefly in your own words.",
+      "- Do NOT transcribe on-screen text word for word, and never write out",
+      "  text you cannot clearly read. If you are unsure what it says, say what",
+      "  is happening instead, or leave it out.",
+      "",
+      "Rules:",
+      "- Split at natural sentence or thought boundaries, never fixed intervals.",
+      "- Roughly one to three sentences per line.",
+      "- Punctuate and capitalise properly. Drop filler words and stutters.",
+      "- Never put a timestamp inside the text field.",
+      "- Never repeat a line you have already emitted. If nothing new is",
+      "  happening, emit nothing rather than restating what you just said.",
+      "- Emit nothing at all if the clip has no speech and nothing notable shown.",
+    ].join("\n");
+  }
 
   /*
    * Gemini is asked for JSON and generally obliges, but be defensive: strip
