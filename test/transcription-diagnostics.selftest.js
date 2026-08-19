@@ -202,6 +202,56 @@ ok("lines from a different window do not count",
 ok("the recorded duration survives a streaming write",
    /if \(duration > 0\) vd\.duration = Math\.round\(duration\)/.test(vsrc));
 
+console.log("\n=== one run per document, across tabs and reloads ===");
+/* A real log shows three runs on one document overlapping for eleven minutes,
+   each doing all nine windows. Six concurrent requests on a preview model
+   triggered rate limiting, four windows were abandoned after burning every
+   retry, and the work could never converge because each run raced the last. */
+ok("a run claims the document", /leaseUntil: Date\.now\(\) \+ LEASE_MS/.test(vsrc));
+ok("starting checks for an existing claim", /if \(leaseHeld\(docId\)\) \{/.test(vsrc));
+ok("and refuses rather than racing", /already-running/.test(vsrc));
+ok("resuming checks too", /another run holds it/.test(vsrc));
+ok("a live run keeps its claim fresh", /setInterval\(\(\) => refreshLease\(docId\), LEASE_REFRESH_MS\)/.test(vsrc));
+ok("the claim is released when the run succeeds",
+   /clearInterval\(lease\);\n    clearPending\(docId\)/.test(vsrc));
+ok("and when it fails", /clearInterval\(lease\);\n      clearPending\(docId\)/.test(vsrc));
+ok("the claim EXPIRES, so a closed tab cannot block the document forever",
+   /rec\.leaseUntil > Date\.now\(\)/.test(vsrc));
+ok("refresh interval is shorter than the lease itself",
+   /LEASE_MS = 90000/.test(vsrc) && /LEASE_REFRESH_MS = 30000/.test(vsrc));
+
+// Behavioural: a document already claimed must not be resumed.
+const held = { url: "https://www.youtube.com/watch?v=TJgg3eMUp7M", reason: "start",
+               resumes: 0, lines: 12, leaseUntil: Date.now() + 60000 };
+let hh = harness(held, docWithLines);
+ok("a claimed document is left alone", !hh.calls.some((c) => c.ev === "__started"),
+   JSON.stringify(hh.calls.map((c) => c.ev)));
+ok("and the claim is NOT cleared out from under the live run",
+   !!hh.settings.pendingTranscripts.doc_v);
+
+const expired = Object.assign({}, held, { leaseUntil: Date.now() - 1000 });
+hh = harness(expired, docWithLines);
+ok("an expired claim is picked up", hh.calls.some((c) => c.ev === "__started"),
+   JSON.stringify(hh.calls.map((c) => c.ev)));
+
+console.log("\n=== room to think AND to write ===");
+/* Two windows came back with outputTokens=652 and thoughtTokens=15728 against
+   a 16,384 cap: the model spent its whole budget reasoning and wrote 5 lines
+   where it should have written twenty. */
+ok("the output cap leaves room for both", /CHUNK_MAX_TOKENS = 65536/.test(gsrc));
+ok("and why is recorded", /THINKING COUNTS AGAINST THIS/.test(gsrc));
+
+console.log("\n=== a rate limit is backed off differently from a busy model ===");
+ok("two ladders exist", /RETRY_BUSY = \[4000, 12000, 30000\]/.test(gsrc) &&
+   /RETRY_LIMITED = \[15000, 45000, 90000, 150000\]/.test(gsrc));
+ok("429 picks the slow one", /e\.slow = true;/.test(gsrc));
+ok("and the choice is made per error", /err && err\.slow \? RETRY_LIMITED : RETRY_BUSY/.test(gsrc));
+// A quota refuses in milliseconds, so the fast ladder burns out inside a minute.
+const fast = [4000, 12000, 30000].reduce((a, b) => a + b, 0);
+const slow = [15000, 45000, 90000, 150000].reduce((a, b) => a + b, 0);
+ok("the slow ladder actually waits meaningfully longer", slow > fast * 3,
+   `${fast}ms vs ${slow}ms`);
+
 console.log("\n=== resume attempts are counted, not infinite ===");
 ok("a cap exists", /MAX_AUTO_RESUMES/.test(vsrc));
 ok("only automatic resumes increment it",

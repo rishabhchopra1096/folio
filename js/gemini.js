@@ -280,7 +280,14 @@ const Gemini = (function () {
   const CHUNK_SEC = 300;          // 5 minutes — the window every measurement above used
   const MAX_WINDOWS = 24;         // only used when the duration is unknown
   const CHUNK_TEMPERATURE = 0.4;
-  const CHUNK_MAX_TOKENS = 16384; // ample for 5 minutes; caps the cost of a bad window
+  /*
+   * THINKING COUNTS AGAINST THIS. Two windows in a live run came back
+   * truncated with outputTokens=652 and thoughtTokens=15728 — 16,380 against a
+   * 16,384 cap — so the model spent its entire budget reasoning and had almost
+   * nothing left to write. Both produced 5 lines where they should have
+   * produced twenty. Give it room for both.
+   */
+  const CHUNK_MAX_TOKENS = 65536;
 
   /*
    * How much detail the model gets per frame. This is the single biggest lever
@@ -363,7 +370,9 @@ const Gemini = (function () {
       if (onSegments) onSegments(dedupeSorted(all.slice()));
     };
 
-    const RETRY_DELAYS = [4000, 12000, 30000];
+    // A busy model recovers in seconds; a rate limit does not.
+    const RETRY_BUSY = [4000, 12000, 30000];
+    const RETRY_LIMITED = [15000, 45000, 90000, 150000];
 
     const runWindow = async (w, i, attempt) => {
       attempt = attempt || 0;
@@ -386,8 +395,9 @@ const Gemini = (function () {
 
         // Busy or rate-limited: wait and come back to it rather than leaving a
         // hole in the middle of the document.
-        if (err && err.retryable && attempt < RETRY_DELAYS.length) {
-          const wait = RETRY_DELAYS[attempt];
+        const delays = err && err.slow ? RETRY_LIMITED : RETRY_BUSY;
+        if (err && err.retryable && attempt < delays.length) {
+          const wait = delays[attempt];
           log("chunkretry", { run: runId, chunk: i, from: w.from, to: w.to,
                               attempt: attempt + 1, waitMs: wait,
                               msg: (err && err.message) || "unknown" });
@@ -790,6 +800,10 @@ const Gemini = (function () {
     if (res.status === 429) {
       const e = new Error("Gemini rate limit reached. Try again shortly.");
       e.retryable = true;
+      // A quota refuses in milliseconds and keeps refusing. Backing off in
+      // seconds just burns the attempts — a live run spent all four inside
+      // 50 seconds and gave up on four windows.
+      e.slow = true;
       return e;
     }
     if (res.status >= 500) {

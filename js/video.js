@@ -976,7 +976,19 @@ const Video = (function () {
    */
   async function runTranscription(docId, parsed, reason) {
     reason = reason || "start";
+
+    // Somebody else is already on it — another tab, or this page before a
+    // reload that has not yet timed out.
+    if (leaseHeld(docId)) {
+      if (typeof Gemini !== "undefined" && Gemini.log) {
+        Gemini.log("already-running", { doc: docId, why: reason });
+      }
+      notify("That transcript is already being generated.");
+      return null;
+    }
+
     markPending(docId, parsed.url, reason);
+    const lease = setInterval(() => refreshLease(docId), LEASE_REFRESH_MS);
     setBusy(true);
     const knownDuration = storedDuration(docId) || await awaitDuration(8000);
     // Resuming or retrying keeps what is already there and fills the gaps.
@@ -1007,6 +1019,7 @@ const Video = (function () {
         existing: already,
       });
     } catch (err) {
+      clearInterval(lease);
       clearPending(docId);
       setBusy(false);
       // Keep whatever streamed in rather than replacing it with an error.
@@ -1021,6 +1034,7 @@ const Video = (function () {
       throw err;
     }
 
+    clearInterval(lease);
     clearPending(docId);
     setBusy(false);
     segments = trimToDuration(segments);
@@ -1115,6 +1129,42 @@ const Video = (function () {
 
   // ── Pending registry, so a reload can resume ──────────────────────────────
 
+  /*
+   * ONE RUN PER DOCUMENT, ACROSS TABS AND RELOADS
+   * =============================================
+   * Nothing stopped a second transcription starting on a document that was
+   * already being transcribed. A real log shows three runs on one document
+   * overlapping for eleven minutes — each doing all nine windows — which put
+   * six concurrent requests on a preview model, triggered rate limiting, and
+   * meant four windows were abandoned after burning every retry. The work
+   * could never converge because each new run competed with the last.
+   *
+   * The claim lives in the pending record so it is shared by every tab, and it
+   * EXPIRES: a tab that is closed mid-run leaves a stale claim, and an
+   * expiring lease is what lets the work be picked up again rather than
+   * blocking the document forever. A live run refreshes it as it goes.
+   */
+  const LEASE_MS = 90000;
+  const LEASE_REFRESH_MS = 30000;
+
+  function leaseHeld(docId) {
+    try {
+      const st = FolioStore.getSettings();
+      const rec = st.pendingTranscripts && st.pendingTranscripts[docId];
+      return !!(rec && rec.leaseUntil && rec.leaseUntil > Date.now());
+    } catch { return false; }
+  }
+
+  function refreshLease(docId) {
+    try {
+      const st = FolioStore.getSettings();
+      const rec = st.pendingTranscripts && st.pendingTranscripts[docId];
+      if (!rec) return;
+      rec.leaseUntil = Date.now() + LEASE_MS;
+      FolioStore.saveSettings(st);
+    } catch { /* bookkeeping must never break a run */ }
+  }
+
   function markPending(docId, url, reason) {
     const st = FolioStore.getSettings();
     st.pendingTranscripts = st.pendingTranscripts || {};
@@ -1126,7 +1176,8 @@ const Video = (function () {
       // Counts only automatic resumes, so an interrupted run that can never
       // finish gives up instead of restarting on every single page load.
       resumes: reason === "resume" ? (prev.resumes || 0) + 1 : 0,
-      lines: 0,
+      lines: prev.lines || 0,
+      leaseUntil: Date.now() + LEASE_MS,
     };
     FolioStore.saveSettings(st);
   }
@@ -1140,8 +1191,9 @@ const Video = (function () {
     try {
       const st = FolioStore.getSettings();
       const rec = st.pendingTranscripts && st.pendingTranscripts[docId];
-      if (!rec || rec.lines === lines) return;
+      if (!rec) return;
       rec.lines = lines;
+      rec.leaseUntil = Date.now() + LEASE_MS;   // still alive
       FolioStore.saveSettings(st);
     } catch { /* never let bookkeeping break the stream */ }
   }
@@ -1202,6 +1254,11 @@ const Video = (function () {
                                       lines: rec.lines || 0 });
         clearPending(docId);
         notify("A transcript kept failing to finish — use ⟳ to try again.");
+        return;
+      }
+
+      if (leaseHeld(docId)) {
+        Gemini.log("resume-skip", { doc: docId, why: "another run holds it" });
         return;
       }
 
