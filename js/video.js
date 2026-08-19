@@ -64,6 +64,7 @@ const Video = (function () {
   let apiPromise = null;
   let transcriptEl = null;   // the independently scrolling transcript
   let barEl = null;          // our on-page control bar
+  let seeking = false;       // true while the user is dragging the scrubber
 
   /*
    * Fallback speed ladder. The real one is whatever the player reports through
@@ -281,25 +282,33 @@ const Video = (function () {
 
   function stepSpeed(dir) {
     if (!player) return;
-    try {
-      const cur = player.getPlaybackRate();
-      // Nearest rung, so an off-ladder current rate still steps sensibly.
-      let i = nearestSpeedIndex(cur);
-      i = Math.max(0, Math.min(SPEEDS.length - 1, i + dir));
-      player.setPlaybackRate(SPEEDS[i]);
-      syncBar();
-      if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(SPEEDS[i] + "×", 900);
-    } catch { /* ignore */ }
+    const ladder = usableSpeeds();
+    if (!ladder.length) return;
+    let cur;
+    try { cur = player.getPlaybackRate(); } catch { return; }
+
+    let i = nearestIn(ladder, cur);
+    // Walk in the requested direction until something sticks, so one refused
+    // rung doesn't block the ones beyond it.
+    for (let step = 1; step <= ladder.length; step++) {
+      const j = Math.max(0, Math.min(ladder.length - 1, i + dir * step));
+      if (j === i) break;
+      const got = setSpeed(ladder[j]);
+      if (got != null && Math.abs(got - ladder[j]) < 0.01) {
+        syncBar();
+        if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(ladder[j] + "×", 900);
+        return;
+      }
+      if (!refusedSpeeds.has(ladder[j])) break;
+    }
   }
 
-  function nearestSpeedIndex(rate) {
+  function nearestIn(list, rate) {
     let best = 0, bestD = Infinity;
-    SPEEDS.forEach((r, i) => {
-      const d = Math.abs(r - rate);
-      if (d < bestD) { bestD = d; best = i; }
-    });
+    list.forEach((r, i) => { const d = Math.abs(r - rate); if (d < bestD) { bestD = d; best = i; } });
     return best;
   }
+
 
   /*
    * Rearrange what the reader emitted into a fixed player above an
@@ -400,6 +409,9 @@ const Video = (function () {
         '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>' +
       '</button>' +
       '<span class="fv-time">0:00</span>' +
+      '<input class="fv-seek" type="range" min="0" max="1000" value="0" step="1" ' +
+             'title="Drag to scrub" aria-label="Seek" />' +
+      '<span class="fv-dur">0:00</span>' +
       '<button class="fv-speed" data-act="speed" title="Playback speed">1×</button>' +
       '<button class="fv-btn fv-retry" data-act="retry" title="Transcript incomplete — click to redo it">' +
         '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>' +
@@ -422,6 +434,39 @@ const Video = (function () {
       }
     });
 
+    /*
+     * Our own scrubber, because disabling YouTube's chrome to stop it stealing
+     * keyboard focus also took its seek bar away. Driven as a 0-1000 range so
+     * it works before the duration is known.
+     *
+     * `seeking` suppresses the poll's writes while you drag — otherwise the
+     * thumb fights your finger, snapping back to the playhead 4 times a second.
+     */
+    const seek = bar.querySelector(".fv-seek");
+    if (seek) {
+      const toTime = () => {
+        let dur = 0;
+        try { dur = player.getDuration() || 0; } catch { return null; }
+        return dur ? (Number(seek.value) / 1000) * dur : null;
+      };
+      seek.addEventListener("input", () => {
+        seeking = true;
+        const t = toTime();
+        if (t != null) {
+          const tm = bar.querySelector(".fv-time");
+          if (tm && typeof Gemini !== "undefined") tm.textContent = Gemini.formatTime(t);
+        }
+      });
+      const commit = () => {
+        const t = toTime();
+        if (t != null) { try { player.seekTo(t, true); } catch { /* ignore */ } }
+        // Let the player settle before the poll takes the thumb back.
+        setTimeout(() => { seeking = false; }, 120);
+      };
+      seek.addEventListener("change", commit);
+      seek.addEventListener("mouseup", commit);
+    }
+
     barEl = bar;
     return bar;
   }
@@ -431,14 +476,48 @@ const Video = (function () {
    * beyond that the audio is unusable for following along, and the ladder gets
    * tedious to step through.
    */
+  /*
+   * Rates the player has actually refused, so we stop offering them.
+   *
+   * getAvailablePlaybackRates() is NOT the right source: it returns the
+   * IFrame API's advertised list, which stops at 2x even though youtube.com's
+   * own UI offers 3x. Trusting it capped playback at 2x. So we try the rate we
+   * want, read it back, and only give up on a value the player genuinely
+   * refused.
+   */
+  const refusedSpeeds = new Set();
+
   function adoptPlayerSpeeds() {
+    // Nothing to adopt — the ladder is ours, and rates are proven by trying.
     if (!player || typeof player.getAvailablePlaybackRates !== "function") return;
-    let rates;
-    try { rates = player.getAvailablePlaybackRates(); } catch { return; }
-    if (!Array.isArray(rates) || !rates.length) return;
-    const usable = rates.filter((r) => r >= 0.5 && r <= 3).sort((a, b) => a - b);
-    if (usable.length) SPEEDS = usable;
-    console.log("[video] playback speeds:", SPEEDS.join(", "));
+    try {
+      console.log("[video] API advertises:", player.getAvailablePlaybackRates().join(", "),
+                  "— trying beyond it anyway");
+    } catch { /* ignore */ }
+  }
+
+  /*
+   * Set a rate and confirm it took. Returns the rate actually in effect.
+   */
+  function setSpeed(rate) {
+    if (!player) return null;
+    try {
+      player.setPlaybackRate(rate);
+      const got = player.getPlaybackRate();
+      if (Math.abs(got - rate) > 0.01) {
+        refusedSpeeds.add(rate);
+        console.warn("[video] player refused", rate + "x", "— now at", got + "x");
+        return got;
+      }
+      refusedSpeeds.delete(rate);
+      return got;
+    } catch {
+      return null;
+    }
+  }
+
+  function usableSpeeds() {
+    return SPEEDS.filter((r) => !refusedSpeeds.has(r));
   }
 
   function togglePlay() {
@@ -456,8 +535,9 @@ const Video = (function () {
   function cycleSpeed() {
     if (!player) return;
     try {
-      const next = SPEEDS[(nearestSpeedIndex(player.getPlaybackRate()) + 1) % SPEEDS.length];
-      player.setPlaybackRate(next);
+      const ladder = usableSpeeds();
+      const next = ladder[(nearestIn(ladder, player.getPlaybackRate()) + 1) % ladder.length];
+      setSpeed(next);
       syncBar();
     } catch { /* ignore */ }
   }
@@ -540,7 +620,15 @@ const Video = (function () {
     const sp = barEl.querySelector(".fv-speed");
     if (sp) sp.textContent = (Math.round(rate * 100) / 100) + "×";
     const tm = barEl.querySelector(".fv-time");
-    if (tm && typeof Gemini !== "undefined") tm.textContent = Gemini.formatTime(t);
+    if (tm && typeof Gemini !== "undefined" && !seeking) tm.textContent = Gemini.formatTime(t);
+
+    let dur = 0;
+    try { dur = player.getDuration() || 0; } catch { /* ignore */ }
+    const dl = barEl.querySelector(".fv-dur");
+    if (dl && dur && typeof Gemini !== "undefined") dl.textContent = Gemini.formatTime(dur);
+    const sk = barEl.querySelector(".fv-seek");
+    if (sk && dur && !seeking) sk.value = String(Math.round((t / dur) * 1000));
+
     updateRetryVisibility();
   }
 

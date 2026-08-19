@@ -73,25 +73,52 @@ ok("back before the first line nudges", /if \(i < 0\) \{ nudge\(-10\); return; \
 ok("currentBlockEl returns null past the end", /return null;[\s\S]{0,80}return segEls\[activeIdx\]/.test(src));
 
 
-console.log("\n=== speed goes up to 3x, and follows the player's real list ===");
+console.log("\n=== speed reaches 3x by trying, not by trusting the API's list ===");
+/* getAvailablePlaybackRates() reports the IFrame API's advertised list, which
+   stops at 2x even though youtube.com itself offers 3x. Trusting it is what
+   capped playback. So: set the rate, read it back, and only give up on values
+   the player genuinely refuses. */
 const SP = JSON.parse(src.match(/let SPEEDS = (\[[^\]]*\])/)[1]);
-ok("fallback ladder reaches 3x", Math.max(...SP) === 3, JSON.stringify(SP));
-ok("includes 2.5 as a rung", SP.includes(2.5), JSON.stringify(SP));
-ok("asks the player what it supports", /getAvailablePlaybackRates/.test(src));
-ok("adopts them on ready", /adoptPlayerSpeeds\(\);/.test(src));
-ok("keeps only rates up to 3", /r >= 0\.5 && r <= 3/.test(src));
-ok("steps from the nearest rung, not an exact match",
-   /nearestSpeedIndex/.test(src) && !/SPEEDS\.indexOf\(player\.getPlaybackRate/.test(src));
+ok("ladder reaches 3x", Math.max(...SP) === 3, JSON.stringify(SP));
+ok("does NOT overwrite the ladder from the API list",
+   !/SPEEDS = usable/.test(src) && !/SPEEDS = rates/.test(src));
+ok("sets then verifies by reading back", /getPlaybackRate\(\);[\s\S]{0,160}Math\.abs\(got - rate\)/.test(src));
+ok("remembers refusals", /refusedSpeeds\.add\(rate\)/.test(src));
+ok("and clears one that later works", /refusedSpeeds\.delete\(rate\)/.test(src));
+ok("offers only rates not refused", /function usableSpeeds\(\)/.test(src));
+ok("walks past a refused rung rather than stopping", /for \(let step = 1; step <= ladder\.length/.test(src));
 
-// The step function must always land on a real rung and never run off the end.
-const LADDER = SP;
-function near(r){ let b=0,bd=Infinity; LADDER.forEach((x,i)=>{const d=Math.abs(x-r); if(d<bd){bd=d;b=i;}}); return b; }
-function step(cur,dir){ let i=near(cur)+dir; i=Math.max(0,Math.min(LADDER.length-1,i)); return LADDER[i]; }
-ok("1x -> up gives the next rung", step(1,1)===LADDER[LADDER.indexOf(1)+1], String(step(1,1)));
-ok("top rung stays at the top", step(3,1)===3, String(step(3,1)));
-ok("bottom rung stays at the bottom", step(LADDER[0],-1)===LADDER[0], String(step(LADDER[0],-1)));
-ok("an off-ladder rate snaps to a real one", LADDER.includes(step(1.9,1)), String(step(1.9,1)));
+// The walk must terminate and stay in range for every ladder position.
+const L = SP;
+function walk(startIdx, dir, refused) {
+  for (let step=1; step<=L.length; step++) {
+    const j = Math.max(0, Math.min(L.length-1, startIdx + dir*step));
+    if (j === startIdx) return null;
+    if (!refused.has(L[j])) return L[j];
+  }
+  return null;
+}
+ok("with 2.5 refused, stepping up from 2 reaches 3",
+   walk(L.indexOf(2), 1, new Set([2.5])) === 3, String(walk(L.indexOf(2),1,new Set([2.5]))));
+ok("with nothing refused, up from 2 gives 2.5",
+   walk(L.indexOf(2), 1, new Set()) === 2.5, String(walk(L.indexOf(2),1,new Set())));
+ok("at the top, walking up terminates", walk(L.length-1, 1, new Set()) === null);
 
+console.log("\n=== there is a visible, draggable seek bar ===");
+ok("scrubber exists in the bar", /class="fv-seek"/.test(src));
+ok("dragging seeks the player", /player\.seekTo\(t, true\)/.test(src));
+ok("a duration readout exists", /class="fv-dur"/.test(src));
+ok("the poll doesn't fight the drag", /if \(sk && dur && !seeking\)/.test(src));
+ok("seeking clears shortly after release", /seeking = false;/.test(src));
+const cssSrc = fs.readFileSync(REPO+"/css/highlights.css","utf8");
+ok("scrubber is styled", /\.fv-seek \{/.test(cssSrc));
+ok("it has a visible thumb", /fv-seek::-webkit-slider-thumb/.test(cssSrc));
+
+console.log("\n=== the player is no longer confined to the prose column ===");
+ok("video layout drops the text max-width", /max-width: none !important/.test(cssSrc));
+ok("player is larger than before", /--video-max-h: 62vh/.test(cssSrc));
+ok("still capped so it can't outgrow the window", /1400px/.test(cssSrc));
+ok("transcript keeps a readable measure", /width: min\(100%, 78ch\)/.test(cssSrc));
 
 console.log("\n=== no blocking modals anywhere in the watching path ===");
 /* alert() freezes the page and demands a click. Mid-video that is worse than
