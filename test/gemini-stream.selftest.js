@@ -116,12 +116,20 @@ console.log("\n=== the settings that make the narrative possible ===");
 /* Measured on one 5-minute window, words written per minute of video, against
    speech that runs at 146: every flash model summarises (76-156) whatever the
    prompt; only pro at HIGH media resolution reaches 262. */
-ok("defaults to a pro model", /DEFAULT_MODEL = "gemini-3\.1-pro-preview"/.test(src));
+/* Flash by default. With thinking OFF the two are indistinguishable — pro
+   sampled 234 and then 206 words/min against flash's 203, so the apparent gap
+   was inside pro's own run-to-run variance, at roughly three times the price. */
+ok("defaults to flash", /DEFAULT_MODEL = "gemini-3\.7-flash"/.test(src));
+ok("thinking is turned down", /THINKING_LEVEL = "low"/.test(src));
+ok("and only sent to models that accept it", /\/gemini-3\/\.test\(getModel\(\)\)/.test(src));
+ok("the variance that killed the case for pro is recorded",
+   /inside its own run-to-run\s*\*?\s*variance/.test(src));
+ok("so is what it costs", /~\$0\.37/.test(src) && /~\$0\.97/.test(src));
 ok("but the model can be overridden — it costs real money",
    /function setModel/.test(src) && /MODEL_STORAGE/.test(src));
 ok("asks for HIGH media resolution", /MEDIA_RESOLUTION_HIGH/.test(src));
 ok("and actually sends it", /mediaResolution: MEDIA_RESOLUTION/.test(src));
-ok("windows are the size that was measured", /CHUNK_SEC = 300/.test(src));
+ok("windows are the size that was measured", /CHUNK_SEC = 600/.test(src));
 ok("windows run concurrently so the wait stays reasonable",
    /CONCURRENCY = 2/.test(src) && /Promise\.all/.test(src));
 ok("out-of-order completion is safe because results are merged and sorted",

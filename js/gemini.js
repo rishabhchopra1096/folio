@@ -42,29 +42,39 @@ const Gemini = (function () {
    * either the bill or the output format this code parses.
    */
   const MODEL_STORAGE = "folio_gemini_model";
-  const DEFAULT_MODEL = "gemini-3.1-pro-preview";
+  const DEFAULT_MODEL = "gemini-3.7-flash";
 
   /*
-   * WHY PRO, AND WHY IT IS WORTH THE MONEY
-   * ======================================
-   * The point of this transcript is that you can READ it instead of watching.
-   * Measured on the same 5-minute window of a real video, words written per
-   * minute of video (the speech itself runs at about 146):
+   * WHY FLASH, NOT PRO — AND WHY THINKING IS OFF
+   * ============================================
+   * The transcript has to be readable INSTEAD of watching, so the measure is
+   * words written per minute of video. The speech alone runs about 146.
    *
-   *   2.5-flash, old prompt, default detail    105   <- what shipped, unusable
-   *   3.5-flash, dense prompt, HIGH detail      76
-   *   3.7-flash, dense prompt, HIGH detail      94
-   *   2.5-flash, dense prompt, HIGH detail     156
-   *   3.1-pro,   dense prompt, default detail  164
-   *   3.1-pro,   dense prompt, HIGH detail     262   <- this
+   * Thinking turned out to be the whole story. It looked like a quality knob
+   * and it was making the output both slower and thinner — the model reasoned
+   * its way into condensing, and in a live run two windows spent 15.7k tokens
+   * thinking and had nothing left to write with. One 10-minute window:
    *
-   * Every flash model summarises no matter how it is asked. Only pro writes an
-   * account dense enough to stand in for watching, and only at HIGH media
-   * resolution — the same model at default detail loses a third of it and
-   * leaves 45-second stretches undescribed.
+   *     model        thinking    time    words/min
+   *     3.7-flash    default      ~17s      56-94
+   *     3.1-pro      default      161s        186
+   *     3.5-flash    LOW           53s         32   (ignores the setting)
+   *     3.7-flash    LOW           51s        203
+   *     3.1-pro      LOW           47s        206   <- second sample
+   *     3.1-pro      LOW           55s        234   <- first sample
    *
-   * Overridable, because it is roughly three times the cost of flash and that
-   * is the user's money to spend.
+   * Note the two pro samples: 234 and 206. The gap over flash that seemed to
+   * justify roughly three times the price is inside its own run-to-run
+   * variance. On the evidence flash and pro are indistinguishable once
+   * thinking is off, so the default is flash.
+   *
+   * Cost, from those measured token counts, for 30 minutes of video
+   * (3 windows of 10 minutes, 225,690 input tokens each):
+   *
+   *     flash   ~677k in + ~11k out   ~$0.37
+   *     pro     ~677k in + ~11k out   ~$0.97
+   *
+   * Overridable, because someone may want to spend the difference.
    */
   function getModel() {
     try { return localStorage.getItem(MODEL_STORAGE) || DEFAULT_MODEL; }
@@ -277,7 +287,7 @@ const Gemini = (function () {
    * returned 600.0-875.0, monotonic and in range. That instruction is load
    * bearing; do not simplify it away.
    */
-  const CHUNK_SEC = 300;          // 5 minutes — the window every measurement above used
+  const CHUNK_SEC = 600;          // 10 minutes — see the measurements below
   const MAX_WINDOWS = 24;         // only used when the duration is unknown
   const CHUNK_TEMPERATURE = 0.4;
   /*
@@ -296,6 +306,31 @@ const Gemini = (function () {
    * to 164, and go blind for 45 seconds at a stretch.
    */
   const MEDIA_RESOLUTION = "MEDIA_RESOLUTION_HIGH";
+
+  /*
+   * THINKING WAS MAKING IT BOTH SLOWER AND WORSE.
+   *
+   * It looked like a quality setting, so it was left on. Measured on one
+   * window of a real video, four ways — seconds spent per minute of video, and
+   * words written per minute of video:
+   *
+   *            window   thinking   time   words/min   think tokens   s/video-min
+   *              300s    default    60s     109          4,323          12s
+   *              600s    default   161s     186         17,819          16s
+   *              300s    LOW        35s     270              0           7s
+   *              600s    LOW        55s     234              0           6s
+   *
+   * Turning it down is faster, cheaper AND better prose. It reasoned its way
+   * into condensing, and on two windows in a live run it spent 15.7k tokens
+   * thinking and had almost nothing left to write with.
+   *
+   * Ten-minute windows over five: 6s per video-minute against 7, fewer tokens
+   * for the same video (226k per 600s versus 146k per 300s, so 293k for the
+   * same ten minutes split in two), and half as many requests — which halves
+   * the exposure to the 503s and rate limits that have cost whole windows.
+   * The 15% density given up against the 300s figure is worth that.
+   */
+  const THINKING_LEVEL = "low";
 
   // Windows run concurrently. HIGH detail on pro costs about 75s per window,
   // so a 36-minute video would take nine minutes one at a time.
@@ -521,11 +556,14 @@ const Gemini = (function () {
           { text: promptFor(w.from, w.to) },
         ],
       }],
-      generationConfig: {
+      generationConfig: Object.assign({
         temperature: CHUNK_TEMPERATURE,
         maxOutputTokens: CHUNK_MAX_TOKENS,
         mediaResolution: MEDIA_RESOLUTION,
-      },
+      }, /gemini-3/.test(getModel())
+        // thinkingLevel is a Gemini 3 setting; older models reject it.
+        ? { thinkingConfig: { thinkingLevel: THINKING_LEVEL } }
+        : {}),
     };
 
     let res;
