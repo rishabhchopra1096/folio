@@ -115,11 +115,21 @@ ok("has a max-height", /max-height:/.test(panel), panel.slice(0,40));
 ok("has overflow-y: auto", /overflow-y: auto/.test(panel));
 ok("only one #settings-panel base rule", (comp.match(/^#settings-panel \{/gm)||[]).length === 1);
 
-console.log("\n=== the player keeps a true 16:9 ===");
-ok("drives height, not width", /height: 42vh;/.test(srcC));
-ok("width follows the aspect ratio", /width: auto;/.test(srcC));
-ok("no width:100% fighting max-height",
-   !/\.folio-video \{[^}]*width: 100%;[^}]*max-height: 42vh/s.test(srcC));
+console.log("\n=== the player scales with the column AND stays 16:9 ===");
+/* Two requirements in tension, and getting either wrong is visible:
+   - width must follow the reading column, or Narrow/Wide/Full do nothing
+   - the box must stay exactly 16:9, or YouTube letterboxes inside it
+   min() satisfies both: the column width, capped at whatever width would make
+   the box taller than the limit. A bare max-height alongside width:100% is the
+   combination that caused the black bars, so that's asserted against. */
+const vidRule = srcC.slice(srcC.indexOf(".folio-video {"), srcC.indexOf(".folio-video iframe"));
+ok("width is driven by the column", /width: min\(100%,/.test(vidRule), vidRule.slice(0,120));
+ok("aspect-ratio pins the shape", /aspect-ratio: 16 \/ 9;/.test(vidRule));
+ok("no bare max-height fighting aspect-ratio", !/^\s*max-height:/m.test(vidRule),
+   (vidRule.match(/max-height:[^;]*/)||[""])[0]);
+ok("not the old fixed-height approach", !/height: 42vh;/.test(vidRule));
+ok("control bar matches the player width", /width: min\(100%,[^)]*\)/.test(
+   srcC.slice(srcC.indexOf(".folio-video-bar {"), srcC.indexOf(".fv-btn {"))));
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail?1:0);

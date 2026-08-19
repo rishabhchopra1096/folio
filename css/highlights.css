@@ -784,19 +784,26 @@ mark.pulsing {
   overflow: hidden;
 }
 
-.folio-video-wrap { flex: 0 0 auto; }
+.folio-video-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
 
 .folio-video {
   position: relative;
-  /* Height-first, so the 16:9 box stays 16:9. Setting width:100% alongside
-     max-height let the container become ~2.8:1, and YouTube then letterboxed
-     the video inside it with black bars down both sides. Driving height and
-     letting width follow the aspect ratio keeps the frame exact, and
-     max-width stops it overflowing a narrow column. */
-  height: 42vh;
+  /* Fills the reading column, so Narrow / Wide / Full actually change the
+     player size — a fixed height ignored the width setting entirely and left
+     the video small on a wide screen.
+     The min() is what keeps it honest: width is the lesser of the column and
+     whatever width would make the box taller than MAX_H. Combining plain
+     width:100% with max-height instead lets the CONTAINER exceed 16:9, and
+     YouTube then letterboxes the video inside it with black bars. Here
+     aspect-ratio alone sets the height, so the frame is always exact. */
+  --video-max-h: 56vh;
+  width: min(100%, calc(var(--video-max-h) * 16 / 9));
   aspect-ratio: 16 / 9;
-  width: auto;
-  max-width: 100%;
   margin: 0 auto;
   border-radius: 10px;
   overflow: hidden;
@@ -836,6 +843,10 @@ mark.pulsing {
   gap: 6px;
   padding: 8px 2px 12px;
   font-family: var(--font-ui);
+  /* Match the player's width so the controls sit under it rather than
+     stretching across an empty column. */
+  width: min(100%, calc(56vh * 16 / 9));
+  margin: 0 auto;
 }
 .fv-btn {
   display: flex;

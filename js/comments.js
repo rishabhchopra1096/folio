@@ -571,6 +571,16 @@ const Comments = (function () {
     const highlights = FolioStore.getHighlights(docId);
     const comments = FolioStore.getComments(docId);
 
+    /*
+     * A video document exports differently: the whole transcript, with your
+     * comments sitting under the lines they belong to. Exporting only the
+     * commented lines would strip out the thing that gives them meaning.
+     */
+    const blocks = (doc && doc.content && doc.content.blocks) || [];
+    if (blocks.some((b) => b.type === "video")) {
+      return exportTranscript(doc, blocks, highlights, comments);
+    }
+
     if (!highlights.length && !comments.length) {
       alert("No highlights or comments to export yet.");
       return;
@@ -748,6 +758,118 @@ const Comments = (function () {
     // Move caret to end of inserted text
     const newPos = start + inserted.length;
     textarea.selectionStart = textarea.selectionEnd = newPos;
+  }
+
+  /*
+   * Export a video document: the full transcript with comments interleaved.
+   *
+   * Comments are matched to lines through their highlight — a dictated comment
+   * highlights the line it was spoken over, so the highlight's text identifies
+   * the line. General notes have no line and are collected at the top.
+   */
+  function exportTranscript(doc, blocks, highlights, comments) {
+    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
+    const today = new Date().toISOString().slice(0, 10);
+
+    const videoBlock = blocks.find((b) => b.type === "video");
+    const url = (videoBlock && videoBlock.data && videoBlock.data.url) || "";
+
+    // highlight id -> its comments
+    const byHighlight = new Map();
+    const general = [];
+    comments.forEach((c) => {
+      if (c.isGeneral || c.highlightId == null) { general.push(c); return; }
+      if (!byHighlight.has(c.highlightId)) byHighlight.set(c.highlightId, []);
+      byHighlight.get(c.highlightId).push(c);
+    });
+
+    /*
+     * Which line does a highlight belong to? Match on the highlight's stored
+     * text — a dictated comment covers the whole line, so the line whose text
+     * the highlight contains is the one it came from. Falls back to a
+     * substring test for a hand-made partial selection.
+     */
+    const lineComments = new Map();     // block index -> comments
+    highlights.forEach((hl) => {
+      const cs = byHighlight.get(hl.id);
+      if (!cs || !cs.length) return;
+      const needle = stripTags(hl.text || "").trim();
+      if (!needle) return;
+      let best = -1;
+      blocks.forEach((b, i) => {
+        if (b.type !== "paragraph" || b.data.t == null) return;
+        const line = stripTags(b.data.text || "").trim();
+        if (!line) return;
+        if (line === needle || needle.indexOf(line) !== -1 || line.indexOf(needle) !== -1) {
+          if (best === -1) best = i;
+        }
+      });
+      if (best === -1) { general.push.apply(general, cs); return; }
+      if (!lineComments.has(best)) lineComments.set(best, []);
+      lineComments.get(best).push.apply(lineComments.get(best), cs);
+      byHighlight.delete(hl.id);          // claimed
+    });
+
+    /*
+     * Anything still unclaimed belongs to a highlight that no longer exists —
+     * the passage was edited away, or the highlight was removed after the
+     * comment was written. Those comments were previously dropped from the
+     * export entirely, silently losing what the user had said. Collect them
+     * rather than iterating only over surviving highlights.
+     */
+    byHighlight.forEach((cs) => general.push.apply(general, cs));
+
+    const out = [];
+    out.push(`# ${title}`);
+    if (url) out.push(url);
+    out.push(`_Exported ${today}_`);
+    out.push("");
+
+    if (general.length) {
+      out.push("## Notes");
+      out.push("");
+      general
+        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+        .forEach((c) => out.push(`- ${flatten(c.text)}`));
+      out.push("");
+    }
+
+    out.push("## Transcript");
+    out.push("");
+
+    let lineCount = 0;
+    blocks.forEach((b, i) => {
+      if (b.type !== "paragraph" || b.data.t == null) return;
+      lineCount++;
+      const stamp = typeof Gemini !== "undefined"
+        ? Gemini.formatTime(b.data.t) : String(Math.round(b.data.t));
+      out.push(`**[${stamp}]** ${stripTags(b.data.text || "")}`);
+      const cs = lineComments.get(i);
+      if (cs && cs.length) {
+        cs.forEach((c) => out.push(`  > 💬 ${flatten(c.text)}`));
+      }
+      out.push("");
+    });
+
+    if (!lineCount) {
+      out.push("_No transcript yet — it may still be generating._");
+      out.push("");
+    }
+
+    const safe = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "video";
+    downloadBlob(out.join("\n"), `${safe}-transcript-${today}.md`, "text/markdown");
+  }
+
+  // Strip the inline HTML the reader stores in block text.
+  function stripTags(s) {
+    const d = document.createElement("div");
+    d.innerHTML = String(s == null ? "" : s);
+    return d.textContent || "";
+  }
+
+  // Collapse a multi-line comment so it sits on one markdown line.
+  function flatten(s) {
+    return String(s == null ? "" : s).split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
   }
 
   function downloadBlob(text, filename, mimeType) {
