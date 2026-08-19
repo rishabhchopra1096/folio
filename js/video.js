@@ -762,10 +762,12 @@ const Video = (function () {
    * once per document so the sync loop is a binary search over numbers rather
    * than a DOM query every tick.
    */
-  function indexSegments() {
+  function indexSegments(keepActive) {
+    const wasActive = keepActive && activeIdx >= 0 ? segEls[activeIdx] : null;
     segEls = Array.from(document.querySelectorAll("#article [data-t]"));
     segTimes = segEls.map((el) => parseFloat(el.dataset.t) || 0);
-    activeIdx = -1;
+    // Appending lines must not drop the highlight off the line being spoken.
+    activeIdx = wasActive ? segEls.indexOf(wasActive) : -1;
   }
 
   // Index of the last segment that has started by time t.
@@ -963,7 +965,7 @@ const Video = (function () {
 
   function waitingBlock() {
     return { type: "paragraph", data: {
-      text: "<i>Transcribing… lines will appear here as they arrive.</i>" } };
+      text: '<i class="folio-waiting">Transcribing… lines will appear here as they arrive.</i>' } };
   }
 
   /*
@@ -1002,7 +1004,17 @@ const Video = (function () {
       lastCount = segments.length;
       setBusy(true, segments.length, segments[segments.length - 1].start);
       notePendingProgress(docId, segments.length);
-      writeBlocks(docId, buildBlocks(parsed, segments, true, knownDuration));
+      /*
+       * Storage always. The DOM by appending, so the player survives — only
+       * falling back to a full render when there is no live layout to append
+       * to (a different document is open, or this is the first write).
+       */
+      FolioStore.updateDocument(docId, { content: { time: Date.now(),
+        blocks: buildBlocks(parsed, segments, true, knownDuration) } });
+      if (typeof Reader === "undefined" || Reader.getCurrentDocId() !== docId) return;
+      if (!appendLines(segments)) {
+        writeBlocks(docId, buildBlocks(parsed, segments, true, knownDuration));
+      }
     };
 
     let segments;
@@ -1039,7 +1051,24 @@ const Video = (function () {
     setBusy(false);
     segments = trimToDuration(segments);
     if (!segments.length) throw new Error("Transcript had no usable lines.");
-    writeBlocks(docId, buildBlocks(parsed, segments, false, knownDuration));
+
+    /*
+     * Finishing must not reload the player either. Persist the final blocks,
+     * then append whatever is still missing — a full render here would destroy
+     * and rebuild the video at the exact moment the transcript completes,
+     * which is very likely while you are watching it.
+     */
+    FolioStore.updateDocument(docId, { content: { time: Date.now(),
+      blocks: buildBlocks(parsed, segments, false, knownDuration) } });
+    if (typeof Reader !== "undefined" && Reader.getCurrentDocId() === docId) {
+      if (!appendLines(segments)) {
+        writeBlocks(docId, buildBlocks(parsed, segments, false, knownDuration));
+      } else {
+        // The placeholder is gone with the append; nothing else to redraw.
+        const waiting = document.querySelector("#article .folio-waiting");
+        if (waiting && waiting.parentNode) waiting.parentNode.remove();
+      }
+    }
 
     // Comments taken while the transcript was still generating were anchored
     // to a moment in the video rather than to a line, because no lines existed
@@ -1306,6 +1335,52 @@ const Video = (function () {
       return;
     }
     Reader.renderDocument(docId);
+  }
+
+  /*
+   * APPEND NEW TRANSCRIPT LINES INSTEAD OF REBUILDING THE DOCUMENT.
+   *
+   * This is the difference between a video you can watch while it transcribes
+   * and one you cannot. A streaming write used to call Reader.renderDocument,
+   * which calls Video.attach, which calls detach() — destroying the YouTube
+   * player — and then built a NEW one starting from zero. The stream flushes
+   * every 1.5 seconds, so for the entire length of a transcription the video
+   * was being torn down and reloaded roughly forty times a minute: playback
+   * jumped back to the start, the transcript index was rebuilt, scroll
+   * position and any text selection were lost, and sync was meaningless.
+   *
+   * Lines only ever arrive at the END, so appending is all that was ever
+   * needed. Returns false if the live layout is not available, in which case
+   * the caller falls back to a full render.
+   */
+  function appendLines(segments) {
+    if (!transcriptEl || !document.body.contains(transcriptEl)) return false;
+    if (!segments || segments.length <= segEls.length) return true;
+
+    // The placeholder has done its job once real lines exist.
+    const waiting = transcriptEl.querySelector(".folio-waiting");
+    if (waiting && waiting.parentNode) waiting.parentNode.remove();
+
+    const frag = document.createDocumentFragment();
+    for (let i = segEls.length; i < segments.length; i++) {
+      const seg = segments[i];
+      const label = typeof Gemini !== "undefined"
+        ? Gemini.formatTime(seg.start) : String(Math.round(seg.start));
+      const p = document.createElement("p");
+      p.dataset.t = String(seg.start);
+      const btn = document.createElement("button");
+      btn.className = "video-ts";
+      btn.tabIndex = -1;
+      btn.title = "Jump to " + label;
+      btn.textContent = label;
+      p.appendChild(btn);
+      // textContent, not innerHTML: the model's output is not our markup.
+      p.appendChild(document.createTextNode(seg.text));
+      frag.appendChild(p);
+    }
+    transcriptEl.appendChild(frag);
+    indexSegments(true);
+    return true;
   }
 
   function flushDeferredRender() {

@@ -202,6 +202,32 @@ ok("lines from a different window do not count",
 ok("the recorded duration survives a streaming write",
    /if \(duration > 0\) vd\.duration = Math\.round\(duration\)/.test(vsrc));
 
+console.log("\n=== a streaming line APPENDS; it does not rebuild the page ===");
+/* Reader.renderDocument -> Video.attach -> detach() -> player.destroy(), then a
+   brand new YT.Player starting from zero. The stream flushes every 1.5s, so a
+   transcription tore the video down about forty times a minute: playback jumped
+   back to the start, scroll and selection were lost, and sync was meaningless.
+   Lines only ever arrive at the END, so appending is all that was needed. */
+ok("there is an append path", /function appendLines\(segments\)/.test(vsrc));
+ok("it writes into the live transcript, not the whole article",
+   /transcriptEl\.appendChild\(frag\)/.test(vsrc));
+ok("it only adds what is new", /for \(let i = segEls\.length; i < segments\.length; i\+\+\)/.test(vsrc));
+ok("streaming persists to storage regardless",
+   /FolioStore\.updateDocument\(docId, \{ content: \{ time: Date\.now\(\),/.test(vsrc));
+ok("streaming no longer full-renders when it can append",
+   /if \(!appendLines\(segments\)\) \{/.test(vsrc));
+ok("finishing appends too, so the video is not reloaded at the end",
+   (vsrc.match(/if \(!appendLines\(segments\)\)/g) || []).length >= 2);
+ok("model output is inserted as TEXT, never as markup",
+   /createTextNode\(seg\.text\)/.test(vsrc));
+ok("appending keeps the active line highlighted", /indexSegments\(true\)/.test(vsrc));
+ok("re-indexing can preserve the active element",
+   /const wasActive = keepActive && activeIdx >= 0/.test(vsrc));
+ok("it falls back to a full render when there is no live layout",
+   /if \(!transcriptEl \|\| !document\.body\.contains\(transcriptEl\)\) return false/.test(vsrc));
+ok("the placeholder is removed once real lines exist", /folio-waiting/.test(vsrc));
+ok("and why this matters is written down", /torn down and reloaded/.test(vsrc));
+
 console.log("\n=== one run per document, across tabs and reloads ===");
 /* A real log shows three runs on one document overlapping for eleven minutes,
    each doing all nine windows. Six concurrent requests on a preview model
