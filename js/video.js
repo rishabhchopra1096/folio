@@ -68,6 +68,14 @@ const Video = (function () {
   // Playback speeds our bar cycles through. YouTube supports these natively.
   const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
+  /*
+   * How far into a line you must be before Back restarts it rather than
+   * stepping to the previous one. About a second and a half — long enough that
+   * a Back pressed just after a line begins still takes you back, short enough
+   * that mid-line always means "say that again".
+   */
+  const RESTART_GRACE_SEC = 1.5;
+
   // ==========================================================================
   // IFRAME API LOADING
   // ==========================================================================
@@ -173,15 +181,49 @@ const Video = (function () {
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
 
       switch (e.key) {
-        case "k": case "K": e.preventDefault(); togglePlay(); break;
-        case "j": case "J": e.preventDefault(); nudge(-10); break;
-        case "l": case "L": e.preventDefault(); nudge(10); break;
-        case "ArrowLeft":   e.preventDefault(); nudge(-5); break;
-        case "ArrowRight":  e.preventDefault(); nudge(5); break;
-        case "ArrowUp":     e.preventDefault(); stepSpeed(1); break;
-        case "ArrowDown":   e.preventDefault(); stepSpeed(-1); break;
+        case "ArrowLeft":
+          e.preventDefault();
+          e.shiftKey ? nudge(-10) : hopLine(-1);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          e.shiftKey ? nudge(10) : hopLine(1);
+          break;
+        case "ArrowUp":   e.preventDefault(); stepSpeed(1); break;
+        case "ArrowDown": e.preventDefault(); stepSpeed(-1); break;
       }
     });
+  }
+
+  /*
+   * Jump by transcript LINE, not by an arbitrary number of seconds — the same
+   * choice made for reading, and for the same reason: a line is a unit of
+   * meaning, a ten-second hop lands wherever it lands.
+   *
+   * Back has the music-player behaviour too. Mid-line it restarts the line
+   * you're on; press it again and you go to the previous one. "Already at the
+   * start" is decided by position rather than by timing a double-tap, so the
+   * first press lands you exactly on the line start and the second therefore
+   * reads as "already there".
+   */
+  function hopLine(dir) {
+    if (!player || !segTimes.length) return;
+    let t;
+    try { t = player.getCurrentTime(); } catch { return; }
+
+    let i = segmentAt(t);
+    if (i < 0) i = 0;
+
+    if (dir < 0) {
+      // Far enough into the line to mean "restart it"; otherwise step back.
+      i = (t - segTimes[i] > RESTART_GRACE_SEC) ? i : i - 1;
+    } else {
+      i = i + 1;
+    }
+    i = Math.max(0, Math.min(segTimes.length - 1, i));
+
+    try { player.seekTo(segTimes[i], true); } catch { /* ignore */ }
+    setActive(i);
   }
 
   function stepSpeed(dir) {
@@ -283,13 +325,13 @@ const Video = (function () {
     const bar = document.createElement("div");
     bar.className = "folio-video-bar";
     bar.innerHTML =
-      '<button class="fv-btn" data-act="back" title="Back 10s">' +
+      '<button class="fv-btn" data-act="back" title="Previous line (←)">' +
         '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>' +
       '</button>' +
-      '<button class="fv-btn fv-play" data-act="play" title="Play/pause (K)">' +
+      '<button class="fv-btn fv-play" data-act="play" title="Play/pause (Space)">' +
         '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
       '</button>' +
-      '<button class="fv-btn" data-act="fwd" title="Forward 10s">' +
+      '<button class="fv-btn" data-act="fwd" title="Next line (→)">' +
         '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>' +
       '</button>' +
       '<span class="fv-time">0:00</span>' +
@@ -304,8 +346,8 @@ const Video = (function () {
       e.preventDefault();
       switch (b.dataset.act) {
         case "play":  togglePlay(); break;
-        case "back":  nudge(-10); break;
-        case "fwd":   nudge(10); break;
+        case "back":  hopLine(-1); break;
+        case "fwd":   hopLine(1); break;
         case "speed": cycleSpeed(); break;
         case "yt":    openOnYouTube(); break;
       }
