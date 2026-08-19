@@ -120,11 +120,29 @@ const Gemini = (function () {
   // ==========================================================================
 
   /*
-   * Ask Gemini for a timestamped transcript of a YouTube video.
+   * Stream a timestamped transcript of a YouTube video.
    *
-   * Returns [{ start: seconds, text: string }], sorted and de-duplicated.
-   * `onProgress(msg)` is called with human-readable status, because a long
-   * video can take minutes and silence reads as a hang.
+   * WHY STREAMING. A single blocking request on a 45-minute video measured
+   * **551 seconds** — nine minutes of nothing on screen. The same video
+   * streaming delivers its first line in about **28 seconds**, because output
+   * tokens are generated serially and there is no reason to withhold the early
+   * ones. `onSegments` is called repeatedly with whatever has arrived so far,
+   * so the transcript fills in as you watch.
+   *
+   * WHY JSONL AND NOT A JSON ARRAY. A partially-received array is not valid
+   * JSON and cannot be parsed, which defeats the point. One object per line
+   * means every completed line is independently parseable the moment it lands.
+   *
+   * WHAT WAS NOT THE PROBLEM: thinking. Measured thoughts=44 tokens on that
+   * 45-minute video, so it contributed nothing to the latency. It is still
+   * disabled because it is billed at the output rate and buys nothing for
+   * transcription — but it was never the cause.
+   *
+   * WHY NOT PARALLEL CHUNKS. Gemini accepts start/end offsets, but the
+   * timestamps it returns for a clip are unreliable — a 60s clip came back
+   * with eight segments all between 0.0 and 0.49, and a 0-240s clip returned
+   * times up to 339s. Timestamps are the entire point here, so clipping is
+   * unusable.
    */
   async function transcribeYouTube(url, opts) {
     opts = opts || {};
@@ -135,82 +153,188 @@ const Gemini = (function () {
     if (!parsed) throw new Error("That doesn't look like a YouTube link.");
 
     const progress = opts.onProgress || function () {};
-    progress("Asking Gemini to watch the video…");
+    const onSegments = opts.onSegments || null;
+    const signal = opts.signal;
 
     const body = {
       contents: [{
         parts: [
-          { file_data: { file_uri: parsed.url } },
+          { file_data: { file_uri: parsed.url, mime_type: "video/mp4" } },
           { text: PROMPT },
         ],
       }],
       generationConfig: {
-        responseMimeType: "application/json",
-        // Long videos produce long transcripts; don't get truncated mid-way.
-        maxOutputTokens: 65536,
         temperature: 0,
+        maxOutputTokens: 65536,
+        // Billed at the output rate and useless for transcription.
+        thinkingConfig: { thinkingBudget: 0 },
       },
     };
 
+    progress("Gemini is watching the video…");
+
     let res;
     try {
-      res = await fetch(`${API_BASE}/${MODEL}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify(body),
-      });
+      res = await fetch(
+        `${API_BASE}/${MODEL}:streamGenerateContent?alt=sse`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify(body),
+          signal: signal,
+        }
+      );
     } catch (err) {
+      if (err && err.name === "AbortError") throw err;
       throw new Error("Network error contacting Gemini: " + (err.message || "unknown"));
     }
 
-    if (!res.ok) {
-      let detail = "";
+    if (!res.ok) throw await describeError(res);
+    if (!res.body) throw new Error("Gemini returned no stream");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuf = "";      // unconsumed SSE bytes
+    let textBuf = "";     // unconsumed model text, split on newlines
+    const segments = [];
+    let finishReason = null;
+    let lastPush = 0;
+
+    const flush = (force) => {
+      if (!onSegments || !segments.length) return;
+      const now = Date.now();
+      // Throttled: a long transcript would otherwise rewrite the document
+      // hundreds of times.
+      if (!force && now - lastPush < 1500) return;
+      lastPush = now;
+      onSegments(segments.slice());
+    };
+
+    while (true) {
+      let chunk;
       try {
-        const j = await res.json();
-        detail = (j.error && j.error.message) || "";
-      } catch { /* not JSON */ }
+        chunk = await reader.read();
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err;
+        break;                     // treat a broken stream as end-of-data
+      }
+      if (chunk.done) break;
 
-      if (res.status === 400 && /API key/i.test(detail)) {
-        throw new Error("Gemini rejected the key. Check it in Settings → Video.");
+      sseBuf += decoder.decode(chunk.value, { stream: true });
+
+      let nl;
+      while ((nl = sseBuf.indexOf("\n")) !== -1) {
+        const line = sseBuf.slice(0, nl).trim();
+        sseBuf = sseBuf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+
+        let evt;
+        try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        const cand = evt.candidates && evt.candidates[0];
+        if (cand && cand.finishReason) finishReason = cand.finishReason;
+        const parts = (cand && cand.content && cand.content.parts) || [];
+        for (const p of parts) if (p.text) textBuf += p.text;
       }
-      if (res.status === 429) {
-        throw new Error("Gemini rate limit reached. Try again shortly.");
+
+      // Consume whole lines of model output as JSONL.
+      let mnl;
+      while ((mnl = textBuf.indexOf("\n")) !== -1) {
+        const raw = textBuf.slice(0, mnl);
+        textBuf = textBuf.slice(mnl + 1);
+        const seg = parseJsonlLine(raw);
+        if (seg) segments.push(seg);
       }
-      if (res.status === 403) {
-        throw new Error("Gemini refused the request — the key may lack access. " + detail);
-      }
-      throw new Error(`Gemini error ${res.status}${detail ? ": " + detail : ""}`);
+      flush(false);
     }
 
-    progress("Reading the transcript…");
-    const data = await res.json();
+    // Whatever is left may be a final line with no trailing newline.
+    const tail = parseJsonlLine(textBuf);
+    if (tail) segments.push(tail);
 
-    // A blocked or empty response has candidates but no usable text.
-    const cand = data.candidates && data.candidates[0];
-    const part = cand && cand.content && cand.content.parts && cand.content.parts[0];
-    const text = part && part.text;
-    if (!text) {
-      const reason = (cand && cand.finishReason) || (data.promptFeedback && data.promptFeedback.blockReason);
-      throw new Error("Gemini returned no transcript" + (reason ? " (" + reason + ")" : ""));
+    if (finishReason === "MAX_TOKENS") {
+      // Keep what arrived rather than throwing it all away — a partial
+      // transcript of a long video is still useful — but say so.
+      progress("Transcript was cut short (hit the length limit)");
     }
 
-    return normalizeSegments(text);
+    const out = dedupeSorted(segments);
+    flush(true);
+    if (!out.length) {
+      throw new Error("Gemini returned no transcript" +
+                      (finishReason ? " (" + finishReason + ")" : ""));
+    }
+    return out;
   }
 
+  async function describeError(res) {
+    let detail = "";
+    try {
+      const j = await res.json();
+      detail = (j.error && j.error.message) || "";
+    } catch { /* not JSON */ }
+    if (res.status === 400 && /API key/i.test(detail)) {
+      return new Error("Gemini rejected the key. Check it in Settings → Video.");
+    }
+    if (res.status === 429) return new Error("Gemini rate limit reached. Try again shortly.");
+    if (res.status === 403) return new Error("Gemini refused the request. " + detail);
+    return new Error(`Gemini error ${res.status}${detail ? ": " + detail : ""}`);
+  }
+
+  /*
+   * One JSONL line -> a segment, or null. Tolerant by design: the model
+   * occasionally emits a code fence, a stray array bracket, or a trailing
+   * comma, and one bad line should cost one line rather than the transcript.
+   */
+  function parseJsonlLine(raw) {
+    if (!raw) return null;
+    let t = String(raw).trim();
+    if (!t) return null;
+    t = t.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+    t = t.replace(/^[\[,]\s*/, "").replace(/[,\]]\s*$/, "").trim();
+    if (!t.startsWith("{")) return null;
+    let o;
+    try { o = JSON.parse(t); } catch { return null; }
+    const text = String(o.text == null ? "" : o.text).trim();
+    if (!text) return null;
+    const start = toSeconds(o.start != null ? o.start : o.startTime);
+    if (start == null) return null;
+    return { start: start, text: text };
+  }
+
+  /*
+   * The prompt.
+   *
+   * JSONL, one object per line, because a partial JSON array can't be parsed
+   * and streaming is the whole point.
+   *
+   * It asks for what is SHOWN as well as what is said. An earlier version said
+   * "transcribe the spoken audio", which threw away most of the value: Gemini
+   * is already watching the frames and being billed for them, and in a
+   * gameplay or demo video the important things — menus, numbers, what the
+   * person actually does — are shown rather than narrated. Visual lines are
+   * prefixed so they stay distinguishable from speech when you read back.
+   */
   const PROMPT = [
-    "Transcribe the spoken audio of this video.",
+    "Transcribe this video for someone who will read it instead of watching it.",
     "",
-    "Return JSON only: an array of objects, each with:",
-    '  "start" — the moment the segment begins, in SECONDS as a number',
-    '  "text"  — what is said, as clean readable prose',
+    "Output ONE JSON object per line. No array brackets, no code fences, no",
+    "commentary. Each line must be exactly:",
+    '{"start": seconds_from_video_start_as_a_number, "text": "..."}',
+    "",
+    "What to include:",
+    "- Everything spoken, as clean readable prose.",
+    "- What is SHOWN but not said, when it carries meaning: on-screen text and",
+    "  numbers (read them exactly), menus opened, actions taken, results that",
+    "  appear. Prefix those lines with '[shows] ' inside the text field.",
     "",
     "Rules:",
-    "- Split at natural sentence or thought boundaries, not fixed intervals.",
-    "- Aim for segments of roughly one to three sentences.",
-    "- Punctuate and capitalise properly. Remove filler words and stutters.",
-    "- Do NOT include timestamps inside the text field.",
-    "- Cover the whole video from start to finish, in order.",
-    "- If nothing is spoken, return an empty array.",
+    "- Split at natural sentence or thought boundaries, never fixed intervals.",
+    "- Roughly one to three sentences per line.",
+    "- Punctuate and capitalise properly. Drop filler words and stutters.",
+    "- Never put a timestamp inside the text field.",
+    "- Cover the whole video from beginning to end, in order, increasing start.",
+    "- Emit nothing at all if the video has no speech and nothing notable shown.",
   ].join("\n");
 
   /*
@@ -245,9 +369,12 @@ const Gemini = (function () {
       out.push({ start: start, text: text });
     }
 
-    out.sort((a, b) => a.start - b.start);
+    return dedupeSorted(out);
+  }
 
-    // Drop exact duplicate start times, keeping the longer text.
+  // Sort by time and collapse duplicate starts, keeping the fuller text.
+  function dedupeSorted(list) {
+    const out = list.slice().sort((a, b) => a.start - b.start);
     const dedup = [];
     for (const seg of out) {
       const prev = dedup[dedup.length - 1];

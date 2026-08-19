@@ -586,51 +586,135 @@ const Video = (function () {
       throw new Error("Add your Gemini API key in Settings → Video first.");
     }
 
-    const title = "YouTube — " + parsed.videoId;
-    const blocks = [
-      { type: "video", data: { provider: "youtube", videoId: parsed.videoId,
-                               url: parsed.url, start: parsed.start } },
-      { type: "paragraph", data: { text: "<i>Transcribing… this can take a few minutes for a long video.</i>" } },
-    ];
+    const videoBlock = { type: "video", data: { provider: "youtube",
+      videoId: parsed.videoId, url: parsed.url, start: parsed.start } };
 
-    const meta = FolioStore.createDocument(title, { time: Date.now(), blocks: blocks }, null);
+    const meta = FolioStore.createDocument(
+      "YouTube — " + parsed.videoId,
+      { time: Date.now(), blocks: [videoBlock, waitingBlock()] },
+      null
+    );
     if (typeof SidebarUI !== "undefined") SidebarUI.renderPageTree();
     window.location.hash = `#/doc/${meta.id}`;
 
-    const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 3000); };
+    return runTranscription(meta.id, parsed);
+  }
+
+  function waitingBlock() {
+    return { type: "paragraph", data: {
+      text: "<i>Transcribing… lines will appear here as they arrive.</i>" } };
+  }
+
+  /*
+   * Drive a transcription to completion, writing lines in as they stream.
+   *
+   * Marked as pending in settings for the whole run, so a reload can pick it up
+   * again. Without that, refreshing mid-transcription left the document stuck
+   * on "Transcribing…" forever — the fetch dies with the page and nothing
+   * remembered that work was owed.
+   */
+  async function runTranscription(docId, parsed) {
+    markPending(docId, parsed.url);
+    const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
+
+    let lastCount = 0;
+    const write = (segments) => {
+      if (!segments.length) return;
+      lastCount = segments.length;
+      writeBlocks(docId, buildBlocks(parsed, segments, true));
+    };
 
     let segments;
     try {
-      segments = await Gemini.transcribeYouTube(parsed.url, { onProgress: say });
+      segments = await Gemini.transcribeYouTube(parsed.url, {
+        onProgress: say,
+        onSegments: write,
+      });
     } catch (err) {
-      writeBlocks(meta.id, [
-        blocks[0],
-        { type: "paragraph", data: { text: "<b>Transcription failed:</b> " +
-            escapeHtml(err && err.message ? err.message : "unknown error") } },
-      ]);
+      clearPending(docId);
+      // Keep whatever streamed in rather than replacing it with an error.
+      if (lastCount === 0) {
+        writeBlocks(docId, [
+          { type: "video", data: { provider: "youtube", videoId: parsed.videoId,
+                                   url: parsed.url, start: parsed.start } },
+          { type: "paragraph", data: { text: "<b>Transcription failed:</b> " +
+              escapeHtml(err && err.message ? err.message : "unknown error") } },
+        ]);
+      }
       throw err;
     }
 
-    if (!segments.length) {
-      writeBlocks(meta.id, [blocks[0],
-        { type: "paragraph", data: { text: "<i>No speech found in this video.</i>" } }]);
-      say("No speech found");
-      return meta.id;
-    }
+    clearPending(docId);
+    writeBlocks(docId, buildBlocks(parsed, segments, false));
 
-    const out = [blocks[0]];
+    // Now that we know what it's about, give it a real title.
+    const first = segments.find((x) => !/^\[shows\]/.test(x.text)) || segments[0];
+    const words = first.text.replace(/^\[shows\]\s*/, "").split(/\s+/).slice(0, 8).join(" ");
+    if (words) FolioStore.updateDocument(docId, { title: words });
+    if (typeof SidebarUI !== "undefined") SidebarUI.renderPageTree();
+
+    say(`Transcript ready — ${segments.length} lines`);
+    return docId;
+  }
+
+  function buildBlocks(parsed, segments, stillGoing) {
+    const out = [{ type: "video", data: { provider: "youtube",
+      videoId: parsed.videoId, url: parsed.url, start: parsed.start } }];
     for (const s of segments) {
       out.push({ type: "paragraph", data: { text: escapeHtml(s.text), t: s.start } });
     }
-    writeBlocks(meta.id, out);
+    if (stillGoing) out.push(waitingBlock());
+    return out;
+  }
 
-    // Give it a better title now that we know what was said.
-    const firstWords = segments[0].text.split(/\s+/).slice(0, 8).join(" ");
-    FolioStore.updateDocument(meta.id, { title: firstWords || title });
-    if (typeof SidebarUI !== "undefined") SidebarUI.renderPageTree();
+  // ── Pending registry, so a reload can resume ──────────────────────────────
 
-    say(`Transcript ready — ${segments.length} segments`);
-    return meta.id;
+  function markPending(docId, url) {
+    const st = FolioStore.getSettings();
+    st.pendingTranscripts = st.pendingTranscripts || {};
+    st.pendingTranscripts[docId] = { url: url, at: new Date().toISOString() };
+    FolioStore.saveSettings(st);
+  }
+
+  function clearPending(docId) {
+    const st = FolioStore.getSettings();
+    if (st.pendingTranscripts && st.pendingTranscripts[docId]) {
+      delete st.pendingTranscripts[docId];
+      FolioStore.saveSettings(st);
+    }
+  }
+
+  /*
+   * On load, restart anything that was interrupted. Called once from init, and
+   * only acts on documents that really are unfinished — a transcript that
+   * completed just before the reload is left alone.
+   */
+  function resumePending() {
+    if (typeof Gemini === "undefined" || !Gemini.hasKey()) return;
+    const st = FolioStore.getSettings();
+    const pend = st.pendingTranscripts || {};
+    const ids = Object.keys(pend);
+    if (!ids.length) return;
+
+    ids.forEach((docId) => {
+      const doc = FolioStore.getDocument(docId);
+      if (!doc) { clearPending(docId); return; }
+
+      const blocks = (doc.content && doc.content.blocks) || [];
+      const hasLines = blocks.some((b) => b.data && b.data.t != null);
+      const stillWaiting = blocks.some((b) => b.data && /Transcribing…/.test(b.data.text || ""));
+      if (hasLines && !stillWaiting) { clearPending(docId); return; }
+
+      const parsed = Gemini.parseYouTube(pend[docId].url);
+      if (!parsed) { clearPending(docId); return; }
+
+      if (typeof TTS !== "undefined" && TTS.toast) {
+        TTS.toast("Resuming an interrupted transcription…", 3000);
+      }
+      runTranscription(docId, parsed).catch((err) => {
+        console.error("[video] resume failed:", err);
+      });
+    });
   }
 
   // Persist blocks and re-render if that document is the one on screen.
@@ -659,6 +743,7 @@ const Video = (function () {
     attach,
     detach,
     importUrl,
+    resumePending,
     promptImport,
     hasVideo: () => mounted,
     // exported for tests

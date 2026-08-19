@@ -228,6 +228,8 @@ const App = (function () {
     Highlights.init();
     Comments.init();
     if (typeof TTS !== "undefined") TTS.init();
+    // Restart any transcription that a reload interrupted.
+    if (typeof Video !== "undefined" && Video.resumePending) Video.resumePending();
 
     // Set up routing
     window.addEventListener("hashchange", route);
