@@ -118,6 +118,8 @@ const Settings = (function () {
 
     // Voice: Groq API key handlers (Save / Test / Clear)
     initVoiceKeyUI();
+    // Video: Gemini API key handlers
+    initGeminiKeyUI();
   }
 
   /*
@@ -171,6 +173,38 @@ const Settings = (function () {
       Voice.clearKey();
       input.value = "";
       input.placeholder = "gsk_...";
+      setStatus(status, "Cleared", "muted");
+    });
+  }
+
+  /*
+   * Gemini key for YouTube transcription. Same arrangement as the Groq key:
+   * the user's own key, in this browser only, never in the shipped source —
+   * Folio's repo is public and Google keys are auto-detected by secret
+   * scanning, so a committed key would be revoked within minutes anyway.
+   */
+  function initGeminiKeyUI() {
+    const input = document.getElementById("gemini-key-input");
+    const saveBtn = document.getElementById("gemini-key-save-btn");
+    const clearBtn = document.getElementById("gemini-key-clear-btn");
+    const status = document.getElementById("gemini-key-status");
+    if (!input || !saveBtn || typeof Gemini === "undefined") return;
+
+    if (Gemini.hasKey()) input.placeholder = maskKey(Gemini.getKey());
+
+    saveBtn.addEventListener("click", () => {
+      const raw = input.value.trim();
+      if (!raw) { setStatus(status, "Paste a key first", "muted"); return; }
+      Gemini.setKey(raw);
+      input.value = "";
+      input.placeholder = maskKey(raw);
+      setStatus(status, "Saved — paste a YouTube link to try it", "ok");
+    });
+
+    clearBtn.addEventListener("click", () => {
+      Gemini.clearKey();
+      input.value = "";
+      input.placeholder = "AIza...";
       setStatus(status, "Cleared", "muted");
     });
   }

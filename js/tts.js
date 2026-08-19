@@ -148,6 +148,18 @@ const TTS = (function () {
   let wordStarts = [];
   let lastEtaPaint = 0;
 
+  /*
+   * An optional external clock — currently a YouTube player. When one is
+   * registered and active, the dictate-and-resume loop drives IT instead of
+   * the speech engine: pausing pauses the video, and the paragraph a comment
+   * attaches to is the transcript line being spoken rather than the read-aloud
+   * playhead. Everything downstream (highlighting, transcription, comment
+   * storage, offline retry) is unchanged.
+   */
+  let externalClock = null;
+  function setExternalClock(c) { externalClock = c; }
+  function clockActive() { return !!(externalClock && externalClock.isActive()); }
+
   // ==========================================================================
   // DOCUMENT INDEX — walk the DOM once into a character-offset model
   // ==========================================================================
@@ -763,6 +775,16 @@ const TTS = (function () {
         return r.cloneRange();
       }
     }
+    // A video's current transcript line stands in for the read-aloud playhead.
+    if (clockActive()) {
+      const el = externalClock.currentBlockEl();
+      if (el) {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        return r;
+      }
+    }
+
     if (!curWord) return null;
     const b = blockAt(curWord.ds);
     if (!b) return null;
@@ -835,8 +857,14 @@ const TTS = (function () {
       return;
     }
 
-    micResumeAfter = typeof resumeAfter === "boolean" ? resumeAfter : playing;
-    if (playing) pauseForDictation();
+    if (clockActive()) {
+      // The video is the clock — remember whether IT was running, and stop it.
+      micResumeAfter = externalClock.isPlaying();
+      if (micResumeAfter) externalClock.pause();
+    } else {
+      micResumeAfter = typeof resumeAfter === "boolean" ? resumeAfter : playing;
+      if (playing) pauseForDictation();
+    }
 
     micHighlightId = highlightCurrentBlock();
 
@@ -854,7 +882,7 @@ const TTS = (function () {
       micState = "idle";
       updateMic();
       toast(escapeForToast(err && err.message ? err.message : "Could not start recording"), 3200);
-      if (micResumeAfter) play();
+      if (micResumeAfter) resumeAfterDictation();
     }
   }
 
@@ -903,7 +931,7 @@ const TTS = (function () {
         updateMic();
         toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3200);
         discardDictationHighlight();
-        if (micResumeAfter) play();
+        if (micResumeAfter) resumeAfterDictation();
         return;
       }
       return saveDictation(text, targetHighlight);
@@ -916,7 +944,7 @@ const TTS = (function () {
       updateMic();
       toast(escapeForToast(err && err.message ? err.message : "Recording failed"), 3200);
       discardDictationHighlight();
-      if (micResumeAfter) play();
+      if (micResumeAfter) resumeAfterDictation();
       return;
     }
 
@@ -934,7 +962,7 @@ const TTS = (function () {
         toast(escapeForToast(err && err.message ? err.message : "Transcription failed"), 3600);
         discardDictationHighlight();
       }
-      if (micResumeAfter) play();
+      if (micResumeAfter) resumeAfterDictation();
       return;
     }
 
@@ -965,7 +993,7 @@ const TTS = (function () {
     }
 
     micHighlightId = null;
-    if (micResumeAfter) play();
+    if (micResumeAfter) resumeAfterDictation();
   }
 
   function escapeForToast(s) {
@@ -1092,6 +1120,11 @@ const TTS = (function () {
     }
   }
 
+  function resumeAfterDictation() {
+    if (clockActive()) externalClock.resume();
+    else play();
+  }
+
   function cancelDictation() {
     if (micState !== "recording") return;
     if (micHandle && typeof Voice !== "undefined") Voice.cancelRecording(micHandle);
@@ -1101,7 +1134,7 @@ const TTS = (function () {
     updateMic();
     hideToast();
     toast("Discarded", 1400);
-    if (micResumeAfter) play();
+    if (micResumeAfter) resumeAfterDictation();
   }
 
   function updateMic() {
@@ -1416,7 +1449,7 @@ const TTS = (function () {
 
       const readerActive = document.getElementById("view-reader");
       if (!readerActive || !readerActive.classList.contains("active")) return;
-      if (!chunks.length) return;
+      if (!chunks.length && !clockActive()) return;
       if (isTypingTarget(e.target)) return;
       if (micState === "transcribing") return;
 
@@ -1450,7 +1483,7 @@ const TTS = (function () {
     document.addEventListener("keydown", function (e) {
       const readerActive = document.getElementById("view-reader");
       if (!readerActive || !readerActive.classList.contains("active")) return;
-      if (!chunks.length) return;
+      if (!chunks.length && !clockActive()) return;
       if (isTypingTarget(e.target)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 

@@ -260,6 +260,28 @@ const App = (function () {
       }
     });
 
+    // Add-a-video button in the sidebar footer
+    const videoBtn = document.getElementById("add-video-btn");
+    if (videoBtn && typeof Video !== "undefined") {
+      videoBtn.addEventListener("click", () => Video.promptImport());
+    }
+
+    /*
+     * Pasting a bare YouTube link anywhere outside a text field imports it.
+     * Guarded to a URL on its own so pasting a link INTO prose still just
+     * pastes the link.
+     */
+    document.addEventListener("paste", (e) => {
+      if (typeof Video === "undefined" || typeof Gemini === "undefined") return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const text = e.clipboardData ? e.clipboardData.getData("text/plain").trim() : "";
+      if (!text || /\s/.test(text)) return;
+      if (!Gemini.parseYouTube(text)) return;
+      e.preventDefault();
+      Video.promptImport(text);
+    });
+
     // Welcome screen new page button
     document.getElementById("welcome-new-btn").addEventListener("click", () => {
       SidebarUI.createNewPage();

@@ -770,3 +770,71 @@ mark.pulsing {
 .comment-indicator:hover {
   transform: scale(1.15);
 }
+
+/* ── YOUTUBE VIDEO + SYNCED TRANSCRIPT ── */
+
+/* The player sits above the transcript and sticks to the top while you scroll,
+   so the video stays visible as you read and comment further down. */
+.folio-video {
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  margin: 0 0 28px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 6px 28px var(--shadow);
+}
+.folio-video iframe { width: 100%; height: 100%; border: 0; display: block; }
+.folio-video-loading,
+.folio-video-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 20px;
+}
+.folio-video-error { color: #d95c5c; }
+
+/* Clickable timestamp chip at the head of each transcript line. Deliberately
+   the only click target that seeks, so selecting the words themselves stays
+   free for commenting. */
+.video-ts {
+  display: inline-block;
+  margin-right: 10px;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  vertical-align: 2px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.video-ts:hover { border-color: var(--accent); color: var(--accent); }
+
+/* The line currently being spoken. A left rule plus a soft wash — strong
+   enough to find at a glance, quiet enough to read through. */
+#article p[data-t] {
+  border-left: 2px solid transparent;
+  padding-left: 14px;
+  margin-left: -16px;
+  transition: border-color 0.25s, background 0.25s;
+}
+#article p.video-active-line {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+#article p.video-active-line .video-ts {
+  border-color: var(--accent);
+  color: var(--accent);
+}

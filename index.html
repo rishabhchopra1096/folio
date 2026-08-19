@@ -60,6 +60,10 @@
             <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Import
           </button>
+          <button class="sidebar-footer-btn" id="add-video-btn" title="Add a YouTube video with transcript">
+            <svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            Video
+          </button>
           <button class="sidebar-footer-btn" id="settings-toggle-btn" title="Settings">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
             Settings
@@ -212,6 +216,20 @@
         <div class="backup-hint">Your pages are stored in this browser. Export a JSON backup occasionally so nothing is lost if the browser clears its storage.</div>
       </div>
       <div class="setting-group">
+        <label>Video — Gemini API key</label>
+        <input type="password" id="gemini-key-input" class="voice-key-input" placeholder="AIza..." autocomplete="off" />
+        <div class="voice-key-btns">
+          <button id="gemini-key-save-btn" class="backup-btn">Save</button>
+          <button id="gemini-key-clear-btn" class="backup-btn">Clear</button>
+        </div>
+        <div class="voice-key-status" id="gemini-key-status"></div>
+        <div class="backup-hint">
+          Transcribes YouTube videos. Get a key at
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
+          Stored only in this browser.
+        </div>
+      </div>
+      <div class="setting-group">
         <label>Voice — Groq API key</label>
         <input type="password" id="voice-key-input" class="voice-key-input" placeholder="gsk_..." autocomplete="off" />
         <div class="voice-key-btns">
@@ -354,6 +372,7 @@
 
     <!-- Folio modules -->
     <script src="js/store.js"></script>
+    <script src="js/gemini.js"></script>
     <script src="js/voice.js"></script>
     <script src="js/settings.js"></script>
     <script src="js/reader.js"></script>
@@ -361,6 +380,7 @@
     <script src="js/sidebar.js"></script>
     <script src="js/highlights.js"></script>
     <script src="js/comments.js"></script>
+    <script src="js/video.js"></script>
     <script src="js/tts.js"></script>
     <script src="js/app.js"></script>
   </body>

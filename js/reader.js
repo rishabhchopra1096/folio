@@ -53,8 +53,14 @@ const Reader = (function () {
       case "header":
         return `<h${data.level || 2}>${data.text || ""}</h${data.level || 2}>`;
 
-      case "paragraph":
-        return `<p>${data.text || ""}</p>`;
+      case "paragraph": {
+        // Transcript lines carry a start time; everything else is a plain <p>.
+        if (data.t == null) return `<p>${data.text || ""}</p>`;
+        const t = Number(data.t) || 0;
+        const label = typeof Gemini !== "undefined" ? Gemini.formatTime(t) : String(Math.round(t));
+        return `<p data-t="${t}"><button class="video-ts" tabindex="-1" ` +
+               `title="Jump to ${label}">${label}</button>${data.text || ""}</p>`;
+      }
 
       case "list": {
         const tag = data.style === "ordered" ? "ol" : "ul";
@@ -110,6 +116,16 @@ const Reader = (function () {
 
       case "delimiter":
         return "<hr />";
+
+      case "video": {
+        // A placeholder only — js/video.js swaps in the real IFrame player,
+        // which is the only way to read the playhead for transcript sync.
+        const vid = String(data.videoId || "");
+        if (!/^[A-Za-z0-9_-]{11}$/.test(vid)) return "";
+        return `<div class="folio-video" data-video-id="${vid}" data-start="${Number(data.start) || 0}">
+          <div class="folio-video-loading">Loading player…</div>
+        </div>`;
+      }
 
       case "image": {
         // Pasted images use the simpleImage tool's data shape: { url, caption }
@@ -179,6 +195,12 @@ const Reader = (function () {
     if (typeof TTS !== "undefined") {
       TTS.attach(docId);
     }
+
+    // Turn any video placeholder into a live player and start syncing the
+    // transcript. No-op on documents without one.
+    if (typeof Video !== "undefined") {
+      Video.attach();
+    }
   }
 
   // ==========================================================================
@@ -215,6 +237,7 @@ const Reader = (function () {
     // Stop any in-flight speech and drop the index — it points at DOM nodes
     // that are about to be destroyed.
     if (typeof TTS !== "undefined") TTS.detach();
+    if (typeof Video !== "undefined") Video.detach();
     ringWrap.classList.remove("visible");
     document.getElementById("progress-bar-wrap").style.display = "none";
     article.innerHTML = "";
