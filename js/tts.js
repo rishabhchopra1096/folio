@@ -989,7 +989,16 @@ const TTS = (function () {
       toast("Nothing recorded", 1800);
       discardDictationHighlight();
     } else if (typeof Comments !== "undefined" && Comments.addComment) {
-      Comments.addComment(highlightId, text, attachedDocId);
+      /*
+       * With no highlight — which on a video means the transcript hasn't
+       * arrived yet — record where in the video this was said, so it can be
+       * matched to its line once the transcript lands.
+       */
+      let at = null;
+      if (!highlightId && clockActive() && externalClock.currentTime) {
+        at = externalClock.currentTime();
+      }
+      Comments.addComment(highlightId, text, attachedDocId, at);
       const preview = text.length > 42 ? text.slice(0, 42) + "…" : text;
       // The toast renders HTML (for the <kbd> hints), so transcript text —
       // which comes back from the speech API — has to be escaped.

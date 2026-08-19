@@ -133,10 +133,10 @@ const Gemini = (function () {
    * JSON and cannot be parsed, which defeats the point. One object per line
    * means every completed line is independently parseable the moment it lands.
    *
-   * WHAT WAS NOT THE PROBLEM: thinking. Measured thoughts=44 tokens on that
-   * 45-minute video, so it contributed nothing to the latency. It is still
-   * disabled because it is billed at the output rate and buys nothing for
-   * transcription — but it was never the cause.
+   * WHAT WAS NOT THE PROBLEM: thinking. It used 44 tokens on that 45-minute
+   * video. Disabling it was measured and made things WORSE — 752s and a
+   * truncated transcript, because without those few planning tokens the model
+   * over-produces and hits the output cap. Left on deliberately.
    *
    * WHY NOT PARALLEL CHUNKS. Gemini accepts start/end offsets, but the
    * timestamps it returns for a clip are unreliable — a 60s clip came back
@@ -166,8 +166,18 @@ const Gemini = (function () {
       generationConfig: {
         temperature: 0,
         maxOutputTokens: 65536,
-        // Billed at the output rate and useless for transcription.
-        thinkingConfig: { thinkingBudget: 0 },
+        /*
+         * Thinking is deliberately LEFT ON. Disabling it looked obviously
+         * right — it bills at the output rate and transcription isn't a
+         * reasoning task — and measuring proved the opposite:
+         *
+         *   thinking on   551s  output 15,911  STOP        443 segments
+         *   thinking off  752s  output 65,525  MAX_TOKENS  truncated
+         *
+         * It used all of 44 thinking tokens, and those 44 tokens are what keep
+         * the model terse and on-task. Without them it over-produces, blows
+         * the output budget and the transcript is cut off. Slower AND worse.
+         */
       },
     };
 

@@ -95,7 +95,8 @@ ok("asks for what is SHOWN", /what is SHOWN/.test(src));
 ok("asks to read numbers exactly", /read them exactly/.test(src));
 ok("specifies one object per line", /ONE JSON object per line/.test(src));
 ok("no longer says 'spoken audio' only", !/Transcribe the spoken audio of this video/.test(src));
-ok("thinking is disabled", /thinkingBudget: 0/.test(src));
+ok("thinking is NOT disabled — measured slower and truncating without it",
+   !/thinkingBudget: 0/.test(src));
 ok("sends mime_type on the file part", /mime_type: "video\/mp4"/.test(src));
 ok("uses the streaming endpoint", /streamGenerateContent\?alt=sse/.test(src));
 

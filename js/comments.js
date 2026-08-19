@@ -467,20 +467,30 @@ const Comments = (function () {
    * offline, say — otherwise a retry that lands after the reader has moved on
    * would file the comment against whatever document happens to be open.
    */
-  function addComment(highlightId, text, docId) {
+  function addComment(highlightId, text, docId, videoTime) {
     docId = docId || Reader.getCurrentDocId();
     if (!docId || !text || !text.trim()) return null;
 
     const comments = FolioStore.getComments(docId);
     const id = FolioStore.generateId("cm");
-    comments.push({
+    const rec = {
       id: id,
       highlightId: highlightId || null,
       isGeneral: !highlightId,
       text: text.trim(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-    });
+    };
+    /*
+     * A comment made on a video before its transcript exists has no line to
+     * attach to, so we record WHERE IN THE VIDEO it was spoken. Once the
+     * transcript arrives that timestamp identifies the line, and the comment
+     * gets re-pointed at it — see Video.reconcileTimedComments.
+     */
+    if (typeof videoTime === "number" && isFinite(videoTime) && !highlightId) {
+      rec.videoTime = videoTime;
+    }
+    comments.push(rec);
     FolioStore.saveComments(docId, comments);
 
     // Keep the panel current if it happens to be open on that same doc.
@@ -488,6 +498,34 @@ const Comments = (function () {
       renderComments();
     }
     return id;
+  }
+
+  /*
+   * Comments still waiting to be matched to a transcript line: anchored to a
+   * moment in the video, but not yet to any text.
+   */
+  function listTimed(docId) {
+    docId = docId || Reader.getCurrentDocId();
+    if (!docId) return [];
+    return FolioStore.getComments(docId)
+      .filter((c) => typeof c.videoTime === "number" && !c.highlightId);
+  }
+
+  // Re-point a comment at a highlight once one exists for its moment.
+  function attachToHighlight(docId, commentId, highlightId) {
+    docId = docId || Reader.getCurrentDocId();
+    if (!docId || !commentId || !highlightId) return false;
+    const comments = FolioStore.getComments(docId);
+    const c = comments.find((x) => x.id === commentId);
+    if (!c) return false;
+    c.highlightId = highlightId;
+    c.isGeneral = false;
+    c.updatedAt = new Date().toISOString();
+    FolioStore.saveComments(docId, comments);
+    if (panel.classList.contains("open") && docId === Reader.getCurrentDocId()) {
+      renderComments();
+    }
+    return true;
   }
 
   // Start editing an existing comment
@@ -960,5 +998,7 @@ const Comments = (function () {
     closePanel,
     renderComments,
     addComment,
+    listTimed,
+    attachToHighlight,
   };
 })();

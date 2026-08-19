@@ -553,6 +553,12 @@ const Video = (function () {
       pause: () => { try { player && player.pauseVideo(); } catch { /* ignore */ } },
       resume: () => { try { player && player.playVideo(); } catch { /* ignore */ } },
       currentBlockEl: () => (activeIdx >= 0 ? segEls[activeIdx] : null),
+      // Where we are in the video, so a comment taken before the transcript
+      // exists can still be anchored to a moment and matched up later.
+      currentTime: () => {
+        if (!player || typeof player.getCurrentTime !== "function") return null;
+        try { return player.getCurrentTime(); } catch { return null; }
+      },
     });
   }
 
@@ -647,6 +653,11 @@ const Video = (function () {
     clearPending(docId);
     writeBlocks(docId, buildBlocks(parsed, segments, false));
 
+    // Comments taken while the transcript was still generating were anchored
+    // to a moment in the video rather than to a line, because no lines existed
+    // yet. Now that they do, attach each one to the line that was on screen.
+    reconcileTimedComments(docId, segments);
+
     // Now that we know what it's about, give it a real title.
     const first = segments.find((x) => !/^\[shows\]/.test(x.text)) || segments[0];
     const words = first.text.replace(/^\[shows\]\s*/, "").split(/\s+/).slice(0, 8).join(" ");
@@ -665,6 +676,62 @@ const Video = (function () {
     }
     if (stillGoing) out.push(waitingBlock());
     return out;
+  }
+
+  /*
+   * Attach any time-anchored comments to the transcript lines they belong to.
+   *
+   * While the transcript is generating you can still watch and talk, so those
+   * comments are saved as page notes carrying the video position they were
+   * spoken at. Once the lines arrive, each note's timestamp falls inside
+   * exactly one line's window — so we highlight that line and re-point the
+   * comment at it, and it becomes indistinguishable from one made afterwards.
+   */
+  function reconcileTimedComments(docId, segments) {
+    if (typeof Comments === "undefined" || !Comments.listTimed) return;
+    const timed = Comments.listTimed(docId);
+    if (!timed.length || !segments.length) return;
+
+    // Re-render first so the lines actually exist in the DOM to highlight.
+    if (typeof Reader !== "undefined" && Reader.getCurrentDocId() === docId) {
+      indexSegments();
+    }
+
+    let attached = 0;
+    timed.forEach((c) => {
+      const i = indexForTime(segments, c.videoTime);
+      if (i < 0) return;
+      const el = segEls[i];
+      if (!el || typeof Highlights === "undefined" || !Highlights.createHighlightFromRange) return;
+
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      const hlId = Highlights.createHighlightFromRange(r, "yellow");
+      if (!hlId) return;
+
+      Comments.attachToHighlight(docId, c.id, hlId);
+      attached++;
+    });
+
+    if (attached) {
+      // Highlighting splits text nodes, so the offset index has to be rebuilt.
+      indexSegments();
+      if (typeof TTS !== "undefined" && TTS.toast) {
+        TTS.toast(attached === 1
+          ? "Linked 1 earlier note to its line"
+          : `Linked ${attached} earlier notes to their lines`, 3000);
+      }
+    }
+  }
+
+  // Which segment's window contains this moment.
+  function indexForTime(segments, t) {
+    if (t == null) return -1;
+    let best = -1;
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].start <= t) best = i; else break;
+    }
+    return best;
   }
 
   // ── Pending registry, so a reload can resume ──────────────────────────────
