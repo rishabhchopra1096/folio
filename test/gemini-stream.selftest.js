@@ -107,6 +107,15 @@ ok("asks for paragraphs, not captions", /three to six sentences/.test(src));
 ok("wants what was SAID and what was SHOWN woven together",
    /everything the narrator SAYS/.test(src) && /everything that HAPPENS ON SCREEN/.test(src));
 ok("bans unresolved references", /Never write 'this guy'/.test(src));
+/* A real transcript re-introduced the video at EVERY window boundary — the
+   same "welcome back, last episode I beat the gym leader" recap appeared at
+   0:15, 10:11, 20:15, 30:15 and 40:15, once per chunk. Each window was writing
+   as though it were the start of the document. */
+ok("a window knows it is the middle of a document", /THIS IS THE MIDDLE OF A DOCUMENT/.test(src));
+ok("and is told not to open with a recap", /Do NOT open with a recap/.test(src));
+ok("outside knowledge cannot be used to fill gaps",
+   /Do not use general knowledge about this game/.test(src));
+ok("a quiet stretch may be reported as quiet", /say so briefly and move/.test(src));
 ok("describes only what is genuinely visible",
    /Describe only what you can genuinely see/.test(src));
 ok("and says what is happening rather than guessing at unreadable text",
