@@ -23,6 +23,13 @@
   gap: 16px;
   flex-direction: column;
   font-family: var(--font-ui);
+  /* The panel outgrew the viewport as settings were added, cutting off the last
+     group entirely — the Groq key field was simply unreachable. Cap it and let
+     it scroll. */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 #settings-panel.open { display: flex; }
 

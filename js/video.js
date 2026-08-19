@@ -162,6 +162,12 @@ const Video = (function () {
     initTranscriptClicks();
     initShortcuts();
     registerClock();
+
+    // Two player bars stacked on one screen is noise — the video owns playback
+    // here, so hide the read-aloud one. Dictation still works; it's routed
+    // through the clock seam, not through that bar.
+    const ttsBar = document.getElementById("tts-bar");
+    if (ttsBar) ttsBar.classList.add("hidden-by-video");
   }
 
   /*
@@ -207,9 +213,16 @@ const Video = (function () {
    * reads as "already there".
    */
   function hopLine(dir) {
-    if (!player || !segTimes.length) return;
+    if (!player) return;
     let t;
     try { t = player.getCurrentTime(); } catch { return; }
+
+    /*
+     * No transcript yet — the video is watchable while Gemini works, so the
+     * arrows and the bar buttons have to do SOMETHING rather than silently
+     * nothing. Fall back to a plain time seek until the lines arrive.
+     */
+    if (!segTimes.length) { nudge(dir < 0 ? -10 : 10); return; }
 
     let i = segmentAt(t);
     if (i < 0) i = 0;
@@ -301,6 +314,8 @@ const Video = (function () {
     activeIdx = -1;
     transcriptEl = null;
     barEl = null;
+    const ttsBar = document.getElementById("tts-bar");
+    if (ttsBar) ttsBar.classList.remove("hidden-by-video");
     const art = document.getElementById("article");
     if (art) delete art.dataset.videoLayout;
     if (typeof TTS !== "undefined" && TTS.setExternalClock) TTS.setExternalClock(null);

@@ -88,5 +88,38 @@ ok("no 'l' binding", !/case "l":|case "L":/.test(src));
 ok("arrows are bound", /case "ArrowLeft":/.test(src) && /case "ArrowRight":/.test(src));
 ok("shift+arrow still seeks by time", /e\.shiftKey \? nudge\(-10\)/.test(src));
 
+
+console.log("\n=== BEFORE the transcript arrives, arrows must still do something ===");
+/* The reported bug: while Gemini is still transcribing there are no lines, so
+   hopLine returned immediately and both the arrows AND the bar buttons did
+   nothing at all. It now falls back to a plain time seek. */
+const srcH = fs.readFileSync(REPO+"/js/video.js","utf8");
+ok("hopLine no longer bails on an empty transcript",
+   !/function hopLine\(dir\) \{\s*if \(!player \|\| !segTimes\.length\) return;/.test(srcH));
+ok("it falls back to a time seek instead",
+   /if \(!segTimes\.length\) \{ nudge\(dir < 0 \? -10 : 10\); return; \}/.test(srcH));
+ok("the bar's back/forward buttons route through hopLine",
+   /case "back":\s*hopLine\(-1\)/.test(srcH) && /case "fwd":\s*hopLine\(1\)/.test(srcH));
+
+console.log("\n=== the read-aloud bar is hidden on a video document ===");
+ok("adds the suppress class on attach", /hidden-by-video/.test(srcH));
+ok("and removes it on detach",
+   /ttsBar\.classList\.remove\("hidden-by-video"\)/.test(srcH));
+const srcC = fs.readFileSync(REPO+"/css/highlights.css","utf8");
+ok("CSS actually hides it", /#tts-bar\.hidden-by-video \{ display: none/.test(srcC));
+
+console.log("\n=== settings panel can scroll ===");
+const comp = fs.readFileSync(REPO+"/css/components.css","utf8");
+const panel = comp.slice(comp.indexOf("#settings-panel {"), comp.indexOf("#settings-panel.open"));
+ok("has a max-height", /max-height:/.test(panel), panel.slice(0,40));
+ok("has overflow-y: auto", /overflow-y: auto/.test(panel));
+ok("only one #settings-panel base rule", (comp.match(/^#settings-panel \{/gm)||[]).length === 1);
+
+console.log("\n=== the player keeps a true 16:9 ===");
+ok("drives height, not width", /height: 42vh;/.test(srcC));
+ok("width follows the aspect ratio", /width: auto;/.test(srcC));
+ok("no width:100% fighting max-height",
+   !/\.folio-video \{[^}]*width: 100%;[^}]*max-height: 42vh/s.test(srcC));
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail?1:0);

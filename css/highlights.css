@@ -788,11 +788,15 @@ mark.pulsing {
 
 .folio-video {
   position: relative;
-  width: 100%;
-  /* Capped so the transcript always has room — a full-width 16:9 player would
-     otherwise fill the viewport on its own. */
-  max-height: 42vh;
+  /* Height-first, so the 16:9 box stays 16:9. Setting width:100% alongside
+     max-height let the container become ~2.8:1, and YouTube then letterboxed
+     the video inside it with black bars down both sides. Driving height and
+     letting width follow the aspect ratio keeps the frame exact, and
+     max-width stops it overflowing a narrow column. */
+  height: 42vh;
   aspect-ratio: 16 / 9;
+  width: auto;
+  max-width: 100%;
   margin: 0 auto;
   border-radius: 10px;
   overflow: hidden;
@@ -918,3 +922,6 @@ mark.pulsing {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* The read-aloud bar is suppressed on a video document, which has its own. */
+#tts-bar.hidden-by-video { display: none !important; }
