@@ -366,6 +366,207 @@ const Gemini = (function () {
     return (hi - lo) >= (w.to - w.from) * 0.6;
   }
 
+  /*
+   * THE CAPTION-GROUNDED PATH — this is the correct one.
+   *
+   * The model cannot work out where it is in a long video. Asked to timestamp
+   * a 42-minute video it compressed the whole thing into the first 20 minutes
+   * and put a scene from 38:49 at 0:30: a median error of 563 seconds, which
+   * makes every comment anchor wrong. Handed the video's own caption timings
+   * and told to COPY one for each line, the same model lands within 16
+   * seconds. That is the whole difference, and no amount of prompt work
+   * substitutes for it.
+   *
+   * One request for the whole video. Chunking exists here only to finish a
+   * long video that stopped early, and it is safe now precisely because the
+   * clock comes from the captions rather than from the model's sense of
+   * elapsed time.
+   */
+  const COVERAGE_TARGET = 0.95;
+  const MAX_TOPUPS = 4;
+
+  function captionPrompt(cues, opts) {
+    const { from, to, duration, continuation } = opts;
+    const lines = [
+      "You are writing the document that REPLACES this video.",
+      "The reader will never watch it. They cannot see the screen or hear the",
+      "audio. Everything they understand, they understand because you wrote it.",
+      "",
+      "THE EXACT WORDS SPOKEN, WITH THE SECOND EACH LINE BEGINS, ARE BELOW.",
+      "They come from the video's own captions and their timings are correct.",
+      "",
+      "--- SPOKEN WORDS ---",
+      cues.map((c) => `[${c.t}] ${c.text}`).join("\n"),
+      "--- END SPOKEN WORDS ---",
+      "",
+      "Output ONE JSON object per line, exactly:",
+      '{"start": <a number COPIED from the list above>, "text": "..."}',
+      "No array brackets, no code fences, no commentary.",
+      "",
+      "RULES FOR `start`, WHICH MATTER MORE THAN ANYTHING ELSE:",
+      "- NEVER invent, estimate or calculate a timestamp. Copy one of the",
+      "  numbers in square brackets above, exactly as written.",
+      "- Work through them in order and carry on to the END of the list.",
+      `- Produce about ${Math.max(15, Math.round((to - from) / 20))} entries, spaced roughly 20`,
+      "  seconds apart. Never leave more than 45 seconds between two entries.",
+    ];
+    if (continuation) {
+      lines.push(
+        "",
+        `This continues a document already written up to ${formatTime(from)}. Do NOT`,
+        "introduce the video or recap what came before — begin with what is",
+        "happening at the start of this stretch.");
+    } else if (duration) {
+      lines.push(`- This video is ${Math.round(duration)} seconds long; your last lines`,
+        "  must cover its final minutes, not stop early.");
+    }
+    lines.push(
+      "",
+      "DO NOT SUMMARISE. Write it as if the reader will be tested on the",
+      "details afterwards and cannot go back to the video.",
+      "",
+      "Each line is one paragraph of three to six sentences weaving together:",
+      "- what is SAID in that stretch — use the words above, cleaned up but",
+      "  complete, keeping the speaker's meaning and voice;",
+      "- what HAPPENS ON SCREEN there — where we are, what is chosen, what",
+      "  changes, what results, and any name or number that carries meaning.",
+      "  This is the half the captions cannot give, so it matters most.",
+      "",
+      "- Name things. Never write 'this guy', 'here', or 'that one'.",
+      "- Never invent on-screen text you cannot actually read.",
+      "- Never repeat a sentence you have already written.");
+    return lines.join("\n");
+  }
+
+  async function transcribeWithCaptions(url, parsed, key, cues, opts) {
+    const progress = opts.onProgress || function () {};
+    const onSegments = opts.onSegments || null;
+    const runId = "r" + Date.now().toString(36);
+    const t0 = Date.now();
+    const duration = Number(opts.durationSec) ||
+      (cues.length ? cues[cues.length - 1].t : 0);
+    const capEnd = cues.length ? cues[cues.length - 1].t : 0;
+    const valid = new Set(cues.map((c) => c.t));
+
+    log("request", { run: runId, video: parsed.videoId, model: getModel(),
+                     why: opts.reason || "start", doc: opts.docId || null,
+                     mode: "captions", cues: cues.length,
+                     duration: Math.round(duration) || null });
+
+    const all = [];
+    const seen = new Set();
+    const take = (text) => {
+      let added = 0;
+      for (const line of String(text).split("\n")) {
+        const s = line.trim();
+        if (!s.startsWith("{")) continue;
+        let o;
+        try { o = JSON.parse(s.replace(/,\s*$/, "")); } catch { continue; }
+        const st = Number(o && o.start);
+        if (!o || !o.text || !Number.isFinite(st)) continue;
+        /*
+         * The timestamp must be one we handed over. A live run produced two
+         * stamped past the end of the captions — invented, not copied — and
+         * this is the check that caught them.
+         */
+        if (!valid.has(st) || seen.has(st)) continue;
+        seen.add(st);
+        all.push({ start: st, text: String(o.text).trim() });
+        added++;
+      }
+      all.sort((a, b) => a.start - b.start);
+      return added;
+    };
+
+    const lastCovered = () => (all.length ? all[all.length - 1].start : 0);
+
+    for (let pass = 0; pass <= MAX_TOPUPS; pass++) {
+      const from = pass === 0 ? 0 : lastCovered() + 1;
+      if (pass > 0 && from >= capEnd - 60) break;
+      const to = capEnd;
+      const slice = pass === 0 ? cues : cues.filter((c) => c.t >= from);
+      if (!slice.length) break;
+
+      progress(pass === 0
+        ? "Writing the narrative…"
+        : `Continuing from ${formatTime(from)}…`);
+
+      const part = { fileData: { fileUri: parsed.url, mimeType: "video/mp4" } };
+      // Only a continuation narrows the video, and only to what is missing.
+      if (pass > 0) {
+        part.videoMetadata = { startOffset: Math.floor(from) + "s",
+                               endOffset: Math.ceil(Math.min(to + 5, duration || to + 5)) + "s" };
+      }
+      const body = {
+        contents: [{ parts: [part, { text: captionPrompt(slice,
+          { from, to, duration, continuation: pass > 0 }) }] }],
+        generationConfig: Object.assign({
+          temperature: CHUNK_TEMPERATURE,
+          maxOutputTokens: CHUNK_MAX_TOKENS,
+        }, /gemini-3/.test(getModel())
+          ? { thinkingConfig: { thinkingLevel: THINKING_LEVEL } } : {}),
+      };
+
+      let res, j;
+      try {
+        res = await fetch(`${API_BASE}/${getModel()}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify(body),
+          signal: opts.signal,
+        });
+        j = await res.json();
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err;
+        log("neterror", { run: runId, pass, msg: err.message || "unknown" });
+        if (pass === 0) throw new Error("Network error contacting Gemini: " + (err.message || ""));
+        break;
+      }
+      if (!res.ok) {
+        const e = await describeErrorBody(res.status, j);
+        log("httperror", { run: runId, pass, status: res.status, msg: e.message });
+        if (pass === 0 || e.terminal) throw e;
+        break;
+      }
+
+      const cand = (j.candidates || [])[0] || {};
+      const text = ((cand.content || {}).parts || []).map((p) => p.text || "").join("");
+      const before = all.length;
+      const added = take(text);
+      const u = j.usageMetadata || {};
+      log("pass", { run: runId, pass, added, total: all.length,
+                    covered: Math.round(lastCovered()),
+                    finish: cand.finishReason,
+                    inTok: u.promptTokenCount, outTok: u.candidatesTokenCount });
+
+      if (onSegments && all.length) onSegments(all.slice());
+      if (!added || all.length === before) break;          // no progress
+      if (lastCovered() >= capEnd * COVERAGE_TARGET) break; // done
+    }
+
+    log("done", { run: runId, ms: Date.now() - t0, kept: all.length,
+                  lastTime: Math.round(lastCovered()),
+                  covered: capEnd ? Math.round(100 * lastCovered() / capEnd) : null });
+    if (!all.length) throw new Error("Gemini returned no usable lines.");
+    return all;
+  }
+
+  /* describeError works on a Response; continuations already have the body. */
+  function describeErrorBody(status, j) {
+    const detail = ((j && j.error && j.error.message) || "").slice(0, 300);
+    if (status === 429 && /credit|depleted|billing|exceeded your current quota/i.test(detail)) {
+      const e = new Error("Gemini has stopped accepting requests: " + detail);
+      e.terminal = true;
+      return e;
+    }
+    if (status === 400 && /API key/i.test(detail)) {
+      const e = new Error("Gemini rejected the key. Check it in Settings → Video.");
+      e.terminal = true;
+      return e;
+    }
+    return new Error(`Gemini error ${status}${detail ? ": " + detail : ""}`);
+  }
+
   async function transcribeYouTube(url, opts) {
     opts = opts || {};
     const key = getKey();
@@ -373,6 +574,12 @@ const Gemini = (function () {
 
     const parsed = parseYouTube(url);
     if (!parsed) throw new Error("That doesn't look like a YouTube link.");
+
+    // Real timings available: use them. Everything below is the fallback for
+    // when they are not, and it cannot place events accurately.
+    if (Array.isArray(opts.cues) && opts.cues.length) {
+      return transcribeWithCaptions(url, parsed, key, opts.cues, opts);
+    }
 
     const progress = opts.onProgress || function () {};
     const onSegments = opts.onSegments || null;

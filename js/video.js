@@ -1267,7 +1267,22 @@ const Video = (function () {
     markPending(docId, parsed.url, reason);
     const lease = setInterval(() => refreshLease(docId), LEASE_REFRESH_MS);
     setBusy(true);
+    const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
     const knownDuration = storedDuration(docId) || await awaitDuration(8000);
+
+    /*
+     * Real timings first. This is what makes the timestamps trustworthy; the
+     * caption-free path exists only so a run is still possible without the
+     * helper, and it cannot place events accurately.
+     */
+    say("Looking for the video's captions…");
+    const cap = await helperCaptions(parsed.videoId);
+    if (cap.cues.length) {
+      say(`Got ${cap.cues.length} caption cues — timings will be exact.`);
+    } else {
+      notify("No captions available (" + (cap.error || "unknown") +
+             "). Timings will be approximate.");
+    }
     /*
      * Only an interrupted run keeps what is there and fills the gaps. A redo
      * asked for by hand must actually redo: the whole point is to replace a
@@ -1275,7 +1290,6 @@ const Video = (function () {
      * every window as "already covered" and change nothing at all.
      */
     const already = reason === "resume" ? existingSegments(docId) : [];
-    const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
 
     let lastCount = 0;
     const write = (segments) => {
@@ -1307,8 +1321,9 @@ const Video = (function () {
         // Chunking needs to know how long the video is. Without it the
         // transcriber walks forward blindly until two windows come back empty,
         // which works but wastes a request or two at the end.
-        durationSec: knownDuration,
+        durationSec: knownDuration || cap.duration || 0,
         existing: already,
+        cues: cap.cues,
       });
     } catch (err) {
       clearInterval(lease);
@@ -1463,6 +1478,68 @@ const Video = (function () {
       if (segments[i].start <= t) best = i; else break;
     }
     return best;
+  }
+
+  // ── The local helper ──────────────────────────────────────────────────────
+
+  /*
+   * ASK THIS MACHINE FOR THE VIDEO'S REAL CAPTION TIMINGS.
+   *
+   * Without them the model has to guess where it is in the video, and it
+   * cannot — a 42-minute video came back compressed into its first 20 minutes,
+   * a scene from 38:49 placed at 0:30, median error 563 seconds. With them it
+   * lands within 16.
+   *
+   * Nothing else can fetch them. A browser tab cannot read youtube.com, the
+   * embedded player refuses to serve its own track, and a cloud function is
+   * answered with "Sign in to confirm you're not a bot" because it comes from
+   * a datacenter address. A process on this machine can, because this is an
+   * ordinary residential connection — so helper/folio-helper.js does it and
+   * the page asks it over loopback. Browsers treat 127.0.0.1 as a secure
+   * context, so an https page is allowed to.
+   *
+   * Absent or slow? Say so and carry on without it. The transcript will be
+   * worse and the timings approximate, which the caller reports honestly.
+   */
+  const HELPER = "http://127.0.0.1:8787";
+  const HELPER_TIMEOUT_MS = 4000;
+  const HELPER_FETCH_MS = 120000;
+
+  async function helperUp() {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), HELPER_TIMEOUT_MS);
+      try {
+        const r = await fetch(`${HELPER}/health`, { signal: ctl.signal });
+        if (!r.ok) return false;
+        const j = await r.json();
+        return !!(j && j.ok);
+      } finally { clearTimeout(t); }
+    } catch { return false; }
+  }
+
+  async function helperCaptions(videoId) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), HELPER_FETCH_MS);
+      let r, j;
+      try {
+        r = await fetch(`${HELPER}/captions?v=${encodeURIComponent(videoId)}`,
+                        { signal: ctl.signal });
+        j = await r.json();
+      } finally {
+        // Always. Left pending, this keeps a two-minute timer alive after
+        // every failed call.
+        clearTimeout(t);
+      }
+      if (!r.ok || !j || !j.ok) {
+        return { cues: [], error: (j && j.error) || `helper returned ${r.status}` };
+      }
+      return { cues: j.cues || [], duration: j.duration || 0, title: j.title || "" };
+    } catch (e) {
+      return { cues: [], error: (e && e.name === "AbortError")
+        ? "the helper took too long" : "the helper is not running" };
+    }
   }
 
   // ── Transcript intake ─────────────────────────────────────────────────────
