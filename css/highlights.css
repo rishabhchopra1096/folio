@@ -826,11 +826,13 @@ body[data-video-doc] #article-wrap {
      YouTube then letterboxes the video inside it with black bars. Here
      aspect-ratio alone sets the height, so the frame is always exact. */
   /*
-   * Sized so BOTH halves are usable. At 62vh the player plus its control bar
-   * left the transcript about 180px — two and a half lines — so the line being
-   * spoken was usually just off-screen. The video is still the larger half.
+   * Asked for at half again the previous 44vh. The heights still have to add
+   * up: 66vh here, plus the control bar and the article's padding, leaves the
+   * transcript a little under a quarter of the window — so its floor drops to
+   * 22vh to match, rather than the two fighting and the page overflowing the
+   * way it did before the arithmetic was fixed.
    */
-  --video-max-h: 44vh;
+  --video-max-h: 66vh;
   width: min(100%, calc(var(--video-max-h) * 16 / 9), 1400px);
   aspect-ratio: 16 / 9;
   margin: 0 auto;
@@ -874,7 +876,7 @@ body[data-video-doc] #article-wrap {
   font-family: var(--font-ui);
   /* Match the player's width so the controls sit under it rather than
      stretching across an empty column. */
-  width: min(100%, calc(44vh * 16 / 9), 1400px);
+  width: min(100%, calc(66vh * 16 / 9), 1400px);
   margin: 0 auto;
 }
 .fv-btn {
@@ -923,8 +925,9 @@ body[data-video-doc] #article-wrap {
 /* The only thing that scrolls. */
 .folio-transcript {
   flex: 1 1 auto;
-  /* Never let the video squeeze the reading half down to nothing. */
-  min-height: 34vh;
+  /* Never let the video squeeze the reading half down to nothing. Lowered
+     alongside the taller player so the two still fit inside the window. */
+  min-height: 22vh;
   overflow-y: auto;
   /*
    * A 40vh bottom pad used to sit here so the last line could scroll up. It

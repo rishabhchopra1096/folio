@@ -33,10 +33,21 @@ ok("topbar + article == 100dvh exactly", topbar === articleVh,
 console.log("\n=== both halves get usable room ===");
 const videoVh = num(/--video-max-h: (\d+)vh/, css);
 const minVh = num(/min-height: (\d+)vh/, css);
-ok("the player is smaller than it was", videoVh <= 46, videoVh + "vh");
-ok("the transcript has a floor", minVh >= 30, minVh + "vh");
-ok("they fit together under 100vh with room for the control bar",
-   videoVh + minVh <= 82, `${videoVh} + ${minVh} = ${videoVh + minVh}vh`);
+/* How the window is split between player and transcript is a taste call, and
+   it has been changed deliberately. What must never change is that the pieces
+   ADD UP: an earlier layout asked for 96px more than the window had, which is
+   what sliced the first transcript line in half and hid the last one. */
+ok("the player has a stated height", videoVh > 0, videoVh + "vh");
+ok("the transcript keeps a floor, so it can never be squeezed flat",
+   minVh > 0, minVh + "vh");
+const BAR_VH = 48 / 9;      // ~48px control bar on a 900px window
+const PAD_VH = 12 / 9;      // article padding
+ok("player + transcript floor + bar + padding fit inside the window",
+   videoVh + minVh + BAR_VH + PAD_VH <= 100,
+   `${videoVh} + ${minVh} + bar + padding = ${(videoVh + minVh + BAR_VH + PAD_VH).toFixed(1)}vh`);
+ok("and there is room left for more than the floor alone",
+   100 - videoVh - BAR_VH - PAD_VH >= minVh,
+   `${(100 - videoVh - BAR_VH - PAD_VH).toFixed(1)}vh available vs ${minVh}vh floor`);
 ok("the control bar tracks the same width", new RegExp(`calc\\(${videoVh}vh \\* 16 / 9\\)`).test(css));
 
 console.log("\n=== the empty band below the transcript is gone ===");

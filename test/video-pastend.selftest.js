@@ -130,8 +130,12 @@ ok("video layout drops the text max-width", /max-width: none !important/.test(cs
    constraint is that BOTH halves are usable, which video-layout.selftest
    checks in full. */
 const maxH = parseFloat((cssSrc.match(/--video-max-h: (\d+)vh/) || [])[1]);
-ok("the player is still the larger half", maxH >= 40, maxH + "vh");
-ok("but not so tall that the transcript is unusable", maxH <= 46, maxH + "vh");
+/* The exact split is the user's call and has been changed on request; the
+   constraint that matters — that everything fits the window — is checked in
+   video-layout.selftest. */
+ok("the player is the larger half", maxH >= 50, maxH + "vh");
+ok("the control bar tracks whatever height the player is set to",
+   new RegExp(`calc\\(${maxH}vh \\* 16 / 9\\)`).test(cssSrc), maxH + "vh");
 ok("still capped so it can't outgrow the window", /1400px/.test(cssSrc));
 ok("transcript keeps a readable measure", /width: min\(100%, 78ch\)/.test(cssSrc));
 
