@@ -89,6 +89,13 @@ const App = (function () {
       showView(viewReader);
       topbar.style.display = "";
       Reader.renderDocument(docId);
+      /*
+       * An interrupted transcription only resumes on the document you have
+       * open, so the check has to run on every navigation — not just at
+       * startup. Held leases make a second call while one is already running a
+       * no-op.
+       */
+      if (typeof Video !== "undefined" && Video.resumePending) Video.resumePending();
       SidebarUI.setActiveDoc(docId);
       updateBreadcrumb(doc.meta);
       updateModeToggle("read");

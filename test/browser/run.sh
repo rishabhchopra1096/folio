@@ -8,6 +8,11 @@ cd "$(dirname "$0")"
 PROBE="${1:-probe}"
 [ "$PROBE" = "probe" ] || PROBE="$PROBE.probe"
 rm -f out.log
+# A FRESH profile every run. Reusing one meant localStorage survived between
+# probes, so a probe could read state its previous run left behind — passing
+# the first time on a clean profile and quietly asserting against stale data
+# ever after. Test state must come from the probe, never from the last run.
+rm -rf /tmp/folio-browsertest-run
 node serve.js & SRV=$!
 sleep 1
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \

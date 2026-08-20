@@ -160,6 +160,16 @@ function harness(pendingRec, doc, cues) {
   void FolioStore; void Reader; void TTS; void SidebarUI; void Comments; void Gemini;
   void fetch;
   const V = eval(vsrc + "; Video;");
+  /*
+   * An interrupted run only resumes on the document you actually have open —
+   * otherwise opening a plain text page could start some other document's
+   * transcription and paint its progress over what you were reading.
+   *
+   * The scenario under test is a RELOAD DURING A RETRY, which by definition
+   * happens while you are on that document, so the URL has to say so. The
+   * harness never modelled the URL before, and defaulted to no document at all.
+   */
+  global.window.location.hash = "#/doc/doc_v";
   V.resumePending();
   /* runTranscription now asks the local helper for captions first, so the
      Gemini call lands a few microtasks later than it once did. Drain them

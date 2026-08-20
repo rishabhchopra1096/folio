@@ -1173,6 +1173,23 @@ const Video = (function () {
     else if (typeof console !== "undefined") console.warn("[folio]", m);
   }
 
+  /*
+   * Which document the URL points at — read from the hash rather than asked of
+   * the Reader, because resumePending() runs during App.init(), before routing
+   * has happened, and Reader.getCurrentDocId() is still null at that point.
+   */
+  function docIdOnScreen() {
+    const m = (window.location.hash || "").match(/^#\/doc\/([^/]+)/);
+    return m ? m[1] : null;
+  }
+
+  function docTitle(docId) {
+    try {
+      const doc = FolioStore.getDocument(docId);
+      return (doc && doc.meta && doc.meta.title) || "";
+    } catch { return ""; }
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
@@ -1247,7 +1264,17 @@ const Video = (function () {
     heldLeases.add(docId);
     const lease = setInterval(() => refreshLease(docId), LEASE_REFRESH_MS);
     setBusy(true);
-    const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
+    /*
+     * Progress goes to the one global toast, so it lands on whatever page you
+     * happen to be looking at. When the run belongs to a document you are NOT
+     * looking at, say whose it is — otherwise "Writing the narrative…" appears
+     * over a plain text page with no video on it and reads like a bug.
+     */
+    const say = (m) => {
+      if (typeof TTS === "undefined" || !TTS.toast) return;
+      const title = docIdOnScreen() === docId ? "" : docTitle(docId);
+      TTS.toast(title ? `${escapeHtml(title)}: ${m}` : m, 2600);
+    };
     const knownDuration = storedDuration(docId) || await awaitDuration(8000);
 
     /*
@@ -1751,12 +1778,32 @@ const Video = (function () {
     const ids = Object.keys(pend);
     if (!ids.length) return;
 
+    const onScreen = docIdOnScreen();
+
     ids.forEach((docId) => {
       const rec = pend[docId] || {};
       const doc = FolioStore.getDocument(docId);
       if (!doc) {
         Gemini.log("resume-skip", { doc: docId, why: "document is gone" });
         clearPending(docId);
+        return;
+      }
+
+      /*
+       * Only pick up where you left off on the document you are actually
+       * looking at.
+       *
+       * Restarting every interrupted run on load meant that opening any page —
+       * including a plain text one with no video anywhere on it — could kick
+       * off some other document's transcription, paint its progress over what
+       * you were reading, and quietly spend quota you had not asked to spend.
+       *
+       * Nothing is lost by waiting: the pending record stays, and this runs
+       * again on every navigation, so the work restarts the moment you open
+       * that document.
+       */
+      if (onScreen !== docId) {
+        Gemini.log("resume-deferred", { doc: docId, why: "not the document on screen" });
         return;
       }
 

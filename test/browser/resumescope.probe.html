@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>An interrupted transcription only resumes on its own page</title>
+<!--
+  REPORTED: "i saw a popup for 'writing narrative' even though i don't have any
+  video on the page."
+
+  resumePending() restarted EVERY interrupted run on load, and progress goes to
+  one global toast. So opening a plain text page could kick off some other
+  document's transcription, paint its progress over what you were reading, and
+  spend quota you had not asked to spend.
+
+  Asserted here: a pending run for another document is deferred, not started,
+  and it does start once you open that document.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const TEXT_DOC  = "doc_plain_text";
+const VIDEO_DOC = "doc_with_video";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: TEXT_DOC,  title: "Category 1: Opening and premise", icon: "", parentId: null,
+      order: 0, createdAt: now, updatedAt: now },
+    { id: VIDEO_DOC, title: "Some Lesson Video", icon: "", parentId: null,
+      order: 1, createdAt: now, updatedAt: now },
+  ]));
+  // A page with no video anywhere on it.
+  localStorage.setItem("folio_doc_" + TEXT_DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "header", data: { text: "Category 1: Opening and premise", level: 1 } },
+    { type: "paragraph", data: { text: "What is already decided: Earth delivers the greeting." } },
+  ]}));
+  localStorage.setItem("folio_doc_" + VIDEO_DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "video", data: { provider: "youtube", videoId: "zzzzTESTzzz",
+        url: "https://www.youtube.com/watch?v=zzzzTESTzzz", start: 0, duration: 600 } },
+  ]}));
+  for (const id of [TEXT_DOC, VIDEO_DOC]) {
+    localStorage.setItem("folio_comments_" + id, "[]");
+    localStorage.setItem("folio_highlights_" + id, "[]");
+  }
+
+  /* An interrupted run on the VIDEO document, with its lease already expired so
+     nothing else is holding it. A key must be present or resumePending() bails
+     before it reaches the decision under test. */
+  localStorage.setItem("folio_settings", JSON.stringify({
+    pendingTranscripts: {
+      [VIDEO_DOC]: {
+        url: "https://www.youtube.com/watch?v=zzzzTESTzzz",
+        at: now, reason: "start", resumes: 0, lines: 12,
+        leaseUntil: Date.now() - 60000,
+      },
+    },
+  }));
+  localStorage.setItem("folio_gemini_key", "test-key-not-real");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  // Land on the PLAIN TEXT page — the situation that was reported.
+  f.src = "/index.html#/doc/" + TEXT_DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3000);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__gem = Gemini;");
+  const events = () => w.__gem.getLog().map((e) => e.ev);
+
+  ok("the text page rendered", /already decided/.test(d.body.textContent));
+  ok("it really has no video on it", !d.querySelector(".folio-video"),
+     d.querySelectorAll(".folio-video").length + " video blocks");
+
+  ok("the other document's run was DEFERRED, not started",
+     events().includes("resume-deferred"), events().join(",") || "(log empty)");
+  ok("no transcription was started while reading a text page",
+     !events().includes("resume"), events().join(","));
+
+  // Nothing about narrating should be on screen.
+  const toast = d.querySelector(".tts-toast, #tts-toast, .toast");
+  ok("no progress toast is showing over the text page",
+     !toast || !/narrative|caption|transcri/i.test(toast.textContent),
+     toast ? toast.textContent.slice(0, 80) : "(no toast element)");
+
+  // The pending record must survive — deferred is not discarded.
+  const pend = JSON.parse(w.localStorage.getItem("folio_settings") || "{}").pendingTranscripts || {};
+  ok("the interrupted run is still pending, not thrown away", !!pend[VIDEO_DOC],
+     JSON.stringify(Object.keys(pend)));
+  ok("and it kept the lines it had already saved",
+     pend[VIDEO_DOC] && pend[VIDEO_DOC].lines === 12,
+     JSON.stringify(pend[VIDEO_DOC]));
+
+  // ── Now open the document it belongs to: it should pick up ──
+  w.__gem.clearLog();
+  w.location.hash = "#/doc/" + VIDEO_DOC;
+  await wait(3000);
+
+  ok("opening that document resumes its run",
+     events().includes("resume"), events().join(",") || "(log empty)");
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>
