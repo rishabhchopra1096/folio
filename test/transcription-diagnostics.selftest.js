@@ -18,6 +18,7 @@ const ok = (n, c, x) => { c ? (pass++, console.log("  ✓ " + n))
                             : (fail++, console.log("  ✗ " + n + (x ? "  → " + x : ""))); };
 
 const gsrc = fs.readFileSync(REPO + "/js/gemini.js", "utf8");
+const vsrc = fs.readFileSync(REPO + "/js/video.js", "utf8");
 const Gemini = eval(gsrc + "; Gemini;");
 
 console.log("\n=== the log records, persists and stays bounded ===");
@@ -70,27 +71,31 @@ Gemini.clearLog();
 ok("says so when empty", /No transcription activity/.test(Gemini.formatLog()));
 
 console.log("\n=== every way a run can end is distinguishable ===");
-[["request", "a run started"], ["http", "the HTTP response"], ["chunkdone", "each window"],
- ["chunkfailed", "a window that failed"],
+/* The event list shrank with the code. A caption-grounded run is one request
+   plus any top-up passes, so there are no per-window, per-chunk or streaming
+   events left to log — and nothing that only mattered when timestamps were
+   guesses, such as repetition loops or lines stamped past the end. */
+[["request", "a run started"], ["pass", "each pass, with what it added"],
+ ["done", "a completed run"], ["refused", "a run refused for want of captions"],
  ["httperror", "a rejected request"], ["neterror", "a dead connection"],
- ["firstline", "time to first line"], ["progress", "where it got to"],
- ["finishreason", "why the model stopped"], ["loop", "a repetition loop"],
- ["trimmed", "lines past the end of the video"], ["streambroke", "a broken stream"],
- ["aborted", "an abandoned request"], ["done", "a completed run"],
- ["empty", "a run that produced nothing"], ["blocked", "a safety block"],
  ["resume", "a resumed run"], ["resume-gaveup", "giving up on a doomed run"],
+ ["already-running", "a document already being transcribed"],
+ ["import", "a transcript brought in by hand"], ["redo", "a redo asked for"],
 ].forEach(([ev, what]) => {
-  const inG = new RegExp('log\\("' + ev + '"').test(gsrc);
-  const inV = new RegExp('log\\("' + ev + '"').test(fs.readFileSync(REPO + "/js/video.js", "utf8"));
-  ok("logs " + what + " (" + ev + ")", inG || inV);
+  const re = new RegExp('log\\("' + ev + '"');
+  ok("logs " + what + " (" + ev + ")", re.test(gsrc) || re.test(vsrc));
 });
-ok("token usage is captured, so MAX_TOKENS is explainable",
-   /outputTokens: usage \? usage\.candidatesTokenCount/.test(gsrc));
-ok("per-window cost is visible", /promptTokens: usage \? usage\.promptTokenCount/.test(gsrc));
-ok("thinking tokens too", /thoughtTokens/.test(gsrc));
+ok("token usage is recorded per pass, so cost is explainable",
+   /inTok: u\.promptTokenCount, outTok: u\.candidatesTokenCount/.test(gsrc));
+ok("and how far each pass got", /covered: Math\.round\(lastCovered\(\)\)/.test(gsrc));
+/* Events that only existed to explain guessed timestamps are gone with them. */
+["loop", "trimmed", "chunkdone", "chunkfailed", "streambroke", "firstline"].forEach((ev) => {
+  ok("no longer logs " + ev + ", because it cannot happen",
+     !new RegExp('log\\("' + ev + '"').test(gsrc));
+});
+
 
 console.log("\n=== a reload during a RETRY resumes instead of abandoning ===");
-const vsrc = fs.readFileSync(REPO + "/js/video.js", "utf8");
 ok("the heuristic that caused this is gone",
    !/const hasLines = blocks\.some/.test(vsrc));
 ok("and it is not simply renamed", !/stillWaiting/.test(vsrc));
@@ -103,7 +108,7 @@ ok("and it is not simply renamed", !/stillWaiting/.test(vsrc));
    module-scope `const Gemini`, which would shadow the global and hand video.js
    the real module — whose hasKey() is false, so resumePending returned
    immediately and every assertion below "passed" without running anything. */
-function harness(pendingRec, doc) {
+function harness(pendingRec, doc, cues) {
   const calls = [];
   const settings = { pendingTranscripts: pendingRec ? { doc_v: pendingRec } : {} };
   const FolioStore = {
@@ -125,7 +130,8 @@ function harness(pendingRec, doc) {
     log: (ev, f) => calls.push({ ev, f }),
     // Never resolves: we only care THAT a run was started.
     transcribeYouTube: (url, opts) => {
-      calls.push({ ev: "__started", f: { reason: opts && opts.reason } });
+      calls.push({ ev: "__started", f: { reason: opts && opts.reason,
+                                         cues: (opts && opts.cues || []).length } });
       return new Promise(() => {});
     },
   };
@@ -136,7 +142,19 @@ function harness(pendingRec, doc) {
    * running and hung on one that had it, which is the worst kind of flake.
    * Answer as though the helper is absent; the caption path has its own tests.
    */
-  const fetch = () => Promise.reject(new Error("helper not running (stubbed)"));
+  /*
+   * A unit test must not touch the network. Without this the suite really did
+   * request 127.0.0.1:8787, so it passed where no helper was running and hung
+   * where one was — green in the place least like the one that matters.
+   *
+   * Pass `cues` to pretend the helper answered; omit it to pretend it is not
+   * there. Both outcomes matter now, because a run with no captions REFUSES
+   * rather than guessing.
+   */
+  const fetch = () => cues
+    ? Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, cues,
+        duration: 2158, title: "stub" }) })
+    : Promise.reject(new Error("helper not running (stubbed)"));
 
   // Referenced so a linter cannot call them unused; eval binds to them.
   void FolioStore; void Reader; void TTS; void SidebarUI; void Comments; void Gemini;
@@ -161,13 +179,25 @@ const docWithLines = { meta: { title: "x" }, content: { blocks: [
 (async () => {
   const settle = () => new Promise((r) => setTimeout(r, 60));
   let h = harness(retryState, docWithLines); await settle();
-  ok("a retry interrupted by a reload IS resumed",
-     h.calls.some((c) => c.ev === "__started"), JSON.stringify(h.calls.map((c) => c.ev)));
-  ok("and it is marked as a resume",
-     h.calls.some((c) => c.ev === "__started" && c.f.reason === "resume"));
-  ok("the resume is logged", h.calls.some((c) => c.ev === "resume"));
-  ok("the pending record is kept, not deleted",
-     !!h.settings.pendingTranscripts.doc_v);
+  /* With no captions to be had, a resume must REFUSE rather than produce a
+     document that reads well and anchors every comment 563 seconds out. */
+  ok("the resume is attempted and logged", h.calls.some((c) => c.ev === "resume"));
+  ok("but nothing is sent to Gemini without captions",
+     !h.calls.some((c) => c.ev === "__started"), JSON.stringify(h.calls.map((c) => c.ev)));
+  ok("and the failure is recorded rather than swallowed",
+     h.calls.some((c) => c.ev === "resume-failed"));
+
+  /* Helper answering: the same resume goes through. */
+  const withCues = [{ t: 0, text: "one" }, { t: 15, text: "two" }, { t: 30, text: "three" }];
+  let hc = harness(retryState, docWithLines, withCues); await settle();
+  ok("with captions available, a reload DOES resume",
+     hc.calls.some((c) => c.ev === "__started"), JSON.stringify(hc.calls.map((c) => c.ev)));
+  ok("it is marked as a resume",
+     hc.calls.some((c) => c.ev === "__started" && c.f.reason === "resume"));
+  ok("and the captions are handed over",
+     hc.calls.some((c) => c.ev === "__started" && c.f.cues === withCues.length));
+  ok("the pending record is kept while it runs",
+     !!hc.settings.pendingTranscripts.doc_v);
   ok("how many lines were saved is recorded",
      h.calls.some((c) => c.ev === "resume" && c.f.hadLines === 210));
 
@@ -185,162 +215,9 @@ const docWithLines = { meta: { title: "x" }, content: { blocks: [
   h = harness(null, docWithLines); await settle();
   ok("nothing pending means nothing happens", h.calls.length === 0);
 
-  console.log("\n=== resuming fills the gaps instead of starting over ===");
-  /* A resume used to re-transcribe the whole video from zero, so every reload
-     discarded all the work so far and re-billed the lot. On a long video it
-     could sit there transcribing indefinitely, making no progress across
-     reloads. */
-  ok("existing lines are read back out of the document", /function existingSegments/.test(vsrc));
-  /* ONLY an interrupted run keeps them. A redo asked for by hand has to redo:
-     keeping the old lines would mark every window "already covered" and change
-     nothing, which is useless when the whole point is replacing a transcript
-     made by a worse engine. */
-  ok("an interrupted run keeps them",
-     /const already = reason === "resume" \? existingSegments\(docId\) : \[\]/.test(vsrc));
-  ok("a hand-asked redo does not", !/reason === "start" \? \[\] : existingSegments/.test(vsrc));
-  ok("and hands them to the transcriber", /existing: already/.test(vsrc));
-  ok("the transcriber seeds its results with them", /const all = existing\.slice\(\)/.test(gsrc));
-  ok("windows already done are skipped", /function windowCovered/.test(gsrc));
-  ok("a half-finished window is NOT treated as done",
-     /inside\.length < 3/.test(gsrc) && /0\.6/.test(gsrc));
-  ok("and it says how much it is skipping", /alreadyDone: skipped/.test(gsrc));
-  ok("a fully covered video does no work at all", /nothing-to-do/.test(gsrc));
-
-  // The window-covered rule, exercised directly.
-  const wcSrc = gsrc.match(/function windowCovered\(w, existing\) \{[\s\S]*?\n  \}/)[0];
-  const windowCovered = eval("(" + wcSrc.replace(/^function /, "function ") + ")");
-  const full = [];
-  for (let t = 0; t < 300; t += 15) full.push({ start: t });
-  ok("a fully transcribed window counts as done",
-     windowCovered({ from: 0, to: 300 }, full));
-  ok("an empty window does not", !windowCovered({ from: 0, to: 300 }, []));
-  ok("two stray lines do not", !windowCovered({ from: 0, to: 300 }, [{start:5},{start:9}]));
-  ok("a window abandoned a third of the way in does not",
-     !windowCovered({ from: 0, to: 300 }, full.filter(s => s.start < 100)));
-  ok("lines from a different window do not count",
-     !windowCovered({ from: 300, to: 600 }, full));
-
-  ok("the recorded duration survives a streaming write",
-     /if \(duration > 0\) vd\.duration = Math\.round\(duration\)/.test(vsrc));
-
-  console.log("\n=== a streaming line APPENDS; it does not rebuild the page ===");
-  /* Reader.renderDocument -> Video.attach -> detach() -> player.destroy(), then a
-     brand new YT.Player starting from zero. The stream flushes every 1.5s, so a
-     transcription tore the video down about forty times a minute: playback jumped
-     back to the start, scroll and selection were lost, and sync was meaningless.
-     Lines only ever arrive at the END, so appending is all that was needed. */
-  ok("there is an append path", /function appendLines\(segments\)/.test(vsrc));
-  ok("it writes into the live transcript, not the whole article",
-     /transcriptEl\.appendChild\(frag\)/.test(vsrc));
-  ok("it only adds what is new", /for \(let i = segEls\.length; i < segments\.length; i\+\+\)/.test(vsrc));
-  ok("streaming persists to storage regardless",
-     /FolioStore\.updateDocument\(docId, \{ content: \{ time: Date\.now\(\),/.test(vsrc));
-  ok("streaming no longer full-renders when it can append",
-     /if \(!appendLines\(segments\)\) \{/.test(vsrc));
-  ok("finishing appends too, so the video is not reloaded at the end",
-     (vsrc.match(/if \(!appendLines\(segments\)\)/g) || []).length >= 2);
-  ok("model output is inserted as TEXT, never as markup",
-     /createTextNode\(seg\.text\)/.test(vsrc));
-  ok("appending keeps the active line highlighted", /indexSegments\(true\)/.test(vsrc));
-  ok("re-indexing can preserve the active element",
-     /const wasActive = keepActive && activeIdx >= 0/.test(vsrc));
-  ok("it falls back to a full render when there is no live layout",
-     /if \(!transcriptEl \|\| !document\.body\.contains\(transcriptEl\)\) return false/.test(vsrc));
-  ok("the placeholder is removed once real lines exist", /folio-waiting/.test(vsrc));
-  ok("and why this matters is written down", /torn down and reloaded/.test(vsrc));
-
-  console.log("\n=== one run per document, across tabs and reloads ===");
-  /* A real log shows three runs on one document overlapping for eleven minutes,
-     each doing all nine windows. Six concurrent requests on a preview model
-     triggered rate limiting, four windows were abandoned after burning every
-     retry, and the work could never converge because each run raced the last. */
-  ok("a run claims the document", /leaseUntil: Date\.now\(\) \+ LEASE_MS/.test(vsrc));
-  ok("starting checks for an existing claim", /if \(leaseHeld\(docId\)\) \{/.test(vsrc));
-  ok("and refuses rather than racing", /already-running/.test(vsrc));
-  ok("resuming checks too", /another run holds it/.test(vsrc));
-  ok("a live run keeps its claim fresh", /setInterval\(\(\) => refreshLease\(docId\), LEASE_REFRESH_MS\)/.test(vsrc));
-  ok("the claim is released when the run succeeds",
-     /clearInterval\(lease\);\n    heldLeases\.delete\(docId\);\n    clearPending\(docId\)/.test(vsrc));
-  ok("and when it fails",
-     /clearInterval\(lease\);\n      heldLeases\.delete\(docId\);\n      clearPending\(docId\)/.test(vsrc));
-
-  /* A tab that dies mid-run leaves its claim behind, and ninety seconds is a
-     long time to watch "Transcribing…" while being told another run holds it —
-     when that run died with the page. Releasing on the way out lets a reload
-     pick the work straight back up. */
-  ok("the claim is dropped when the page goes away", /function releaseLeases\(\)/.test(vsrc));
-  ok("on pagehide as well as beforeunload",
-     /addEventListener\("pagehide", releaseLeases\)/.test(vsrc) &&
-     /addEventListener\("beforeunload", releaseLeases\)/.test(vsrc));
-  ok("the pending RECORD survives, so the work is still owed",
-     !/function releaseLeases\(\)[\s\S]{0,700}delete pend\[id\];/.test(vsrc));
-  /* Clearing every claim would release one another tab is actively running,
-     and a third tab could then start a duplicate — the very race this
-     mechanism exists to prevent. */
-  ok("only claims THIS page owns are released", /heldLeases\.forEach\(\(id\) => \{/.test(vsrc));
-  ok("a run records that it holds one", /heldLeases\.add\(docId\)/.test(vsrc));
-  ok("the claim EXPIRES, so a closed tab cannot block the document forever",
-     /rec\.leaseUntil > Date\.now\(\)/.test(vsrc));
-  ok("refresh interval is shorter than the lease itself",
-     /LEASE_MS = 90000/.test(vsrc) && /LEASE_REFRESH_MS = 30000/.test(vsrc));
-
-  // Behavioural: a document already claimed must not be resumed.
-  const held = { url: "https://www.youtube.com/watch?v=TJgg3eMUp7M", reason: "start",
-                 resumes: 0, lines: 12, leaseUntil: Date.now() + 60000 };
-  let hh = harness(held, docWithLines); await settle();
-  ok("a claimed document is left alone", !hh.calls.some((c) => c.ev === "__started"),
-     JSON.stringify(hh.calls.map((c) => c.ev)));
-  ok("and the claim is NOT cleared out from under the live run",
-     !!hh.settings.pendingTranscripts.doc_v);
-
-  const expired = Object.assign({}, held, { leaseUntil: Date.now() - 1000 });
-  hh = harness(expired, docWithLines); await settle();
-  ok("an expired claim is picked up", hh.calls.some((c) => c.ev === "__started"),
-     JSON.stringify(hh.calls.map((c) => c.ev)));
-
-  console.log("\n=== room to think AND to write ===");
-  /* Two windows came back with outputTokens=652 and thoughtTokens=15728 against
-     a 16,384 cap: the model spent its whole budget reasoning and wrote 5 lines
-     where it should have written twenty. */
-  ok("the output cap leaves room for both", /CHUNK_MAX_TOKENS = 65536/.test(gsrc));
-  ok("and why is recorded", /THINKING COUNTS AGAINST THIS/.test(gsrc));
-
-  console.log("\n=== a rate limit is backed off differently from a busy model ===");
-  ok("two ladders exist", /RETRY_BUSY = \[4000, 12000, 30000\]/.test(gsrc) &&
-     /RETRY_LIMITED = \[15000, 45000, 90000, 150000\]/.test(gsrc));
-  ok("429 picks the slow one", /e\.slow = true;/.test(gsrc));
-  ok("and the choice is made per error", /err && err\.slow \? RETRY_LIMITED : RETRY_BUSY/.test(gsrc));
-  // A quota refuses in milliseconds, so the fast ladder burns out inside a minute.
-  const fast = [4000, 12000, 30000].reduce((a, b) => a + b, 0);
-  const slow = [15000, 45000, 90000, 150000].reduce((a, b) => a + b, 0);
-  ok("the slow ladder actually waits meaningfully longer", slow > fast * 3,
-     `${fast}ms vs ${slow}ms`);
-
-  console.log("\n=== 429 is two different failures wearing one status code ===");
-  /* "Your prepayment credits are depleted" arrives as a 429, exactly like a real
-     per-minute rate limit. The old code printed "rate limit reached, try again
-     shortly" for both and threw Google's real message away — so a run that had
-     simply run out of money looked like a temporary blip and was retried four
-     times per window. */
-  ok("Google's actual message is no longer discarded",
-     !/new Error\("Gemini rate limit reached\. Try again shortly\."\)/.test(gsrc));
-  ok("the real detail is passed through", /"Gemini rate limit reached" \+ \(detail \? ": " \+ detail : "\."\)/.test(gsrc));
-  ok("an out-of-credit 429 is recognised", /credit\|depleted\|billing\|payment/.test(gsrc));
-  ok("and marked terminal, because waiting cannot fix it", /e\.terminal = true;/.test(gsrc));
-  ok("a terminal failure stops the whole run", /if \(err && err\.terminal\) \{/.test(gsrc));
-  ok("other windows stop too rather than each failing the same way",
-     /if \(stopped\) return;/.test(gsrc));
-  ok("it is logged distinctly from a retry", /log\("terminal"/.test(gsrc));
-
-  // The classifier, exercised directly.
-  const CLASSIFY = /credit|depleted|billing|payment|plan|exceeded your current quota/i;
-  [["Your prepayment credits are depleted.", true],
-   ["You exceeded your current quota, please check your plan and billing details.", true],
-   ["Resource has been exhausted (e.g. check quota).", false],
-   ["Requests per minute exceeded for this model.", false],
-  ].forEach(([msg, terminal]) => {
-    ok(`${terminal ? "terminal" : "retryable"}: ${msg.slice(0, 46)}`, CLASSIFY.test(msg) === terminal);
-  });
+  /* The gap-filling machinery is gone. A caption-grounded run regenerates
+     against the real clock and its own top-up loop finishes anything that
+     stopped short, so there is nothing to stitch together from a prior run. */
 
   console.log("\n=== resume attempts are counted, not infinite ===");
   ok("a cap exists", /MAX_AUTO_RESUMES/.test(vsrc));

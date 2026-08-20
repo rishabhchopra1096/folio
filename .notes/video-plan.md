@@ -171,3 +171,50 @@ range*, and that words *overlapped the captions*. A confabulating model
 satisfies both. The check that mattered was "does the event at 38:49 appear at
 38:49", it cost one cheap test, and it would have ended this on the first
 morning.
+
+---
+
+# Phases 4 and 5 — done
+
+## The fallback is gone
+
+Captions are now required. Without them `transcribeYouTube` refuses, says why,
+and points at the helper or at Import. It no longer produces a document.
+
+That is a deliberate refusal, not a missing feature. A caption-free run reads
+perfectly well and anchors every comment 563 seconds out — a plausible wrong
+answer, which is exactly what cost a day of chasing symptoms instead of causes.
+An honest failure you can act on beats a convincing one you cannot see.
+
+Deleted with it, because every one of them existed to make guessed timestamps
+survivable rather than to make the guesses right:
+
+| gone | what it was for |
+|---|---|
+| `planWindows`, `windowCovered`, `CHUNK_SEC`, `MAX_WINDOWS`, `CONCURRENCY` | splitting a video into windows so drift was bounded |
+| `transcribeWindow`, `parseJsonlLine`, `promptFor` | the streamed per-window request |
+| `newLoopWatch`, `loopKey`, `LOOP_*` | catching a model that repeated itself |
+| `trimToDuration` | dropping lines stamped past the end of the video |
+| `normalizeSegments`, `toSeconds`, `dedupeSorted` | coercing free-form timestamps into numbers |
+| `describeError`, `MEDIA_RESOLUTION` | supporting machinery |
+
+`js/gemini.js` 1300 → 531 lines. Two whole test suites went with the code they
+covered — the repetition-loop detector and the streaming path — which is why
+the assertion count falls; nothing living lost coverage.
+
+## Lease released on unload
+
+A tab that died mid-run held its claim for the full ninety seconds, so a reload
+showed "Transcribing…" and refused to restart, reporting that another run held
+the document when that run had died with the page. The claim is now dropped on
+pagehide and beforeunload, scoped to claims that page owns — releasing all of
+them would free one another tab was actively running.
+
+## Still open
+
+- **Generation still runs in the browser.** Closing the tab mid-run loses the
+  request; the work is re-done, not lost. Moving it into the helper would fix
+  that and would delete the pending registry and the lease as well. It also
+  makes the helper mandatory for transcription, which is a real trade.
+- **The helper must be started by hand.** A launch agent is written but not
+  installed; something that runs at every boot should be a deliberate choice.

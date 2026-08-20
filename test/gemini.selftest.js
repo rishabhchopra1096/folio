@@ -48,38 +48,10 @@ console.log("\n=== rejects non-YouTube ===");
 ].forEach(([label, url]) => ok("rejects " + label, Gemini.parseYouTube(url) === null,
                                JSON.stringify(Gemini.parseYouTube(url))));
 
-console.log("\n=== segment normalisation ===");
-const N = Gemini._normalizeSegments;
-let segs = N('[{"start":0,"text":"One."},{"start":5.5,"text":"Two."}]');
-ok("plain array parsed", segs.length===2 && segs[1].start===5.5, JSON.stringify(segs));
-
-segs = N('```json\n[{"start":1,"text":"Fenced."}]\n```');
-ok("code fences stripped", segs.length===1 && segs[0].text==="Fenced.", JSON.stringify(segs));
-
-segs = N('{"segments":[{"start":2,"text":"Wrapped."}]}');
-ok("wrapped object accepted", segs.length===1 && segs[0].text==="Wrapped.");
-
-segs = N('[{"start":"1:30","text":"Clock format."}]');
-ok('"1:30" -> 90s', segs[0].start===90, String(segs[0].start));
-segs = N('[{"start":"01:02:03","text":"Long."}]');
-ok('"01:02:03" -> 3723s', segs[0].start===3723, String(segs[0].start));
-
-segs = N('[{"start":10,"text":"Later."},{"start":1,"text":"Earlier."}]');
-ok("re-sorted by time", segs[0].text==="Earlier.", JSON.stringify(segs.map(s=>s.text)));
-
-segs = N('[{"start":5,"text":"Short"},{"start":5,"text":"A longer version here"}]');
-ok("duplicate starts collapsed, longer kept",
-   segs.length===1 && segs[0].text==="A longer version here", JSON.stringify(segs));
-
-segs = N('[{"start":0,"text":"Good."},{"start":1,"text":"  "},{"text":"no start"},{"start":2}]');
-ok("unusable segments dropped, good one kept",
-   segs.length===1 && segs[0].text==="Good.", JSON.stringify(segs));
-
-let threw=false; try { N("not json at all"); } catch(e){ threw = /valid JSON/.test(e.message); }
-ok("bad JSON throws a clear error", threw);
-threw=false; try { N('{"foo":1}'); } catch(e){ threw = /list of segments/.test(e.message); }
-ok("wrong shape throws a clear error", threw);
-ok("empty array is allowed", N("[]").length===0);
+/* The segment-normalisation tests are gone with the code they covered. The
+   model no longer returns free-form timestamps to be coerced: it copies them
+   from the captions, and anything not in that list is discarded. That rule is
+   covered in captions.selftest. */
 
 console.log("\n=== timestamp formatting ===");
 ok("0 -> 0:00",      Gemini.formatTime(0)==="0:00", Gemini.formatTime(0));

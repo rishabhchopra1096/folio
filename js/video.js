@@ -615,31 +615,6 @@ const Video = (function () {
     return dur ? Math.min(t, Math.max(0, dur - 1)) : t;
   }
 
-  /*
-   * Drop transcript segments that start after the video ends.
-   *
-   * A model that falls into a repetition loop keeps marching the timestamps
-   * forward, so a 52-minute video came back with lines stamped up to 1:21:01.
-   * Those lines are not merely mislabelled, they are invented — there is no
-   * video there for them to describe. Cut at the first one; the timestamps are
-   * ascending, so everything after it is invented too.
-   */
-  function trimToDuration(segments) {
-    const dur = videoDuration();
-    if (!dur || !segments.length) return segments;
-    const limit = dur + 5;          // a little slack for rounding
-    const i = segments.findIndex((s) => s.start > limit);
-    if (i === -1) return segments;
-    if (typeof Gemini !== "undefined" && Gemini.log) {
-      Gemini.log("trimmed", {
-        duration: Math.round(dur), dropped: segments.length - i,
-        firstBadTime: Math.round(segments[i].start),
-        lastBadTime: Math.round(segments[segments.length - 1].start),
-      });
-    }
-    return segments.slice(0, i);
-  }
-
   function cycleSpeed() {
     if (!player) return;
     try {
@@ -1282,14 +1257,24 @@ const Video = (function () {
      */
     say("Looking for the video's captions…");
     const cap = await helperCaptions(parsed.videoId);
-    if (cap.cues.length) {
-      busyMode = "exact";
-      say(`Got ${cap.cues.length} caption cues — timings will be exact.`);
-    } else {
-      busyMode = "approx";
-      notify("No captions available (" + (cap.error || "unknown") +
-             "). Timings will be approximate — start the helper for exact ones.");
+    if (!cap.cues.length) {
+      /*
+       * Refused rather than guessed. A run without the real timings produces a
+       * document that reads perfectly and anchors every comment to the wrong
+       * moment — measured at 563 seconds out. An honest failure you can act on
+       * beats a plausible one you cannot see.
+       */
+      clearInterval(lease);
+      heldLeases.delete(docId);
+      clearPending(docId);
+      setBusy(false);
+      const why = cap.error || "unknown";
+      notify("No captions for this video (" + why + "). " +
+             "Start the helper, or use Import to paste a transcript.");
+      throw new Error("No captions available: " + why);
     }
+    busyMode = "exact";
+    say(`Got ${cap.cues.length} caption cues — timings will be exact.`);
     setBusy(true);
     /*
      * Only an interrupted run keeps what is there and fills the gaps. A redo
@@ -1297,11 +1282,9 @@ const Video = (function () {
      * transcript made by a worse engine, and keeping the old lines would skip
      * every window as "already covered" and change nothing at all.
      */
-    const already = reason === "resume" ? existingSegments(docId) : [];
 
     let lastCount = 0;
     const write = (segments) => {
-      segments = trimToDuration(segments);
       if (!segments.length) return;
       lastCount = segments.length;
       setBusy(true, segments.length, segments[segments.length - 1].start);
@@ -1330,7 +1313,6 @@ const Video = (function () {
         // transcriber walks forward blindly until two windows come back empty,
         // which works but wastes a request or two at the end.
         durationSec: knownDuration || cap.duration || 0,
-        existing: already,
         cues: cap.cues,
       });
     } catch (err) {
@@ -1354,7 +1336,6 @@ const Video = (function () {
     heldLeases.delete(docId);
     clearPending(docId);
     setBusy(false);
-    segments = trimToDuration(segments);
     if (!segments.length) throw new Error("Transcript had no usable lines.");
 
     /*

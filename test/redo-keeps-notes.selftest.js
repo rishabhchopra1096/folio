@@ -34,8 +34,9 @@ ok("it no longer hides itself when the transcript looks complete",
 ok("and it says what it will do to a complete one", /your notes are kept/.test(vsrc));
 
 console.log("\n=== a redo actually redoes ===");
-ok("only an interrupted run fills gaps",
-   /const already = reason === "resume" \? existingSegments\(docId\) : \[\]/.test(vsrc));
+/* Old lines are never carried forward now: every run regenerates against the
+   captions, which are the same clock every time. */
+ok("no run carries the previous lines forward", !/existing: already/.test(vsrc));
 ok("the hand-asked redo uses its own reason", /runTranscription\(docId, parsed, "redo"\)/.test(vsrc));
 // Keeping the old lines would mark every window covered and change nothing.
 ok("and why keeping them would be useless is recorded",
