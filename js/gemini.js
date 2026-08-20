@@ -405,25 +405,18 @@ const Gemini = (function () {
           ? { thinkingConfig: { thinkingLevel: THINKING_LEVEL } } : {}),
       };
 
-      let res, j;
+      let j;
       try {
-        res = await fetch(`${API_BASE}/${getModel()}:generateContent`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body: JSON.stringify(body),
-          signal: opts.signal,
-        });
-        j = await res.json();
+        j = await requestWithRetry(key, body, opts.signal, { run: runId, pass }, progress);
       } catch (err) {
         if (err && err.name === "AbortError") throw err;
-        log("neterror", { run: runId, pass, msg: err.message || "unknown" });
-        if (pass === 0) throw new Error("Network error contacting Gemini: " + (err.message || ""));
-        break;
-      }
-      if (!res.ok) {
-        const e = await describeErrorBody(res.status, j);
-        log("httperror", { run: runId, pass, status: res.status, msg: e.message });
-        if (pass === 0 || e.terminal) throw e;
+        /*
+         * The first pass failing means there is no document at all, so it is
+         * reported. A later pass failing only means the tail is missing, and
+         * what is already written is worth keeping.
+         */
+        if (pass === 0 || err.terminal) throw err;
+        log("topup-failed", { run: runId, pass, msg: err.message });
         break;
       }
 
@@ -454,7 +447,7 @@ const Gemini = (function () {
     const detail = ((j && j.error && j.error.message) || "").slice(0, 300);
     if (status === 429 && /credit|depleted|billing|exceeded your current quota/i.test(detail)) {
       const e = new Error("Gemini has stopped accepting requests: " + detail);
-      e.terminal = true;
+      e.terminal = true;                 // waiting cannot fix an empty account
       return e;
     }
     if (status === 400 && /API key/i.test(detail)) {
@@ -462,7 +455,71 @@ const Gemini = (function () {
       e.terminal = true;
       return e;
     }
+    if (status === 429) {
+      const e = new Error("Gemini rate limit reached" + (detail ? ": " + detail : "."));
+      e.retryable = true;
+      e.slow = true;                     // a quota refuses in milliseconds and keeps refusing
+      return e;
+    }
+    if (status >= 500) {
+      /*
+       * "This model is currently experiencing high demand" is the common one,
+       * and it clears in seconds. Throwing on the first of these loses the
+       * whole run for something that fixes itself — which is precisely what
+       * happened once the old path's retry ladder was deleted along with it.
+       */
+      const e = new Error(`Gemini is busy (${status})${detail ? ": " + detail : "."}`);
+      e.retryable = true;
+      return e;
+    }
     return new Error(`Gemini error ${status}${detail ? ": " + detail : ""}`);
+  }
+
+  // A busy model recovers in seconds; a rate limit needs far longer.
+  const RETRY_BUSY = [4000, 12000, 30000];
+  const RETRY_LIMITED = [15000, 45000, 90000, 150000];
+
+  /*
+   * One request, retried for the failures worth retrying. Returns the parsed
+   * body, or throws the last error once the ladder is exhausted.
+   */
+  async function requestWithRetry(key, body, signal, tag, progress) {
+    let last = null;
+    for (let attempt = 0; ; attempt++) {
+      let res, j;
+      try {
+        res = await fetch(`${API_BASE}/${getModel()}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify(body),
+          signal: signal,
+        });
+        j = await res.json();
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err;
+        last = new Error("Network error contacting Gemini: " + (err.message || "unknown"));
+        last.retryable = true;
+        log("neterror", Object.assign({ attempt, msg: err.message || "unknown" }, tag));
+      }
+
+      if (!last && res.ok) return j;
+      if (!last) {
+        last = describeErrorBody(res.status, j);
+        log("httperror", Object.assign({ attempt, status: res.status, msg: last.message }, tag));
+      }
+      if (last.terminal || !last.retryable) throw last;
+
+      const ladder = last.slow ? RETRY_LIMITED : RETRY_BUSY;
+      if (attempt >= ladder.length) {
+        log("gaveup", Object.assign({ attempts: attempt + 1, msg: last.message }, tag));
+        throw last;
+      }
+      const wait = ladder[attempt];
+      log("retry", Object.assign({ attempt: attempt + 1, waitMs: wait, msg: last.message }, tag));
+      if (progress) progress(`Gemini is busy — retrying in ${Math.round(wait / 1000)}s…`);
+      await new Promise((r) => setTimeout(r, wait));
+      last = null;
+    }
   }
 
   /*
