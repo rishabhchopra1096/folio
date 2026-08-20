@@ -1,0 +1,19 @@
+PASS the video document renders
+PASS it starts with the wrong transcript
+PASS the import button is in the bar
+PASS the dialog opens with a paste box
+PASS it counts the lines before importing
+PASS there is an Import button
+PASS it warns the transcript will be replaced
+PASS and says the note is kept
+PASS there is a confirm button
+PASS the new transcript replaced the old
+PASS timestamps are exactly the pasted ones
+PASS the old wrong lines are gone
+PASS the note was NOT deleted
+DONE
+PASS it kept its moment
+PASS its text is intact
+PASS the text came through
+PASS storage holds the timed blocks
+PASS the video block survived

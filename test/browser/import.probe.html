@@ -1,0 +1,128 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Folio import smoke test</title>
+<!--
+  A REAL browser test, because every failure today survived a green jsdom
+  suite. This loads the actual app in an iframe, seeds a video document,
+  drives the import UI by clicking it, and asserts on the resulting DOM.
+-->
+<div id="host"></div>
+<script>
+const R = [];
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_smoke_1";
+const VIDEO_ID = "2q5WMVtY1sk";
+
+async function main() {
+  /*
+   * Seed from the TOP window. probe.html and index.html are served from the
+   * same origin, so this is the same localStorage the app will read. Writing
+   * through iframe.contentWindow before the frame has navigated targets
+   * about:blank's opaque origin instead, and the seed silently goes nowhere —
+   * which is exactly how the first run of this test "failed".
+   */
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Smoke Test Video", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "video", data: { provider: "youtube", videoId: VIDEO_ID,
+        url: "https://www.youtube.com/watch?v=" + VIDEO_ID, start: 0, duration: 2546 } },
+    { type: "paragraph", data: { text: "Wrong old line one.", t: 5 } },
+    { type: "paragraph", data: { text: "Wrong old line two.", t: 40 } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, JSON.stringify([
+    { id: "cm_keep", highlightId: null, isGeneral: false, videoTime: 988,
+      text: "my note about the TM44 moment", createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_highlights_" + DOC, JSON.stringify([]));
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3000);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  const article = d.getElementById("article");
+  ok("the video document renders", !!article && !!d.querySelector(".folio-video[data-video-id]"),
+     article ? article.innerHTML.slice(0, 80) : "no #article");
+  ok("it starts with the wrong transcript", d.querySelectorAll("#article [data-t]").length === 2,
+     String(d.querySelectorAll("#article [data-t]").length));
+
+  // Drive the real control: click Import.
+  const btn = d.querySelector(".fv-import");
+  ok("the import button is in the bar", !!btn);
+  if (!btn) return say("DONE");
+  btn.click();
+  await wait(300);
+
+  const ta = d.querySelector(".fv-import-text");
+  ok("the dialog opens with a paste box", !!ta);
+  if (!ta) return say("DONE");
+
+  // Paste a transcript in YouTube's own panel format, timestamps and all.
+  const pasted = [
+    "0:1010 secondswelcome back to more Pokemon Red",
+    "4:034 minutes, 3 secondsRen found TM08 which is body slam",
+    "16:2716 minutes, 27 secondsso this is tm44 which is rest",
+    "38:4938 minutes, 49 secondsI feel hideous seasick",
+    "40:5340 minutes, 53 secondsso the ship finally sails away",
+  ].join("\n");
+  const setter = Object.getOwnPropertyDescriptor(w.HTMLTextAreaElement.prototype, "value").set;
+  setter.call(ta, pasted);
+  ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await wait(200);
+
+  const counter = d.querySelector(".fv-import-modal .voice-key-status");
+  ok("it counts the lines before importing",
+     !!counter && /5 timestamped lines/.test(counter.textContent), counter && counter.textContent);
+
+  // Import, then confirm.
+  const goBtn = Array.from(d.querySelectorAll(".fv-import-modal .modal-btn"))
+    .find((b) => b.textContent === "Import");
+  ok("there is an Import button", !!goBtn);
+  goBtn.click();
+  await wait(300);
+
+  const confirmBody = d.querySelector(".modal p");
+  ok("it warns the transcript will be replaced",
+     !!confirmBody && /replaced/.test(confirmBody.textContent), confirmBody && confirmBody.textContent);
+  ok("and says the note is kept",
+     !!confirmBody && /1 note is kept/.test(confirmBody.textContent), confirmBody && confirmBody.textContent);
+
+  const yes = Array.from(d.querySelectorAll(".modal-btn")).find((b) => b.textContent === "Redo");
+  ok("there is a confirm button", !!yes);
+  yes.click();
+  await wait(1200);
+
+  // What actually landed in the DOM.
+  const lines = Array.from(d.querySelectorAll("#article [data-t]"));
+  ok("the new transcript replaced the old", lines.length === 5, String(lines.length));
+  const times = lines.map((el) => Number(el.dataset.t));
+  ok("timestamps are exactly the pasted ones",
+     JSON.stringify(times) === JSON.stringify([10, 243, 987, 2329, 2453]), JSON.stringify(times));
+  ok("the old wrong lines are gone",
+     !d.querySelector("#article").textContent.includes("Wrong old line"));
+  ok("the text came through", /body slam/i.test(d.querySelector("#article").textContent));
+
+  // And in storage, which is what survives a reload.
+  const stored = JSON.parse(w.localStorage.getItem("folio_doc_" + DOC));
+  const timed = stored.blocks.filter((b) => b.type === "paragraph" && b.data && b.data.t != null);
+  ok("storage holds the timed blocks", timed.length === 5, String(timed.length));
+  ok("the video block survived", stored.blocks.some((b) => b.type === "video"));
+
+  // The note must still exist, and be re-linked to the line covering 16:28.
+  const comments = JSON.parse(w.localStorage.getItem("folio_comments_" + DOC));
+  ok("the note was NOT deleted", comments.length === 1, JSON.stringify(comments));
+  ok("it kept its moment", comments[0] && comments[0].videoTime === 988, String(comments[0] && comments[0].videoTime));
+  ok("its text is intact", comments[0] && /TM44 moment/.test(comments[0].text));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

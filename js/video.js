@@ -418,6 +418,14 @@ const Video = (function () {
              'title="Drag to scrub" aria-label="Seek" />' +
       '<span class="fv-dur">0:00</span>' +
       '<button class="fv-speed" data-act="speed" title="Playback speed">1×</button>' +
+      '<button class="fv-btn fv-import" data-act="import" ' +
+              'title="Import a transcript with real timestamps">' +
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+             'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+          '<polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/>' +
+          '<polyline points="9 15 12 12 15 15"/></svg>' +
+      '</button>' +
       '<span class="fv-busy" hidden><span class="fv-busy-dot"></span>' +
         '<span class="fv-busy-text">Transcribing…</span></span>' +
       '<button class="fv-btn fv-retry" data-act="retry" title="Transcript incomplete — click to redo it">' +
@@ -437,6 +445,7 @@ const Video = (function () {
         case "fwd":   hopLine(1); break;
         case "speed": cycleSpeed(); break;
         case "retry": retryTranscription(); break;
+        case "import": openImportDialog(); break;
         case "yt":    openOnYouTube(); break;
       }
     });
@@ -725,6 +734,140 @@ const Video = (function () {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
     go.addEventListener("click", () => { close(); onYes(); });
     go.focus();
+  }
+
+  /*
+   * IMPORT A TRANSCRIPT THAT ALREADY HAS REAL TIMESTAMPS.
+   *
+   * This is the reliable path. A model cannot work out where it is in a long
+   * video — asked to, it compressed a 42-minute video into its first 20
+   * minutes and placed a scene from 38:49 at 0:30, a median error of 563
+   * seconds. Timings that come from the video's own captions, or from a
+   * document generated against them, are correct by construction.
+   *
+   * Notes survive exactly as they do through a redo: every note is pinned to
+   * its MOMENT before the old text goes, then re-linked to whichever new line
+   * covers that moment.
+   */
+  function importTranscript(rawText) {
+    const docId = typeof Reader !== "undefined" ? Reader.getCurrentDocId() : null;
+    const holder = document.querySelector("#article .folio-video[data-video-id]");
+    if (!docId || !holder) { notify("Open a video page first."); return 0; }
+
+    const segs = parseTranscript(rawText);
+    if (!segs.length) {
+      notify("No timestamps found. Expected lines like “[12:30] what happens”.");
+      return 0;
+    }
+
+    const parsed = { videoId: holder.dataset.videoId,
+                     url: "https://www.youtube.com/watch?v=" + holder.dataset.videoId,
+                     start: parseInt(holder.dataset.start || "0", 10) || 0 };
+    const notes = (FolioStore.getComments(docId) || []).length;
+    const dur = storedDuration(docId) || videoDuration();
+    const last = segs[segs.length - 1].t;
+    const covers = dur ? Math.round(100 * last / dur) : null;
+
+    const msg = `${segs.length} lines, up to ${formatT(last)}` +
+      (covers != null ? ` (${covers}% of the video)` : "") + ". " +
+      "The current transcript is replaced. " +
+      (notes ? `${notes} ${notes === 1 ? "note is" : "notes are"} kept and re-linked by timestamp.`
+             : "No notes on this page yet.");
+
+    confirmRedo(msg, () => {
+      const { pinned, stranded } = pinNoteMoments(docId);
+      clearHighlightsForRedo(docId);
+      if (typeof Gemini !== "undefined" && Gemini.log) {
+        Gemini.log("import", { doc: docId, lines: segs.length, notes: notes,
+                               pinned: pinned, stranded: stranded, covers: covers });
+      }
+      const blocks = buildBlocks(parsed, segs.map((x) => ({ start: x.t, text: x.text })),
+                                 false, dur);
+      writeBlocks(docId, blocks);
+      reconcileTimedComments(docId, segs.map((x) => ({ start: x.t, text: x.text })));
+      notify(`Imported ${segs.length} lines.` +
+             (stranded ? ` ${stranded} note(s) had no timestamp and stay unlinked.` : ""));
+    });
+    return segs.length;
+  }
+
+  /* Local MM:SS, so the dialog reads sensibly before Gemini is even loaded. */
+  function formatT(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+    return (h ? h + ":" + String(m).padStart(2, "0") : String(m)) + ":" + String(x).padStart(2, "0");
+  }
+
+  /*
+   * Paste, or pick a file. Both land in the same textarea so what will be
+   * imported is visible before anything is replaced.
+   */
+  function openImportDialog() {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const modal = document.createElement("div");
+    modal.className = "modal fv-import-modal";
+
+    const h = document.createElement("h3");
+    h.textContent = "Import a transcript";
+    const p = document.createElement("p");
+    p.textContent = "Paste YouTube’s own transcript (Show transcript → copy), or a " +
+      "narrative file. Any line beginning with a timestamp works.";
+
+    const ta = document.createElement("textarea");
+    ta.className = "fv-import-text";
+    ta.placeholder = "[0:15] The player opens the menu…";
+
+    const count = document.createElement("div");
+    count.className = "voice-key-status voice-key-status-muted";
+    const recount = () => {
+      const n = parseTranscript(ta.value).length;
+      count.textContent = ta.value.trim()
+        ? (n ? `${n} timestamped lines found` : "No timestamps found yet")
+        : "";
+    };
+    ta.addEventListener("input", recount);
+
+    const file = document.createElement("input");
+    file.type = "file";
+    file.accept = ".md,.txt,.srt,.vtt,text/plain,text/markdown";
+    file.style.display = "none";
+    file.addEventListener("change", () => {
+      const f = file.files && file.files[0];
+      if (!f) return;
+      const fr = new FileReader();
+      fr.onload = () => { ta.value = String(fr.result || ""); recount(); };
+      fr.readAsText(f);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const pick = document.createElement("button");
+    pick.className = "modal-btn";
+    pick.textContent = "Choose file…";
+    pick.addEventListener("click", () => file.click());
+    const cancel = document.createElement("button");
+    cancel.className = "modal-btn";
+    cancel.textContent = "Cancel";
+    const go = document.createElement("button");
+    go.className = "modal-btn primary";
+    go.textContent = "Import";
+
+    actions.appendChild(pick); actions.appendChild(cancel); actions.appendChild(go);
+    modal.appendChild(h); modal.appendChild(p); modal.appendChild(ta);
+    modal.appendChild(count); modal.appendChild(file); modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    cancel.addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    go.addEventListener("click", () => {
+      const text = ta.value;
+      close();
+      importTranscript(text);
+    });
+    setTimeout(() => ta.focus(), 0);
   }
 
   function retryTranscription() {
@@ -1322,6 +1465,79 @@ const Video = (function () {
     return best;
   }
 
+  // ── Transcript intake ─────────────────────────────────────────────────────
+
+  /*
+   * PARSE A TIMESTAMPED TRANSCRIPT INTO LINES.
+   *
+   * Folio can already render a timed transcript — a paragraph block carrying
+   * `data.t` drives the sync, the click-to-seek and the comment anchoring —
+   * but it had no way to CREATE those blocks from text. That gap is why a
+   * transcript with real timings could not be brought in from anywhere, and
+   * why the model was asked to invent timestamps it cannot work out.
+   *
+   * Three shapes turn up in practice and all are accepted:
+   *
+   *   **[12:30]** text        what Folio and the batch script write
+   *   [12:30] text            the same without the markdown
+   *   12:30<label>text        what YouTube's "Show transcript" panel copies,
+   *                           where the timestamp runs straight into its
+   *                           accessibility label — "0:033 seconds[Music]" is
+   *                           0:03, "3 seconds", then the text
+   *
+   * A timestamp on its own line, with the text on following lines, works too:
+   * text accumulates until the next timestamp, so paragraphs may wrap.
+   */
+  function parseTranscript(raw) {
+    if (!raw || typeof raw !== "string") return [];
+
+    // Leading marker, optionally bracketed and/or bolded, optionally followed
+    // by the spoken-duration label YouTube renders for screen readers.
+    const HEAD = new RegExp(
+      "^\\s*(?:\\*\\*)?\\[?" +                       // optional ** and [
+      "(\\d{1,2}(?::\\d{2}){1,2})" +                 // 1:23  or  1:02:03
+      "\\]?(?:\\*\\*)?" +                            // optional ] and **
+      "[\\t ]*(?::|-|–)?[\\t ]*" +                   // optional separator
+      "(?:\\d+\\s*(?:hours?|minutes?|seconds?)(?:,\\s*)?)*" +  // "3 seconds", "1 minute, 4 seconds"
+      "\\s*([\\s\\S]*)$"
+    );
+
+    const out = [];
+    let cur = null;
+    for (const line of String(raw).split(/\r?\n/)) {
+      const m = HEAD.exec(line);
+      if (m) {
+        const parts = m[1].split(":").map(Number);
+        const t = parts.length === 3
+          ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+          : parts[0] * 60 + parts[1];
+        if (!isFinite(t)) continue;
+        if (cur) out.push(cur);
+        cur = { t: t, text: (m[2] || "").trim() };
+      } else if (cur) {
+        const extra = line.trim();
+        if (extra) cur.text += (cur.text ? " " : "") + extra;
+      }
+      // Text before the first timestamp is a heading or preamble; skipped.
+    }
+    if (cur) out.push(cur);
+
+    /*
+     * Merge, order and clean. YouTube's panel repeats a timestamp across
+     * wrapped lines, and a transcript pasted mid-scroll can arrive unsorted.
+     */
+    const merged = [];
+    out.sort((a, b) => a.t - b.t);
+    for (const seg of out) {
+      const text = seg.text.replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      const last = merged[merged.length - 1];
+      if (last && last.t === seg.t) { last.text += " " + text; continue; }
+      merged.push({ t: seg.t, text: text });
+    }
+    return merged;
+  }
+
   // ── Pending registry, so a reload can resume ──────────────────────────────
 
   /*
@@ -1579,6 +1795,8 @@ const Video = (function () {
     resumePending,
     promptImport,
     hasVideo: () => mounted,
+    parseTranscript,
+    importTranscript,
     // exported for tests
     _segmentAt: segmentAt,
     _indexSegments: indexSegments,

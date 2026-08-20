@@ -978,6 +978,27 @@ body[data-video-doc] #article-wrap {
 /* The read-aloud bar is suppressed on a video document, which has its own. */
 #tts-bar.hidden-by-video { display: none !important; }
 
+/* Import dialog — wider than a plain confirm, since you need to see enough of
+   the transcript to tell whether it is the right one before replacing. */
+.fv-import-modal { max-width: 560px; width: 92%; }
+.fv-import-text {
+  width: 100%;
+  min-height: 200px;
+  max-height: 40vh;
+  padding: 10px 12px;
+  border: 1.5px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  margin-bottom: 8px;
+}
+.fv-import-text:focus { border-color: var(--accent); }
+
 /* Running-transcription indicator. Persistent, because a run takes minutes and
    a toast is long gone while you sit there wondering whether ⟳ did anything. */
 .fv-busy {
