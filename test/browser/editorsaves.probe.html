@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The editor still saves what you actually type</title>
+<!--
+  The companion to staleeditor.probe.html, and the more important of the two.
+
+  That fix stopped the editor writing when it had nothing of its own to write.
+  The obvious way to get that wrong is to stop it writing FULL STOP — a silent
+  regression where every edit you make is thrown away, which is far worse than
+  the bug being fixed. This proves ordinary editing still persists, including
+  the case that used to lose content: typing a title right after editing the
+  body, which cancelled the body's pending save because they shared one timer.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_saves_1";
+
+const stored = (w) => w.localStorage.getItem("folio_doc_" + DOC) || "";
+const titleOf = (w) =>
+  (JSON.parse(w.localStorage.getItem("folio_documents") || "[]")
+    .find((d) => d.id === DOC) || {}).title;
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Starting Title", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({
+    time: Date.now(),
+    blocks: [{ type: "paragraph", data: { text: "First line." } }],
+  }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC + "/edit";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__ed = Editor");
+  ok("the editor is open", !!d.querySelector("#view-editor.active"));
+
+  // ── An ordinary edit, through the editor's own API ──
+  const inst = w.__ed.getInstance();
+  ok("the editor instance is reachable", !!inst && !!inst.blocks);
+  await inst.blocks.insert("paragraph", { text: "TYPED BY THE USER" });
+  await wait(2000);                       // autosave debounce is 1s
+
+  ok("an ordinary edit is saved", /TYPED BY THE USER/.test(stored(w)),
+     stored(w).slice(0, 160));
+
+  // ── The case that used to lose content: body edit, then title within 1s ──
+  await inst.blocks.insert("paragraph", { text: "SECOND EDIT" });
+  await wait(150);                        // well inside the body's 1s debounce
+  const titleInput = d.getElementById("editor-title");
+  titleInput.value = "Typed Title";
+  titleInput.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await wait(2500);
+
+  ok("the body edit survives a title typed right after it",
+     /SECOND EDIT/.test(stored(w)), stored(w).slice(0, 220));
+  ok("and the typed title is saved too", titleOf(w) === "Typed Title", titleOf(w));
+
+  // ── Leaving the editor must flush, not discard ──
+  await inst.blocks.insert("paragraph", { text: "LAST EDIT BEFORE LEAVING" });
+  await wait(100);                        // deliberately BEFORE the debounce fires
+  w.location.hash = "#/doc/" + DOC;
+  await wait(2500);
+
+  ok("an edit made just before navigating away is flushed by hide()",
+     /LAST EDIT BEFORE LEAVING/.test(stored(w)), stored(w).slice(0, 260));
+  ok("nothing earlier was lost on the way out",
+     /TYPED BY THE USER/.test(stored(w)) && /SECOND EDIT/.test(stored(w)),
+     stored(w).slice(0, 260));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Stale editor overwrites regenerated content</title>
+<!--
+  REPRODUCTION of reported data loss:
+  "i reloaded the transcript of some of the pages after renaming the pages,
+   and the transcript updated to the previous version"
+
+  Reported from the WEB build (rules out Notion sync, which is a verified no-op
+  there) with the page having been open in EDIT mode.
+
+  The mechanism under test: Editor.hide() unconditionally writes the editor's
+  in-memory blocks back to storage on the way out, with no check that storage
+  changed underneath it. Anything that rewrites the document while an editor is
+  mounted — regenerating a transcript, importing one, renaming from the sidebar
+  — is therefore reverted the moment you navigate to the reader.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_stale_1";
+const OLD = [{ type: "paragraph", data: { text: "OLD transcript line.", t: 5 } }];
+const NEW = [
+  { type: "paragraph", data: { text: "NEW regenerated line one.", t: 10 } },
+  { type: "paragraph", data: { text: "NEW regenerated line two.", t: 40 } },
+];
+
+const blocksOf = (w) => {
+  const raw = w.localStorage.getItem("folio_doc_" + DOC);
+  return raw ? (JSON.parse(raw).blocks || []) : [];
+};
+const textOf = (w) => blocksOf(w).map((b) => (b.data && b.data.text) || "").join(" | ");
+const titleOf = (w) =>
+  (JSON.parse(w.localStorage.getItem("folio_documents") || "[]")
+    .find((d) => d.id === DOC) || {}).title;
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Old Title", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: OLD }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  // Step 1: open the page in EDIT mode, exactly as the user had it.
+  f.src = "/index.html#/doc/" + DOC + "/edit";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3500);                        // Editor.js initialises asynchronously
+
+  const w = f.contentWindow, d = f.contentDocument;
+  ok("the editor is open on the document",
+     !!d.querySelector("#view-editor.active"),
+     d.body ? d.body.className + " / " + (d.querySelector("#view-editor") ? "no .active" : "no #view-editor") : "no body");
+  ok("it loaded the old transcript", /OLD transcript/.test(d.body.textContent));
+
+  /*
+   * Step 2: something rewrites the document while the editor sits there.
+   * This is precisely what js/video.js does when a transcript is generated or
+   * imported (js/video.js:1297, :1347, :1817) — and what the sidebar does on
+   * rename (js/sidebar.js:231).
+   */
+  /* js/store.js declares `const FolioStore = (…)()`, and a top-level const in a
+     classic script lands in the global LEXICAL scope — not on window — so it is
+     invisible from this frame. eval inside the frame to reach it. */
+  w.eval("window.__store = FolioStore");
+  w.__store.updateDocument(DOC, { content: { time: Date.now(), blocks: NEW } });
+  w.__store.updateDocument(DOC, { title: "Renamed Title" });
+
+  ok("storage really does hold the new transcript", /NEW regenerated/.test(textOf(w)), textOf(w));
+  ok("storage really does hold the new title", titleOf(w) === "Renamed Title", titleOf(w));
+
+  // Step 3: navigate to the reader — App.route() calls Editor.hide() (js/app.js:87).
+  w.location.hash = "#/doc/" + DOC;
+  await wait(3000);                        // hide() is async and un-awaited
+
+  // Step 4: what actually survived.
+  const after = textOf(w);
+  ok("THE REGENERATED TRANSCRIPT SURVIVED leaving the editor",
+     /NEW regenerated/.test(after) && !/OLD transcript/.test(after), after);
+  ok("the block count is the new one, not the old",
+     blocksOf(w).length === NEW.length, String(blocksOf(w).length));
+  ok("the rename survived too", titleOf(w) === "Renamed Title", titleOf(w));
+
+  // And what the reader is showing the user.
+  ok("the reader displays the new transcript",
+     /NEW regenerated/.test(d.body.textContent),
+     d.body.textContent.slice(0, 120));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

@@ -9,8 +9,10 @@ http.createServer((req, res) => {
     fs.appendFileSync(__dirname + "/out.log", decodeURIComponent(req.url.slice(3)).replace(/&_=.*$/, "") + "\n");
     res.end("ok"); return;
   }
-  const file = u === "/probe.html" ? path.join(__dirname, "import.probe.html")
-                                   : path.join(ROOT, u === "/" ? "/index.html" : u);
+  /* Probes live beside this file; everything else is the real app tree. */
+  const file = u.endsWith(".probe.html") ? path.join(__dirname, path.basename(u))
+             : u === "/probe.html"       ? path.join(__dirname, "import.probe.html")
+                                         : path.join(ROOT, u === "/" ? "/index.html" : u);
   if (!file.startsWith(ROOT) && !file.startsWith(__dirname)) { res.statusCode = 403; return res.end(); }
   fs.readFile(file, (err, buf) => {
     if (err) { res.statusCode = 404; return res.end("nf"); }

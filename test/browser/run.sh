@@ -3,12 +3,16 @@
 # Every bug that reached production today survived a green jsdom suite; this is
 # the layer that would have caught them.
 cd "$(dirname "$0")"
+# Which probe to run: ./run.sh            -> the import probe (default)
+#                     ./run.sh staleeditor -> staleeditor.probe.html
+PROBE="${1:-probe}"
+[ "$PROBE" = "probe" ] || PROBE="$PROBE.probe"
 rm -f out.log
 node serve.js & SRV=$!
 sleep 1
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \
   --no-first-run --mute-audio --autoplay-policy=no-user-gesture-required \
-  --user-data-dir=/tmp/folio-browsertest-run http://localhost:8810/probe.html >/dev/null 2>&1 & CHR=$!
+  --user-data-dir=/tmp/folio-browsertest-run "http://localhost:8810/$PROBE.html" >/dev/null 2>&1 & CHR=$!
 for i in $(seq 1 40); do grep -q DONE out.log 2>/dev/null && break; sleep 2; done
 kill $CHR 2>/dev/null; kill $SRV 2>/dev/null
 grep -v DONE out.log

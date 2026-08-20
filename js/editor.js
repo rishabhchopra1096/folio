@@ -104,6 +104,43 @@ const Editor = (function () {
   let currentDocId = null;
   // Timer for debounced auto-save
   let saveTimer = null;
+  /*
+   * The title gets its OWN timer. It used to share `saveTimer`, which meant
+   * typing in the title within a second of editing the body cancelled the
+   * pending body save — the edit was silently dropped.
+   */
+  let titleTimer = null;
+
+  /*
+   * ==========================================================================
+   * GUARDS AGAINST OVERWRITING SOMEBODY ELSE'S WRITE
+   * ==========================================================================
+   * This editor is not the only thing that writes a document. Generating or
+   * importing a transcript rewrites the blocks (js/video.js), and renaming from
+   * the sidebar rewrites the title (js/sidebar.js:231). Both can happen while an
+   * editor instance is sitting there holding an older copy in memory.
+   *
+   * It used to save that older copy back on the way out — unconditionally — so
+   * a freshly generated transcript was silently reverted the moment you
+   * switched to the reader. Worse, the reader had already rendered the NEW
+   * text, so the screen looked right and the loss only surfaced on reload.
+   *
+   * Two flags prevent it:
+   *   - `loadedTime`, so an editor holding an older copy refuses to clobber a
+   *     document that changed underneath it;
+   *   - `titleDirty`, so a rename made elsewhere is not undone by the stale
+   *     value still sitting in the title input.
+   */
+  let titleDirty = false;      // has the user edited the title in this editor?
+  let loadedTime = 0;          // the `time` stamp of the content we loaded
+
+  /* The `time` currently in storage, or 0 if there is nothing readable. */
+  function storageTime(id) {
+    try {
+      const raw = localStorage.getItem(`folio_doc_${id}`);
+      return raw ? (JSON.parse(raw).time || 0) : 0;
+    } catch { return 0; }
+  }
 
   // Cache DOM elements
   const titleInput = document.getElementById("editor-title");
@@ -124,6 +161,17 @@ const Editor = (function () {
     if (!doc) return;
 
     currentDocId = docId;
+
+    /*
+     * Remember exactly which revision this instance is showing. Any later save
+     * checks this against storage, so an editor holding a stale copy can never
+     * write over a transcript that was regenerated while it sat open.
+     */
+    const initial = doc.content && doc.content.blocks && doc.content.blocks.length > 0
+      ? doc.content
+      : { time: Date.now(), blocks: [] };
+    loadedTime = initial.time || 0;
+    titleDirty = false;
 
     // Set title
     titleInput.value = doc.meta.title || "";
@@ -198,9 +246,7 @@ const Editor = (function () {
       },
 
       // Load saved data
-      data: doc.content && doc.content.blocks && doc.content.blocks.length > 0
-        ? doc.content
-        : { time: Date.now(), blocks: [] },
+      data: initial,
 
       // Auto-save on every change
       onChange: function () {
@@ -595,6 +641,72 @@ const Editor = (function () {
     ta.style.height = ta.scrollHeight + "px";
   }
 
+  /*
+   * The ONE place editor content reaches storage. Both the debounced auto-save
+   * and hide() go through here, so the staleness guard cannot be sidestepped by
+   * some future caller that forgets it exists.
+   *
+   * Returns "saved" | "clean" | "stale" | "failed".
+   */
+  async function persistContent() {
+    if (!currentDocId || !editorInstance) return "clean";
+
+    const id = currentDocId;
+    // Cheap pre-check, before paying for the serialisation.
+    if (storageTime(id) !== loadedTime) return stale(id);
+
+    try {
+      const data = await editorInstance.save();
+      /*
+       * Check again. save() is async, so the document could have been rewritten
+       * while we were serialising it — and the whole point of this guard is the
+       * write that lands at an awkward moment.
+       */
+      if (storageTime(id) !== loadedTime) return stale(id);
+
+      /*
+       * Whether there is anything to write is decided by COMPARING, never by a
+       * "dirty" flag. Editor.js reports edits through onChange asynchronously,
+       * so a flag is still false for an edit made a moment ago — and gating the
+       * write on it silently threw away anything typed just before you
+       * navigated away. Comparing cannot be early.
+       */
+      if (sameAsStored(id, data.blocks)) return "clean";
+
+      FolioStore.updateDocument(id, { content: data });
+      // Our own write is now the revision this instance is based on.
+      loadedTime = data.time || loadedTime;
+      return "saved";
+    } catch (err) {
+      console.error("Auto-save failed:", err);
+      return "failed";
+    }
+  }
+
+  /*
+   * Does what the editor holds match what is already on disk? Compared on type
+   * and data only: Editor.js mints block ids on load for blocks that never had
+   * them, and those differences are not content.
+   */
+  function sameAsStored(id, blocks) {
+    try {
+      const raw = localStorage.getItem(`folio_doc_${id}`);
+      if (!raw) return false;
+      const shape = (bs) => JSON.stringify((bs || []).map((b) => [b.type, b.data]));
+      return shape(JSON.parse(raw).blocks) === shape(blocks);
+    } catch { return false; }
+  }
+
+  /*
+   * Somebody else wrote this document after we loaded it — a regenerated
+   * transcript, an import, a Notion pull. Their copy is current, ours is not,
+   * so we keep our hands off it and say so rather than failing silently.
+   */
+  function stale(id) {
+    console.warn(`[editor] ${id} changed elsewhere since it was opened — not overwriting`);
+    return "stale";
+  }
+
   // Debounced save — waits 1 second after last change before saving
   function debouncedSave() {
     if (!currentDocId || !editorInstance) return;
@@ -603,18 +715,15 @@ const Editor = (function () {
 
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
-      try {
-        const data = await editorInstance.save();
-        FolioStore.updateDocument(currentDocId, { content: data });
-        if (saveIndicator) saveIndicator.textContent = "Saved";
-
-        // Update the sidebar to reflect any changes
-        if (typeof SidebarUI !== "undefined") {
-          SidebarUI.renderPageTree();
-        }
-      } catch (err) {
-        console.error("Auto-save failed:", err);
-        if (saveIndicator) saveIndicator.textContent = "Save failed";
+      const result = await persistContent();
+      if (saveIndicator) {
+        saveIndicator.textContent =
+          result === "stale"  ? "Changed elsewhere — not saved" :
+          result === "failed" ? "Save failed" : "Saved";
+      }
+      // Update the sidebar to reflect any changes
+      if (result === "saved" && typeof SidebarUI !== "undefined") {
+        SidebarUI.renderPageTree();
       }
     }, 1000);
   }
@@ -622,14 +731,21 @@ const Editor = (function () {
   // Auto-save title changes
   titleInput.addEventListener("input", () => {
     if (!currentDocId) return;
+    titleDirty = true;
 
     if (saveIndicator) saveIndicator.textContent = "Saving...";
 
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
+    /*
+     * Its own timer. Sharing `saveTimer` meant that typing a title within a
+     * second of editing the body cancelled the body's pending save, and that
+     * edit was lost without a trace.
+     */
+    clearTimeout(titleTimer);
+    titleTimer = setTimeout(() => {
       FolioStore.updateDocument(currentDocId, {
         title: titleInput.value || "Untitled",
       });
+      titleDirty = false;
       if (saveIndicator) saveIndicator.textContent = "Saved";
 
       // Update sidebar
@@ -694,14 +810,19 @@ const Editor = (function () {
   async function hide() {
     if (currentDocId && editorInstance) {
       clearTimeout(saveTimer);
-      try {
-        const data = await editorInstance.save();
-        FolioStore.updateDocument(currentDocId, {
-          content: data,
-          title: titleInput.value || "Untitled",
-        });
-      } catch {
-        // Editor may already be destroyed
+      clearTimeout(titleTimer);
+      // Flushes only if the user actually edited, and only if nothing else has
+      // rewritten the document since this editor opened.
+      await persistContent();
+      /*
+       * Same rule for the title. It used to be written unconditionally, so
+       * renaming a page from the sidebar while its editor was open got reverted
+       * the moment you navigated away — the stale value sitting in this input
+       * won over the rename you had just made.
+       */
+      if (titleDirty) {
+        FolioStore.updateDocument(currentDocId, { title: titleInput.value || "Untitled" });
+        titleDirty = false;
       }
     }
     if (editorInstance) {
