@@ -116,6 +116,8 @@ function send(res, code, body) {
   res.end(out);
 }
 
+const stamp = () => new Date().toTimeString().slice(0, 8);
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   if (req.method === "OPTIONS") return send(res, 204, {});
@@ -127,11 +129,17 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/captions") {
     const id = (url.searchParams.get("v") || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16);
     if (!id) return send(res, 400, { ok: false, error: "missing video id" });
+    const t0 = Date.now();
+    const cached = fs.existsSync(path.join(CACHE, `${id}.en.json3`));
+    console.log(`${stamp()}  captions ${id}${cached ? " (cached)" : ""} …`);
     try {
       const [cues, m] = await Promise.all([captions(id), meta(id).catch(() => ({}))]);
+      console.log(`${stamp()}  captions ${id} -> ${cues.length} cues, ` +
+        `${Math.round(m.duration || 0)}s, ${Date.now() - t0}ms`);
       return send(res, 200, { ok: true, videoId: id, cues,
         duration: m.duration || 0, title: m.title || "" });
     } catch (e) {
+      console.log(`${stamp()}  captions ${id} -> FAILED: ${String(e.message || e).slice(0, 160)}`);
       return send(res, 502, { ok: false, error: String(e.message || e).slice(0, 300) });
     }
   }

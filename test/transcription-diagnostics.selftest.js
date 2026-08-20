@@ -129,8 +129,18 @@ function harness(pendingRec, doc) {
       return new Promise(() => {});
     },
   };
+  /*
+   * A unit test must not touch the network. runTranscription now asks the
+   * local helper for captions, and without this stub it made a REAL request
+   * to 127.0.0.1:8787 — so the suite passed on a machine with no helper
+   * running and hung on one that had it, which is the worst kind of flake.
+   * Answer as though the helper is absent; the caption path has its own tests.
+   */
+  const fetch = () => Promise.reject(new Error("helper not running (stubbed)"));
+
   // Referenced so a linter cannot call them unused; eval binds to them.
   void FolioStore; void Reader; void TTS; void SidebarUI; void Comments; void Gemini;
+  void fetch;
   const V = eval(vsrc + "; Video;");
   V.resumePending();
   /* runTranscription now asks the local helper for captions first, so the

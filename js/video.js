@@ -931,6 +931,8 @@ const Video = (function () {
    */
   let busy = false;
 
+  let busyMode = "";          // "exact" | "approx", shown while a run is live
+
   function setBusy(on, lines, upto) {
     busy = !!on;
     if (!barEl) return;
@@ -940,11 +942,13 @@ const Video = (function () {
     if (busy) {
       const txt = el.querySelector(".fv-busy-text");
       if (txt) {
-        txt.textContent = lines
+        const tail = busyMode === "exact" ? " · exact timings"
+                   : busyMode === "approx" ? " · approximate timings" : "";
+        txt.textContent = (lines
           ? `Transcribing… ${lines} lines` +
             (upto != null && typeof Gemini !== "undefined"
               ? ` (${Gemini.formatTime(upto)})` : "")
-          : "Transcribing…";
+          : "Transcribing…") + tail;
       }
     }
     updateRetryVisibility();
@@ -1278,11 +1282,14 @@ const Video = (function () {
     say("Looking for the video's captions…");
     const cap = await helperCaptions(parsed.videoId);
     if (cap.cues.length) {
+      busyMode = "exact";
       say(`Got ${cap.cues.length} caption cues — timings will be exact.`);
     } else {
+      busyMode = "approx";
       notify("No captions available (" + (cap.error || "unknown") +
-             "). Timings will be approximate.");
+             "). Timings will be approximate — start the helper for exact ones.");
     }
+    setBusy(true);
     /*
      * Only an interrupted run keeps what is there and fills the gaps. A redo
      * asked for by hand must actually redo: the whole point is to replace a
