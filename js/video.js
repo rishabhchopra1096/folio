@@ -1269,6 +1269,7 @@ const Video = (function () {
     }
 
     markPending(docId, parsed.url, reason);
+    heldLeases.add(docId);
     const lease = setInterval(() => refreshLease(docId), LEASE_REFRESH_MS);
     setBusy(true);
     const say = (m) => { if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(m, 2600); };
@@ -1334,6 +1335,7 @@ const Video = (function () {
       });
     } catch (err) {
       clearInterval(lease);
+      heldLeases.delete(docId);
       clearPending(docId);
       setBusy(false);
       // Keep whatever streamed in rather than replacing it with an error.
@@ -1349,6 +1351,7 @@ const Video = (function () {
     }
 
     clearInterval(lease);
+    heldLeases.delete(docId);
     clearPending(docId);
     setBusy(false);
     segments = trimToDuration(segments);
@@ -1649,6 +1652,43 @@ const Video = (function () {
       return !!(rec && rec.leaseUntil && rec.leaseUntil > Date.now());
     } catch { return false; }
   }
+
+  /*
+   * Let go of the claim when this page goes away.
+   *
+   * The claim exists so two tabs cannot transcribe the same document at once,
+   * and it expires so a tab closed mid-run cannot block the document forever.
+   * But ninety seconds is a long time to stare at "Transcribing…" after a
+   * reload, being told another run holds it when that run died with the page.
+   * Releasing on the way out means a reload picks the work straight back up.
+   *
+   * The pending RECORD stays — that is what tells the next load there is work
+   * owed. Only the claim is dropped.
+   */
+  const heldLeases = new Set();   // documents THIS page is running
+
+  function releaseLeases() {
+    if (!heldLeases.size) return;
+    try {
+      const st = FolioStore.getSettings();
+      const pend = st.pendingTranscripts;
+      if (!pend) return;
+      let touched = false;
+      heldLeases.forEach((id) => {
+        /*
+         * Only what this page owns. Clearing every claim would release one
+         * another tab is actively running, and a third tab could then start a
+         * duplicate — the exact race the claim exists to prevent.
+         */
+        if (pend[id] && pend[id].leaseUntil) { delete pend[id].leaseUntil; touched = true; }
+      });
+      if (touched) FolioStore.saveSettings(st);
+    } catch { /* going away anyway */ }
+  }
+
+  // pagehide fires where beforeunload does not, notably on mobile Safari.
+  window.addEventListener("pagehide", releaseLeases);
+  window.addEventListener("beforeunload", releaseLeases);
 
   function refreshLease(docId) {
     try {

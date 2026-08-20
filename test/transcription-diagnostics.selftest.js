@@ -260,8 +260,25 @@ const docWithLines = { meta: { title: "x" }, content: { blocks: [
   ok("resuming checks too", /another run holds it/.test(vsrc));
   ok("a live run keeps its claim fresh", /setInterval\(\(\) => refreshLease\(docId\), LEASE_REFRESH_MS\)/.test(vsrc));
   ok("the claim is released when the run succeeds",
-     /clearInterval\(lease\);\n    clearPending\(docId\)/.test(vsrc));
-  ok("and when it fails", /clearInterval\(lease\);\n      clearPending\(docId\)/.test(vsrc));
+     /clearInterval\(lease\);\n    heldLeases\.delete\(docId\);\n    clearPending\(docId\)/.test(vsrc));
+  ok("and when it fails",
+     /clearInterval\(lease\);\n      heldLeases\.delete\(docId\);\n      clearPending\(docId\)/.test(vsrc));
+
+  /* A tab that dies mid-run leaves its claim behind, and ninety seconds is a
+     long time to watch "Transcribing…" while being told another run holds it —
+     when that run died with the page. Releasing on the way out lets a reload
+     pick the work straight back up. */
+  ok("the claim is dropped when the page goes away", /function releaseLeases\(\)/.test(vsrc));
+  ok("on pagehide as well as beforeunload",
+     /addEventListener\("pagehide", releaseLeases\)/.test(vsrc) &&
+     /addEventListener\("beforeunload", releaseLeases\)/.test(vsrc));
+  ok("the pending RECORD survives, so the work is still owed",
+     !/function releaseLeases\(\)[\s\S]{0,700}delete pend\[id\];/.test(vsrc));
+  /* Clearing every claim would release one another tab is actively running,
+     and a third tab could then start a duplicate — the very race this
+     mechanism exists to prevent. */
+  ok("only claims THIS page owns are released", /heldLeases\.forEach\(\(id\) => \{/.test(vsrc));
+  ok("a run records that it holds one", /heldLeases\.add\(docId\)/.test(vsrc));
   ok("the claim EXPIRES, so a closed tab cannot block the document forever",
      /rec\.leaseUntil > Date\.now\(\)/.test(vsrc));
   ok("refresh interval is shorter than the lease itself",
