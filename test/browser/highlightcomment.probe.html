@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Clicking a highlight reveals its comment</title>
+<!--
+  The link between a highlight and its comment used to run one way only:
+  clicking a comment scrolled to its highlight, but clicking the highlight
+  showed only the small popover, so a comment you had already written was
+  invisible unless you spotted it in the list yourself.
+
+  Both directions are asserted here, plus the case that must NOT open the
+  panel — a highlight with nothing written about it. Highlighting a passage
+  for its own sake should never throw the panel over the text you are reading.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_hlcomment_1";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Highlight Comment Test", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "The first paragraph mentions ALPHA clearly." } },
+    { type: "paragraph", data: { text: "Filler so the list has somewhere to scroll." } },
+    { type: "paragraph", data: { text: "The last paragraph mentions OMEGA clearly." } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__hl = Highlights; window.__cm = Comments;");
+
+  /* Highlight a word by building a real Range and going through the app's own
+     creation path, so the stored shape is whatever the app actually writes. */
+  function highlightWord(word) {
+    const walker = d.createTreeWalker(d.getElementById("article"), NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const i = node.textContent.indexOf(word);
+      if (i === -1) continue;
+      const r = d.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + word.length);
+      return w.__hl.createHighlightFromRange(r, "yellow");
+    }
+    return null;
+  }
+
+  const withComment = highlightWord("ALPHA");
+  const withoutComment = highlightWord("OMEGA");
+  ok("a highlight was created on ALPHA", !!withComment, String(withComment));
+  ok("a second highlight was created on OMEGA", !!withoutComment, String(withoutComment));
+
+  // One comment, on the ALPHA highlight only.
+  w.__cm.addComment(withComment, "my note about alpha", DOC);
+  await wait(300);
+  w.__cm.closePanel();
+  await wait(300);
+  ok("the panel starts closed",
+     !d.getElementById("comments-panel").classList.contains("open"));
+
+  // ── Clicking the commented highlight should reveal its comment ──
+  const alphaMark = d.querySelector(`mark[data-highlight-id="${withComment}"]`);
+  ok("the ALPHA highlight rendered as a mark", !!alphaMark);
+  alphaMark.click();
+  await wait(700);
+
+  ok("clicking it opens the comments panel",
+     d.getElementById("comments-panel").classList.contains("open"));
+  const entry = d.querySelector(`.comment-entry[data-highlight-id="${withComment}"]`);
+  ok("its comment is in the panel", !!entry);
+  ok("the comment text is the right one",
+     !!entry && /my note about alpha/.test(entry.textContent),
+     entry && entry.textContent.slice(0, 60));
+  ok("and it is pulsed to draw the eye",
+     !!entry && entry.classList.contains("pulsing"),
+     entry && entry.className);
+
+  // ── A highlight with NO comment must leave the panel alone ──
+  w.__cm.closePanel();
+  await wait(300);
+  const omegaMark = d.querySelector(`mark[data-highlight-id="${withoutComment}"]`);
+  ok("the OMEGA highlight rendered as a mark", !!omegaMark);
+  omegaMark.click();
+  await wait(700);
+  ok("a highlight with no comment does NOT open the panel",
+     !d.getElementById("comments-panel").classList.contains("open"),
+     d.getElementById("comments-panel").className);
+
+  // ── The original direction must still work ──
+  w.__cm.openPanel();
+  await wait(400);
+  const clickable = d.querySelector(`.comment-entry[data-highlight-id="${withComment}"]`);
+  ok("the comment entry is still there to click", !!clickable);
+  if (clickable) {
+    clickable.click();
+    await wait(700);
+    ok("clicking the comment still pulses its highlight",
+       d.querySelector(`mark[data-highlight-id="${withComment}"].pulsing`) !== null,
+       (d.querySelector(`mark[data-highlight-id="${withComment}"]`) || {}).className);
+  }
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

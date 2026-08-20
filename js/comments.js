@@ -616,6 +616,48 @@ const Comments = (function () {
     setTimeout(() => mark.classList.remove("pulsing"), 1500);
   }
 
+  /*
+   * The mirror of scrollToHighlight — given a highlight, bring the comment
+   * written about it into view.
+   *
+   * The link between the two used to run one way only. Clicking a comment
+   * scrolled to its highlight, but clicking the highlight showed just the small
+   * popover, so a comment you had already written stayed invisible unless you
+   * happened to spot it in the list.
+   *
+   * Returns false when the highlight has no comments, so the caller can leave
+   * the panel closed rather than throwing an empty one over the text.
+   */
+  function revealCommentsFor(highlightId) {
+    if (!highlightId) return false;
+
+    const docId = Reader.getCurrentDocId();
+    if (!docId) return false;
+
+    const has = FolioStore.getComments(docId)
+      .some((c) => c.highlightId === highlightId);
+    if (!has) return false;
+
+    openPanel();
+
+    /*
+     * Wait a frame. openPanel() has only just added the class that gives the
+     * panel its size, and scrolling inside a box the browser has not laid out
+     * yet silently does nothing.
+     */
+    requestAnimationFrame(() => {
+      const entry = commentsList.querySelector(
+        `.comment-entry[data-highlight-id="${highlightId}"]`
+      );
+      if (!entry) return;
+      entry.scrollIntoView({ behavior: "smooth", block: "center" });
+      entry.classList.add("pulsing");
+      setTimeout(() => entry.classList.remove("pulsing"), 1500);
+    });
+
+    return true;
+  }
+
   // ==========================================================================
   // HELPERS
   // ==========================================================================
@@ -1105,5 +1147,6 @@ const Comments = (function () {
     listTimed,
     attachToHighlight,
     unanchor,
+    revealCommentsFor,
   };
 })();

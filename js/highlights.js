@@ -533,6 +533,18 @@ const Highlights = (function () {
         rect.bottom + 6,
         highlightId
       );
+
+      /*
+       * If something was already written about this passage, bring it into
+       * view. Clicking a comment has always scrolled to its highlight; without
+       * this the trip back was a manual hunt through the panel.
+       *
+       * Does nothing when the highlight has no comments, so highlighting for
+       * its own sake never throws the panel open over the text.
+       */
+      if (typeof Comments !== "undefined") {
+        Comments.revealCommentsFor(highlightId);
+      }
     });
 
     // Popover button: Remove highlight

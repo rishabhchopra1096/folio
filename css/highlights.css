@@ -750,6 +750,20 @@ mark.pulsing {
   animation: hl-pulse 0.4s ease 3;
 }
 
+/*
+ * The same cue in the other direction: clicking a highlight scrolls its comment
+ * into view in the panel and pulses it. A brightness filter is invisible on the
+ * panel's own background, so this one flashes the accent colour instead.
+ */
+@keyframes comment-pulse {
+  0%, 100% { background: transparent; }
+  50%      { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+}
+.comment-entry.pulsing {
+  animation: comment-pulse 0.5s ease 3;
+  border-radius: 6px;
+}
+
 /* Comment indicator dots in the margin */
 .comment-indicator {
   position: absolute;
