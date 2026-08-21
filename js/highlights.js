@@ -332,25 +332,112 @@ const Highlights = (function () {
   // ==========================================================================
 
   // Apply all saved highlights for a document (called after rendering markdown)
+  /*
+   * ==========================================================================
+   * RESTORING HIGHLIGHTS
+   * ==========================================================================
+   * A highlight's stored position is a text-node INDEX — "the 47th text node in
+   * the article". That only means anything while the article's text nodes stay
+   * in exactly the same order, and they do not: regenerating a transcript,
+   * importing one, or editing anything above a highlight shifts every index
+   * after it.
+   *
+   * When the index stopped resolving, the highlight used to be dropped in
+   * silence. The comment survived in the panel pointing at nothing, and
+   * clicking it did nothing at all, because scrollToHighlight cannot find a
+   * <mark> that was never applied.
+   *
+   * The quoted TEXT is far more durable than the index, so a highlight whose
+   * index no longer resolves is now looked up by its text instead.
+   */
   function applyHighlights(docId) {
     const highlights = FolioStore.getHighlights(docId);
     if (!highlights.length) return;
 
-    // Apply each highlight by deserializing its range and wrapping
-    highlights.forEach((hl) => {
-      const range = deserializeRange(hl);
-      if (!range) return;
+    let byIndex = 0, byText = 0, lost = 0;
 
-      // Verify the text still matches (to handle content changes)
-      const currentText = range.toString();
-      if (currentText !== hl.text) return;
+    highlights.forEach((hl) => {
+      // 1. The stored position, but only if it still covers the same words.
+      let range = deserializeRange(hl);
+      if (range && range.toString() !== hl.text) range = null;
+      let healed = false;
+
+      // 2. Otherwise, find those words again.
+      if (!range) {
+        range = findRangeByText(hl.text);
+        healed = !!range;
+      }
+
+      if (!range) { lost++; return; }
 
       try {
         wrapRange(range, hl.id, `hl-${hl.color}`);
+        healed ? byText++ : byIndex++;
       } catch {
-        // Skip highlights that can't be applied (content changed too much)
+        lost++;
       }
     });
+
+    /*
+     * Say what happened. Every one of these failures used to be invisible,
+     * which is why a page could quietly end up with comments attached to
+     * highlights that were never drawn.
+     */
+    if (byText || lost) {
+      const msg = { doc: docId, byIndex, byText, lost, total: highlights.length };
+      if (typeof Gemini !== "undefined" && Gemini.log) Gemini.log("highlights-applied", msg);
+      console.warn("[folio] highlights restored:", msg);
+    }
+  }
+
+  /* Is this text node inside a highlight that has already been drawn? */
+  function insideExistingMark(node) {
+    let p = node.parentNode;
+    while (p && p !== article) {
+      if (p.nodeType === 1 && p.tagName === "MARK" && p.dataset.highlightId) return true;
+      p = p.parentNode;
+    }
+    return false;
+  }
+
+  /*
+   * Find a passage by its text and return a Range over it.
+   *
+   * Text nodes already claimed by a drawn highlight are skipped, so a phrase
+   * that appears twice does not get claimed twice — the second highlight finds
+   * the second occurrence.
+   */
+  function findRangeByText(text) {
+    if (!text) return null;
+
+    /*
+     * Flatten the article's remaining text into one string, keeping a map back
+     * to the node and offset each character came from.
+     */
+    let flat = "";
+    const map = [];
+    getTextNodes(article).forEach((n) => {
+      if (insideExistingMark(n)) return;
+      map.push({ node: n, from: flat.length, to: flat.length + n.textContent.length });
+      flat += n.textContent;
+    });
+
+    const at = flat.indexOf(text);
+    if (at === -1) return null;
+    const end = at + text.length;
+
+    const startAt = map.find((m) => at >= m.from && at < m.to);
+    const endAt = map.find((m) => end > m.from && end <= m.to);
+    if (!startAt || !endAt) return null;
+
+    try {
+      const r = document.createRange();
+      r.setStart(startAt.node, at - startAt.from);
+      r.setEnd(endAt.node, end - endAt.from);
+      return r.collapsed ? null : r;
+    } catch {
+      return null;
+    }
   }
 
   // ==========================================================================

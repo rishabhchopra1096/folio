@@ -606,7 +606,17 @@ const Comments = (function () {
     const mark = document.querySelector(
       `mark[data-highlight-id="${highlightId}"]`
     );
-    if (!mark) return;
+    /*
+     * Nothing on the page carries that id. This used to return in silence, so
+     * clicking a comment did nothing at all and there was no way to tell
+     * whether the click had even registered.
+     */
+    if (!mark) {
+      if (typeof TTS !== "undefined" && TTS.toast) {
+        TTS.toast("That passage isn’t on this page any more — the text it marked has changed.", 3400);
+      }
+      return;
+    }
 
     // Scroll the highlight into view
     mark.scrollIntoView({ behavior: "smooth", block: "center" });

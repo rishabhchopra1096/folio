@@ -1,0 +1,151 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Highlights survive the text moving</title>
+<!--
+  REPORTED: "when i click on a comment, it doesn't go to the highlighted bit.
+  a lot of the comments are not highlighted also for some reason."
+
+  A highlight's stored position is a text-node INDEX — "the 47th text node in
+  the article" — which only holds while the article's text nodes stay in the
+  same order. Regenerating a transcript, importing one, or editing anything
+  above a highlight shifts every index after it, and the highlight was then
+  dropped in silence: the comment survived pointing at nothing, and clicking it
+  did nothing at all.
+
+  Asserted here: a highlight whose index no longer resolves is found by its
+  text instead, both directions of the comment link work afterwards, and a
+  highlight whose text is genuinely gone says so rather than failing mutely.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_reanchor_1";
+const PHRASE = "the greeting is already decided";
+const TWICE  = "a repeated phrase";
+const GONE   = "this sentence will be deleted entirely";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Reanchor Test", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "Opening line before anything else." } },
+    { type: "paragraph", data: { text: "Earth delivers " + PHRASE + " to the child." } },
+    { type: "paragraph", data: { text: "Here is " + TWICE + " sitting alone." } },
+    { type: "paragraph", data: { text: "And here is " + TWICE + " a second time." } },
+    { type: "paragraph", data: { text: GONE } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__hl = Highlights; window.__cm = Comments; window.__store = FolioStore;");
+
+  function highlightPhrase(text, nth) {
+    let seen = 0;
+    const walker = d.createTreeWalker(d.getElementById("article"), NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const i = node.textContent.indexOf(text);
+      if (i === -1) continue;
+      if (seen++ < (nth || 0)) continue;
+      const r = d.createRange();
+      r.setStart(node, i); r.setEnd(node, i + text.length);
+      return w.__hl.createHighlightFromRange(r, "yellow");
+    }
+    return null;
+  }
+
+  const hMain  = highlightPhrase(PHRASE);
+  const hTwice = highlightPhrase(TWICE, 1);      // the SECOND occurrence
+  const hGone  = highlightPhrase(GONE);
+  ok("three highlights were created", !!hMain && !!hTwice && !!hGone,
+     `${hMain} / ${hTwice} / ${hGone}`);
+
+  w.__cm.addComment(hMain, "note on the greeting", DOC);
+  w.__cm.addComment(hGone, "note on the doomed sentence", DOC);
+  await wait(300);
+  w.__cm.closePanel();
+
+  /*
+   * Break things the way the real world does:
+   *   - every stored index is made wrong, as an edit above them would;
+   *   - one highlight's text is removed from the document entirely.
+   */
+  const hls = JSON.parse(w.localStorage.getItem("folio_highlights_" + DOC));
+  hls.forEach((h) => { h.startNodeIndex += 9; h.endNodeIndex += 9; });
+  w.localStorage.setItem("folio_highlights_" + DOC, JSON.stringify(hls));
+
+  const doc = JSON.parse(w.localStorage.getItem("folio_doc_" + DOC));
+  doc.blocks = doc.blocks.filter((b) => b.data.text !== GONE);
+  doc.blocks.unshift({ type: "paragraph", data: { text: "A brand new paragraph on top." } });
+  w.localStorage.setItem("folio_doc_" + DOC, JSON.stringify(doc));
+
+  // Re-render from scratch, as a reload would.
+  w.location.hash = "#/";
+  await wait(600);
+  w.location.hash = "#/doc/" + DOC;
+  await wait(1800);
+
+  // ── The index is wrong for all of them; two should still come back ──
+  const markMain = d.querySelector(`mark[data-highlight-id="${hMain}"]`);
+  ok("a highlight whose index broke is found by its text", !!markMain,
+     "marks on page: " + d.querySelectorAll("mark[data-highlight-id]").length);
+  ok("and it wraps the right words",
+     !!markMain && markMain.textContent === PHRASE, markMain && markMain.textContent);
+
+  const markTwice = d.querySelector(`mark[data-highlight-id="${hTwice}"]`);
+  ok("a phrase appearing twice is still restored", !!markTwice,
+     markTwice && markTwice.textContent);
+
+  ok("a highlight whose text is gone is NOT invented",
+     !d.querySelector(`mark[data-highlight-id="${hGone}"]`));
+
+  // ── Both directions of the link ──
+  w.__cm.openPanel();
+  await wait(500);
+  const entry = d.querySelector(`.comment-entry[data-highlight-id="${hMain}"]`);
+  ok("its comment is in the panel", !!entry);
+  if (entry) {
+    entry.click();
+    await wait(600);
+    ok("clicking the comment now reaches its highlight",
+       d.querySelector(`mark[data-highlight-id="${hMain}"].pulsing`) !== null,
+       markMain && markMain.className);
+  }
+
+  w.__cm.closePanel();
+  await wait(300);
+  d.querySelector(`mark[data-highlight-id="${hMain}"]`).click();
+  await wait(700);
+  ok("and clicking the highlight reaches its comment",
+     d.getElementById("comments-panel").classList.contains("open"));
+
+  // ── The unrecoverable one must SAY so, not fail mutely ──
+  const orphanEntry = d.querySelector(`.comment-entry[data-highlight-id="${hGone}"]`);
+  ok("the orphaned comment is still listed", !!orphanEntry);
+  if (orphanEntry) {
+    orphanEntry.click();
+    await wait(500);
+    const toast = d.querySelector(".tts-toast, #tts-toast, .toast");
+    ok("clicking it explains why nothing happened",
+       !!toast && /isn.t on this page|no longer/i.test(toast.textContent),
+       toast ? toast.textContent.slice(0, 90) : "(no toast)");
+  }
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>
