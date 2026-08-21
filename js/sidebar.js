@@ -314,7 +314,19 @@ const SidebarUI = (function () {
 
   // Simple Editor.js JSON to markdown converter
   function blocksToMarkdown(blocks) {
-    return blocks.map((block) => {
+    return blocks.map(blockToMarkdown).join("\n\n");
+  }
+
+  /*
+   * One block, on its own.
+   *
+   * Split out of blocksToMarkdown so the annotation export can render a
+   * document block by block and drop each comment in after the passage it was
+   * written about. blocksToMarkdown joins everything into a single string,
+   * which leaves nowhere to interleave.
+   */
+  function blockToMarkdown(block) {
+    {
       const d = block.data || {};
       switch (block.type) {
         case "header":
@@ -352,7 +364,7 @@ const SidebarUI = (function () {
         default:
           return d.text ? stripHtml(d.text) : "";
       }
-    }).join("\n\n");
+    }
   }
 
   function stripHtml(str) {
@@ -689,5 +701,7 @@ const SidebarUI = (function () {
     createSubpage,
     exportDocument,
     markdownToBlocks,
+    // Used by the annotation export to render a document block by block.
+    blockToMarkdown,
   };
 })();

@@ -728,79 +728,113 @@ const Comments = (function () {
       return exportTranscript(doc, blocks, highlights, comments);
     }
 
-    if (!highlights.length && !comments.length) {
+    return exportTextDocument(doc, blocks, highlights, comments);
+  }
+
+  /*
+   * ==========================================================================
+   * EXPORTING A TEXT DOCUMENT
+   * ==========================================================================
+   * The whole article, with every comment sitting under the passage it was
+   * written about and labelled `COMMENT:`.
+   *
+   * This used to export a digest — a bullet list of quoted highlights with the
+   * comments hanging off them — so the document itself never made it into the
+   * file and a note was left without the context that gave it meaning. Video
+   * documents already exported the full transcript with comments inline; this
+   * is the same idea for pages that have no video.
+   *
+   * READ ONLY. It reads documents, highlights and comments and writes a file.
+   * It never calls saveComments or saveHighlights, so exporting cannot alter or
+   * lose anything you have written.
+   */
+  function exportTextDocument(doc, blocks, highlights, comments) {
+    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (!blocks.length && !comments.length) {
       notice("Nothing to export yet.");
       return;
     }
 
-    // Sort highlights by creation time so the export mirrors reading order-ish
-    const sortedHighlights = [...highlights].sort(
-      (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
-    );
+    const hlById = new Map(highlights.map((h) => [h.id, h]));
+    const norm = (v) => stripTags(String(v || "")).replace(/\s+/g, " ").trim();
 
-    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
-    const today = new Date().toISOString().slice(0, 10);
+    /* One markdown string per block, so comments can be dropped in between. */
+    const asMarkdown = (b) =>
+      (typeof SidebarUI !== "undefined" && SidebarUI.blockToMarkdown)
+        ? SidebarUI.blockToMarkdown(b)
+        : stripTags((b && b.data && b.data.text) || "");
 
-    const lines = [];
-    lines.push(`# Highlights & comments — ${title}`);
-    lines.push(`_Exported ${today}_`);
-    lines.push("");
+    const rendered = blocks.map(asMarkdown);
+    const searchable = rendered.map(norm);
 
-    // General notes first (they're about the whole page, not any specific quote)
-    const generalNotes = comments.filter((c) => c.isGeneral || (c.highlightId === null));
-    if (generalNotes.length) {
-      lines.push("## General notes");
-      lines.push("");
-      generalNotes
-        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
-        .forEach((c) => {
-          const noteLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
-          if (!noteLines.length) return;
-          lines.push(`- ${noteLines[0]}`);
-          noteLines.slice(1).forEach((l) => lines.push(`  ${l}`));
-        });
-      lines.push("");
-      if (sortedHighlights.length) {
-        lines.push("## Highlights");
-        lines.push("");
-      }
-    }
+    const perBlock = new Map();     // block index -> [{c, quote}]
+    const loose = [];               // page-level notes, and passages now gone
 
-    sortedHighlights.forEach((hl) => {
-      // Collapse internal whitespace so multi-line highlights read as one quote
-      const quoteText = (hl.text || "").replace(/\s+/g, " ").trim();
-      lines.push(`- "${quoteText}"`);
-      const relatedComments = comments.filter((c) => c.highlightId === hl.id);
-      relatedComments.forEach((c) => {
-        // Indent each comment line so it visually attaches to its bullet
-        const commentLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
-        commentLines.forEach((cl, i) => {
-          const prefix = i === 0 ? "  → " : "    ";
-          lines.push(`${prefix}${cl}`);
-        });
+    /*
+     * Oldest first, so several comments on the same paragraph come out in the
+     * order they were written rather than in whatever order storage held them.
+     */
+    [...comments]
+      .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+      .forEach((c) => {
+        const hl = c.highlightId != null ? hlById.get(c.highlightId) : null;
+        const quote = hl ? norm(hl.text) : "";
+
+        // A page-level note belongs to no passage at all.
+        if (!quote) { loose.push({ c, quote: "" }); return; }
+
+        let idx = searchable.findIndex((t) => t && t.indexOf(quote) !== -1);
+        if (idx === -1) {
+          /*
+           * A highlight that runs across two blocks is contained by neither, so
+           * fall back to its opening words — those do sit inside the first
+           * block it covers.
+           */
+          const head = quote.slice(0, 40);
+          if (head) idx = searchable.findIndex((t) => t && t.indexOf(head) !== -1);
+        }
+
+        // The passage is gone; keep the note rather than dropping it.
+        if (idx === -1) { loose.push({ c, quote }); return; }
+
+        if (!perBlock.has(idx)) perBlock.set(idx, []);
+        perBlock.get(idx).push({ c, quote });
       });
-      lines.push("");
+
+    /*
+     * Every line starts with COMMENT so the file stays greppable, and names the
+     * passage when one is known so you can tell which part of a long paragraph
+     * a note was about.
+     */
+    const commentLine = (c, quote) =>
+      quote ? `COMMENT on "${quote}": ${flatten(c.text)}`
+            : `COMMENT: ${flatten(c.text)}`;
+
+    const out = [];
+    out.push(`# ${title}`);
+    out.push(`_Exported ${today}_`);
+    out.push("");
+
+    rendered.forEach((md, i) => {
+      if (md && md.trim()) { out.push(md); out.push(""); }
+      (perBlock.get(i) || []).forEach(({ c, quote }) => {
+        out.push(commentLine(c, quote));
+        out.push("");
+      });
     });
 
-    // Orphan comments: had a highlight once, but the highlight was removed.
-    // Exclude general notes (already listed above) — an orphan has a non-null
-    // highlightId that no longer resolves.
-    const orphanComments = comments.filter(
-      (c) => !c.isGeneral && c.highlightId != null && !highlights.some((h) => h.id === c.highlightId)
-    );
-    if (orphanComments.length) {
-      lines.push("---");
-      lines.push("");
-      lines.push("**Notes whose highlight was removed:**");
-      lines.push("");
-      orphanComments.forEach((c) => {
-        lines.push(`- ${c.text || ""}`);
-      });
+    if (loose.length) {
+      out.push("---");
+      out.push("");
+      out.push("## Notes not attached to a passage");
+      out.push("");
+      loose.forEach(({ c, quote }) => { out.push(commentLine(c, quote)); out.push(""); });
     }
 
-    const md = lines.join("\n");
     const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
-    downloadBlob(md, `${safeTitle}-annotations-${today}.md`, "text/markdown");
+    downloadBlob(out.join("\n"), `${safeTitle}-annotations-${today}.md`, "text/markdown");
   }
 
   // ==========================================================================

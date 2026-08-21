@@ -1,0 +1,149 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Text documents export in full, with comments inline</title>
+<!--
+  REQUESTED: for a page with no video, export the whole article with each
+  comment inline where it was made, labelled COMMENT — the way video documents
+  already export their transcript. The old export produced only a digest of
+  quoted highlights, so the document itself never made it into the file.
+
+  The second requirement was explicit: this must not destroy any existing
+  comments or notes. The last assertion here compares every folio_ key before
+  and after the export, byte for byte.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_exporttext_1";
+const P_ONE = "Earth delivers the greeting to the child.";
+const P_TWO = "The first souvenir is guaranteed on arrival.";
+const P_THREE = "Avatar creation happens in the first few minutes.";
+const HL_ONE = "delivers the greeting";
+const HL_THREE = "Avatar creation";
+
+async function main() {
+  const now = Date.now();
+  const iso = (n) => new Date(now + n * 1000).toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Category 1 Opening", icon: "", parentId: null, order: 0,
+      createdAt: iso(0), updatedAt: iso(0) }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: now, blocks: [
+    { type: "header", data: { text: "Opening and premise", level: 1 } },
+    { type: "paragraph", data: { text: P_ONE } },
+    { type: "paragraph", data: { text: P_TWO } },
+    { type: "list", data: { style: "unordered", items: ["First item", "Second item"] } },
+    { type: "paragraph", data: { text: P_THREE } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__hl = Highlights; window.__cm = Comments;");
+
+  function highlight(text) {
+    const walker = d.createTreeWalker(d.getElementById("article"), NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const i = node.textContent.indexOf(text);
+      if (i === -1) continue;
+      const r = d.createRange();
+      r.setStart(node, i); r.setEnd(node, i + text.length);
+      return w.__hl.createHighlightFromRange(r, "yellow");
+    }
+    return null;
+  }
+
+  const h1 = highlight(HL_ONE);
+  const h3 = highlight(HL_THREE);
+  ok("two highlights were created", !!h1 && !!h3, `${h1} / ${h3}`);
+
+  w.__cm.addComment(h1, "this is the decided bit", DOC);
+  w.__cm.addComment(h3, "note about avatars", DOC);
+  w.__cm.addComment(null, "a page level note", DOC);
+  await wait(300);
+
+  // A comment whose highlight no longer exists — must not be dropped.
+  const cs = JSON.parse(w.localStorage.getItem("folio_comments_" + DOC));
+  cs.push({ id: "cm_orphan", highlightId: "hl_gone_forever", isGeneral: false,
+            text: "orphaned but still mine", createdAt: iso(50), updatedAt: iso(50) });
+  w.localStorage.setItem("folio_comments_" + DOC, JSON.stringify(cs));
+
+  // Snapshot EVERYTHING before exporting.
+  const snapshot = {};
+  for (let i = 0; i < w.localStorage.length; i++) {
+    const k = w.localStorage.key(i);
+    if (k.startsWith("folio_")) snapshot[k] = w.localStorage.getItem(k);
+  }
+
+  // Capture the file instead of downloading it.
+  let captured = null;
+  const realCreate = w.URL.createObjectURL.bind(w.URL);
+  w.URL.createObjectURL = function (blob) { captured = blob; return realCreate(blob); };
+
+  d.getElementById("comments-export").click();
+  await wait(800);
+
+  ok("an export file was produced", !!captured);
+  const md = captured ? await captured.text() : "";
+
+  // ── The whole article must be there ──
+  ok("the heading is exported", /^# Opening and premise$/m.test(md), md.slice(0, 120));
+  ok("every paragraph is exported",
+     md.includes(P_ONE) && md.includes(P_TWO) && md.includes(P_THREE),
+     md.slice(0, 400));
+  ok("list blocks survive too", /- First item/.test(md) && /- Second item/.test(md));
+
+  // ── Comments inline, under the passage they belong to ──
+  ok("comments are labelled COMMENT", /^COMMENT/m.test(md), md.slice(0, 500));
+  const lines = md.split("\n");
+  const idxOf = (needle) => lines.findIndex((l) => l.includes(needle));
+
+  const pOne = idxOf(P_ONE), cOne = idxOf("this is the decided bit");
+  ok("the first comment follows its own paragraph",
+     pOne !== -1 && cOne !== -1 && cOne > pOne && cOne - pOne <= 2,
+     `paragraph at ${pOne}, comment at ${cOne}`);
+
+  const pThree = idxOf(P_THREE), cThree = idxOf("note about avatars");
+  ok("the third comment follows ITS paragraph, not the first",
+     pThree !== -1 && cThree !== -1 && cThree > pThree && cThree - pThree <= 2,
+     `paragraph at ${pThree}, comment at ${cThree}`);
+  ok("and it is not filed under an earlier paragraph", cThree > idxOf(P_TWO));
+
+  ok("the quoted passage is named so you know what it refers to",
+     md.includes(`COMMENT on "${HL_ONE}"`), lines.filter((l) => l.startsWith("COMMENT")).join(" | "));
+
+  // ── Nothing is silently dropped ──
+  ok("the page level note is kept", md.includes("a page level note"));
+  ok("the orphaned comment is kept", md.includes("orphaned but still mine"));
+  ok("both are put under an unattached heading",
+     /## Notes not attached to a passage/.test(md));
+
+  // ── THE REQUIREMENT: exporting must not change stored data ──
+  let changed = [];
+  for (const k of Object.keys(snapshot)) {
+    if (w.localStorage.getItem(k) !== snapshot[k]) changed.push(k);
+  }
+  for (let i = 0; i < w.localStorage.length; i++) {
+    const k = w.localStorage.key(i);
+    if (k.startsWith("folio_") && !(k in snapshot)) changed.push("NEW:" + k);
+  }
+  ok("EXPORT CHANGED NOTHING IN STORAGE", changed.length === 0, changed.join(","));
+
+  const after = JSON.parse(w.localStorage.getItem("folio_comments_" + DOC));
+  ok("all four comments still exist afterwards", after.length === 4, String(after.length));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

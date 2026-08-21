@@ -13,7 +13,12 @@ if [ -z "$NODE_PATH" ]; then
     [ -d "$d/jsdom" ] && export NODE_PATH="$d" && break
   done
 fi
-[ -d "$NODE_PATH/jsdom" ] || { echo "jsdom not found — set NODE_PATH to a dir containing it"; exit 2; }
+# Pin jsdom 24: from 25 on it pulls ESM-only transitive deps, and these suites
+# are CommonJS, so `require("jsdom")` dies with ERR_REQUIRE_ESM on Node 20.
+#   npm install jsdom@24 --no-save        (anywhere, then point NODE_PATH at it)
+[ -d "$NODE_PATH/jsdom" ] || { echo "jsdom not found — npm install jsdom@24 and set NODE_PATH to that node_modules dir"; exit 2; }
+node -e 'require("jsdom")' 2>/dev/null || {
+  echo "jsdom is present but will not load (usually ERR_REQUIRE_ESM — install jsdom@24)"; exit 2; }
 
 pass=0; fail=0; ran=0; problems=""
 for f in test/*.selftest.js; do
