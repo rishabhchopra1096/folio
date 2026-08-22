@@ -81,7 +81,67 @@ async function main() {
      /TYPED BY THE USER/.test(stored(w)) && /SECOND EDIT/.test(stored(w)),
      stored(w).slice(0, 260));
 
+  await newPageScenario(w, d);
   say("DONE");
+}
+
+/*
+ * A BRAND NEW, EMPTY page.
+ *
+ * This is the case the probe above misses, because it seeds a document that
+ * already has content. An empty one takes a different branch in openEditor,
+ * which used to mint a `time` that had never been written to storage — so the
+ * staleness guard saw a mismatch on every save and threw away everything
+ * pasted into a new page. It showed up in the editor, then vanished on view.
+ */
+async function newPageScenario(w, d) {
+  const NEW_DOC = "doc_brand_new";
+  const now = new Date().toISOString();
+
+  const docs = JSON.parse(w.localStorage.getItem("folio_documents") || "[]");
+  docs.push({ id: NEW_DOC, title: "Untitled", icon: "", parentId: null, order: 9,
+              createdAt: now, updatedAt: now });
+  w.localStorage.setItem("folio_documents", JSON.stringify(docs));
+  // Exactly what FolioStore.createDocument writes for a new page.
+  w.localStorage.setItem("folio_doc_" + NEW_DOC,
+    JSON.stringify({ time: Date.now(), blocks: [] }));
+  w.localStorage.setItem("folio_comments_" + NEW_DOC, "[]");
+  w.localStorage.setItem("folio_highlights_" + NEW_DOC, "[]");
+
+  w.location.hash = "#/doc/" + NEW_DOC + "/edit";
+  await wait(3000);
+
+  const inst = w.__ed.getInstance();
+  ok("the new empty page opens in the editor", !!inst && !!inst.blocks);
+  if (!inst || !inst.blocks) return;
+
+  // Same persistence path a pasted document takes.
+  await inst.blocks.insert("header", { text: "PASTED DOCUMENT TITLE", level: 1 });
+  await inst.blocks.insert("paragraph", { text: "PASTED BODY PARAGRAPH." });
+  await wait(2000);
+
+  const raw = () => w.localStorage.getItem("folio_doc_" + NEW_DOC) || "";
+  ok("content pasted into a NEW page is saved",
+     /PASTED DOCUMENT TITLE/.test(raw()) && /PASTED BODY PARAGRAPH/.test(raw()),
+     raw().slice(0, 200));
+
+  // Viewing it must not wipe it — that is what was reported.
+  w.location.hash = "#/doc/" + NEW_DOC;
+  await wait(2500);
+  ok("it survives switching to read view",
+     /PASTED BODY PARAGRAPH/.test(raw()), raw().slice(0, 200));
+  ok("and the reader actually shows it",
+     /PASTED BODY PARAGRAPH/.test(d.body.textContent),
+     d.body.textContent.slice(0, 140));
+
+  // ...and going back into edit mode must still find it.
+  w.location.hash = "#/doc/" + NEW_DOC + "/edit";
+  await wait(2500);
+  ok("it is still there on returning to edit mode",
+     /PASTED BODY PARAGRAPH/.test(raw()), raw().slice(0, 200));
+  ok("the editor renders it rather than an empty page",
+     /PASTED BODY PARAGRAPH/.test(d.body.textContent),
+     d.body.textContent.slice(0, 140));
 }
 main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
 </script>

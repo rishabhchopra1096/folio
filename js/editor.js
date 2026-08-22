@@ -170,7 +170,17 @@ const Editor = (function () {
     const initial = doc.content && doc.content.blocks && doc.content.blocks.length > 0
       ? doc.content
       : { time: Date.now(), blocks: [] };
-    loadedTime = initial.time || 0;
+    /*
+     * Read from STORAGE, never from `initial`.
+     *
+     * An empty document takes the second branch above, whose `time` is minted
+     * right here and has never been written anywhere. Trusting it meant
+     * loadedTime could never match storage, so every save was refused as stale
+     * and a brand new page silently discarded everything typed or pasted into
+     * it. What this field means is "the revision of storage this editor is
+     * based on", so it has to come from storage.
+     */
+    loadedTime = storageTime(docId);
     titleDirty = false;
 
     // Set title
