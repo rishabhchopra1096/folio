@@ -92,8 +92,41 @@ const SpeechifyProvider = (function () {
    * rate: 220 chars at 1×, 660 at 3×.
    */
   const HEAD_CHARS_BASE = 220;
-  const headCharsFor = (rate) =>
-    Math.min(560, Math.round(HEAD_CHARS_BASE * Math.max(1, rate || 1)));
+
+  /*
+   * Measured on this API: a request completes in about
+   *   0.80s + 0.00705s per character
+   * and the speech it produces runs for about
+   *   0.051s per character.
+   */
+  const DL_FIXED_S = 0.80;
+  const DL_PER_CHAR_S = 0.00705;
+  const SPEAK_PER_CHAR_S = 0.051;
+
+  /*
+   * The smallest head that still out-speaks its own tail's download.
+   *
+   * Solving  speech(H)/rate >= download(chunk - H)  for H, rather than guessing:
+   *
+   *   H >= (0.80 + 0.00705·C) / (0.051/rate + 0.00705)
+   *
+   * The earlier version was `220 × rate`, which ignored that a smaller head
+   * leaves a BIGGER tail to fetch — so it overshot, and at 2× it overshot far
+   * enough that medium chunks stopped being split at all. A logged session
+   * shows the cost: a 660-character chunk at rate 2 needed a 168-character
+   * head, got a 440-character one, fell under the no-split threshold, and the
+   * reader waited 6.8 seconds for the whole thing instead of ~2.3 for a head.
+   *
+   * A third is added on top as margin, and it is never allowed to grow into
+   * most of the chunk — at that point splitting has stopped buying anything.
+   */
+  function headCharsFor(rate, chunkChars) {
+    const r = Math.max(1, rate || 1);
+    const C = chunkChars || 1200;
+    const needed = (DL_FIXED_S + DL_PER_CHAR_S * C) /
+                   (SPEAK_PER_CHAR_S / r + DL_PER_CHAR_S);
+    return Math.round(Math.max(120, Math.min(C * 0.7, needed * 1.3)));
+  }
 
   // Audio for a whole document is far too big to keep. This is a session cache.
   const CACHE_MAX = 32;
@@ -972,7 +1005,13 @@ const SpeechifyProvider = (function () {
    */
   function splitHead(text, headChars) {
     const HEAD_CHARS = headChars || HEAD_CHARS_BASE;
-    if (text.length <= HEAD_CHARS * 1.5) return [text];
+    /*
+     * Only skip splitting when a head would be nearly the whole chunk — then it
+     * saves no time and just costs an extra request. The old threshold was 1.5×
+     * the head, which at high rates excluded exactly the chunks that most
+     * needed splitting.
+     */
+    if (text.length <= HEAD_CHARS * 1.15) return [text];
 
     const window = text.slice(0, HEAD_CHARS + 60);
     let cut = -1;
@@ -1097,7 +1136,7 @@ const SpeechifyProvider = (function () {
 
       const allSegments = alreadyHave
         ? [text]
-        : splitHead(text, headCharsFor(opts.rate));
+        : splitHead(text, headCharsFor(opts.rate, text.length));
 
       /*
        * Starting partway in: begin at the segment the offset lands in. Earlier

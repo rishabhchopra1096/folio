@@ -241,9 +241,11 @@ console.log("\n=== the head must out-speak the tail's download ===");
   const spk = (c) => c * 0.0510;
   const CHUNK = 1200;
 
-  const at = (rate) => {
-    const h = S._headCharsFor(rate);
-    return { h, headSpeech: spk(h) / rate, tailDownload: dl(CHUNK - h) };
+  const at = (rate, chunk) => {
+    const C = chunk || CHUNK;
+    const h = S._headCharsFor(rate, C);
+    return { h, headSpeech: spk(h) / rate, tailDownload: dl(C - h),
+             startsIn: dl(h), wholeWouldTake: dl(C) };
   };
 
   [1, 1.5, 2, 3].forEach((rate) => {
@@ -253,8 +255,27 @@ console.log("\n=== the head must out-speak the tail's download ===");
        `head speaks ${r.headSpeech.toFixed(1)}s, tail needs ${r.tailDownload.toFixed(1)}s`);
   });
 
-  ok("the head grows with rate", S._headCharsFor(3) > S._headCharsFor(1));
-  ok("but is capped so a cold start stays fast", S._headCharsFor(10) <= 560);
+  ok("the head grows with rate", S._headCharsFor(3, CHUNK) > S._headCharsFor(1, CHUNK));
+
+  /*
+   * The case a real session log caught: a 660-char chunk at 2x got a 440-char
+   * head, fell under the no-split threshold, and was fetched whole — 6.8s of
+   * silence where a head would have started in about two.
+   */
+  const small = at(2, 660);
+  ok("a medium chunk at 2x is still split",
+     small.h < 660 * 0.9, `head ${small.h} of 660`);
+  ok("and it starts far sooner than fetching the whole chunk",
+     small.startsIn < small.wholeWouldTake * 0.6,
+     `${small.startsIn.toFixed(1)}s vs ${small.wholeWouldTake.toFixed(1)}s whole`);
+  ok("while still out-speaking its own tail",
+     small.headSpeech >= small.tailDownload,
+     `speaks ${small.headSpeech.toFixed(1)}s, tail needs ${small.tailDownload.toFixed(1)}s`);
+
+  const huge = at(1, 1734);
+  ok("the largest chunk the chunker allows also splits sanely",
+     huge.headSpeech >= huge.tailDownload && huge.startsIn < 4,
+     `head ${huge.h}, starts in ${huge.startsIn.toFixed(1)}s`);
 }
 
 console.log("\n=== the provider satisfies the interface tts.js calls ===");
