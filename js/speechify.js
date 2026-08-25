@@ -79,7 +79,21 @@ const SpeechifyProvider = (function () {
    * long the whole thing takes to arrive. Measured: 80 chars complete in
    * 1,328ms, 150 in 1,957ms, 300 in 2,838ms. ~120 buys a start around 1.5s.
    */
-  const HEAD_CHARS = 120;
+  /*
+   * How much of a cold chunk to synthesise on its own so sound starts sooner.
+   *
+   * This has to be big enough that the head OUT-SPEAKS the tail's download,
+   * or there is a hole between them. From the measured table:
+   * download ≈ 0.80s + 0.00705s/char, speech ≈ 0.051s/char. At a 1,200-char
+   * chunk a 120-char head speaks for 6.1s while its tail needs 8.4s to arrive —
+   * a 2.3s gap, which is what raising chunks from 400 to 1,200 quietly created.
+   *
+   * And the faster you read, the less time the head buys, so it scales with
+   * rate: 220 chars at 1×, 660 at 3×.
+   */
+  const HEAD_CHARS_BASE = 220;
+  const headCharsFor = (rate) =>
+    Math.min(560, Math.round(HEAD_CHARS_BASE * Math.max(1, rate || 1)));
 
   // Audio for a whole document is far too big to keep. This is a session cache.
   const CACHE_MAX = 32;
@@ -369,6 +383,20 @@ const SpeechifyProvider = (function () {
   function pump() {
     while (activeRequests < MAX_CONCURRENT && queue.length) {
       const job = queue.shift();
+
+      /*
+       * Drop jobs nobody is waiting for any more. With one request allowed at a
+       * time a job can sit here for seconds, and the reader may have been
+       * stopped, or skipped somewhere else entirely, long before its turn
+       * arrives. Running it anyway spends money on audio that will never be
+       * played.
+       */
+      if (job.signal && job.signal.aborted) {
+        log("dropped", { for: job.label, why: "abandoned before its turn" });
+        job.reject(abortError());
+        continue;
+      }
+
       activeRequests++;
       job.run().then(job.resolve, job.reject).then(function () {
         activeRequests--;
@@ -377,15 +405,39 @@ const SpeechifyProvider = (function () {
     }
   }
 
-  function enqueue(run, label) {
+  function enqueue(run, label, signal) {
     return new Promise(function (resolve, reject) {
-      queue.push({ run: run, resolve: resolve, reject: reject });
+      queue.push({ run: run, resolve: resolve, reject: reject,
+                   label: label, signal: signal });
       if (queue.length > 1) log("queued", { for: label, ahead: queue.length - 1 });
       pump();
     });
   }
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /*
+   * A wait that gives up when the caller does.
+   *
+   * Plain setTimeout meant that stopping during a retry pause — up to ten
+   * seconds on the last rung — still fired a fresh, billable request when the
+   * timer expired.
+   */
+  function sleep(ms, signal) {
+    return new Promise(function (resolve, reject) {
+      if (signal && signal.aborted) return reject(abortError());
+      const id = setTimeout(resolve, ms);
+      if (!signal) return;
+      signal.addEventListener("abort", function () {
+        clearTimeout(id);
+        reject(abortError());
+      }, { once: true });
+    });
+  }
+
+  function abortError() {
+    const e = new Error("aborted");
+    e.name = "AbortError";
+    return e;
+  }
 
   /*
    * Waiting out a refusal rather than reporting it.
@@ -410,7 +462,7 @@ const SpeechifyProvider = (function () {
         const waitMs = err.retryAfterMs || RETRY_MS[attempt];
         log("retry", { for: label, attempt: attempt + 1, waitMs: waitMs,
                        why: err.rateLimited ? "rate limited" : "server error" });
-        await sleep(waitMs);
+        await sleep(waitMs, signal);
       }
     }
   }
@@ -488,6 +540,19 @@ const SpeechifyProvider = (function () {
       log("disk-read-failed", { why: String(err && err.message).slice(0, 60) });
       return null;
     }
+  }
+
+  /*
+   * Is this on disk? Asked before deciding whether to split a chunk, so it must
+   * not drag the audio into memory just to answer.
+   */
+  async function diskHas(key) {
+    try {
+      const db = await openDb();
+      if (!db) return false;
+      const found = await asPromise(tx(db, "readonly").getKey(key));
+      return found !== undefined;
+    } catch { return false; }
   }
 
   async function diskPut(key, blob, marks) {
@@ -570,13 +635,22 @@ const SpeechifyProvider = (function () {
    */
   const cacheKey = (text, voiceId) => voiceId + "\u241f" + MODEL + "\u241f" + text;
 
+  /*
+   * Object URLs still attached to a playing <audio> element. Revoking one of
+   * those kills the sound mid-sentence, and eviction had no idea which was in
+   * use — reachable by moving through 32 distinct chunks in a session.
+   */
+  const inUse = new Set();
+
   function remember(key, entry) {
     cache.set(key, entry);
     while (cache.size > CACHE_MAX) {
       const oldest = cache.keys().next().value;
       const dropped = cache.get(oldest);
       cache.delete(oldest);
-      if (dropped && dropped.url) URL.revokeObjectURL(dropped.url);
+      if (dropped && dropped.url && !inUse.has(dropped.url)) {
+        URL.revokeObjectURL(dropped.url);
+      }
     }
   }
 
@@ -612,7 +686,7 @@ const SpeechifyProvider = (function () {
         return entry;
       }
       const fresh = await enqueue(
-        () => synthesizeWithRetry(text, voiceId, signal, label), label);
+        () => synthesizeWithRetry(text, voiceId, signal, label), label, signal);
       remember(key, fresh);
       if (fresh.blob) diskPut(key, fresh.blob, fresh.marks);   // not awaited
       return fresh;
@@ -625,10 +699,29 @@ const SpeechifyProvider = (function () {
     return p;
   }
 
-  /* Warm a piece of text without waiting for it or caring if it fails. */
+  /*
+   * Warm a piece of text without waiting for it or caring if it fails.
+   *
+   * Given a signal of its own so it can be called off. A lookahead used to be
+   * uncancellable, so closing the player or switching document mid-prefetch
+   * still completed and billed. It deliberately does NOT share the current
+   * utterance's signal — a lookahead is supposed to outlive the chunk that
+   * triggered it; that is its whole purpose.
+   */
+  let prefetchAbort = typeof AbortController === "function" ? new AbortController() : null;
+
   function prefetch(text, voiceId) {
     if (!text || !text.trim() || !hasKey() || keyWasRejected()) return;
-    acquire(text, voiceId, undefined).catch(() => { /* best effort */ });
+    acquire(text, voiceId, prefetchAbort && prefetchAbort.signal)
+      .catch(() => { /* best effort */ });
+  }
+
+  /* Called when reading stops for good, so nothing keeps buying ahead. */
+  function cancelPrefetch() {
+    if (!prefetchAbort) return;
+    prefetchAbort.abort();
+    prefetchAbort = new AbortController();
+    log("prefetch-cancelled", {});
   }
 
   // ==========================================================================
@@ -686,7 +779,8 @@ const SpeechifyProvider = (function () {
    * downloading. Prefers a sentence end, then any space, so the seam lands
    * where a reader would pause anyway.
    */
-  function splitHead(text) {
+  function splitHead(text, headChars) {
+    const HEAD_CHARS = headChars || HEAD_CHARS_BASE;
     if (text.length <= HEAD_CHARS * 1.5) return [text];
 
     const window = text.slice(0, HEAD_CHARS + 60);
@@ -763,26 +857,10 @@ const SpeechifyProvider = (function () {
      *
      * So the split is for the cold start, which is the only place it helps.
      */
-    const alreadyHave = cache.has(cacheKey(text, voiceId));
-    const allSegments = alreadyHave ? [text] : splitHead(text);
-
-    /*
-     * Starting partway in: find the segment the offset lands in and begin
-     * there. The segments before it are never requested, so skipping into the
-     * middle of a chunk does not pay for the part you skipped.
-     */
-    let firstSeg = 0;
+    let segments = [text];
+    let skippedChars = 0;
     let seekChars = Math.max(0, opts.startOffset || 0);
-    while (firstSeg < allSegments.length - 1 && seekChars >= allSegments[firstSeg].length) {
-      seekChars -= allSegments[firstSeg].length;
-      firstSeg++;
-    }
-    const skippedChars = allSegments.slice(0, firstSeg).reduce((n, x) => n + x.length, 0);
-    const segments = allSegments.slice(firstSeg);
-
-    log("speak", { chars: text.length, segments: segments.length,
-                   cached: alreadyHave, rate: opts.rate || 1,
-                   startAt: opts.startOffset || 0 });
+    let alreadyHave = false;
 
     const audio = new Audio();
     audio.preservesPitch = true;
@@ -794,13 +872,58 @@ const SpeechifyProvider = (function () {
     let segIndex = 0;
     let statusTimer = null;
     const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    let currentUrl = null;      // the object URL this element is holding
     let segOffset = 0;          // UTF-16 offset of this segment within `text`
     let marks = [];
     let lastReported = -1;
 
-    /* Both halves at once: the tail downloads while the head plays. */
-    const wanted = segments.map((s) => acquire(s, voiceId, controller.signal));
-    wanted.forEach((p) => p.catch(() => { /* surfaced when we await it */ }));
+    const wanted = [];
+
+    /*
+     * Decide how to fetch this chunk — which cannot be done synchronously,
+     * because the answer depends on what is on DISK.
+     *
+     * This used to ask only `cache.has(...)`, i.e. memory. After a reload
+     * memory is empty, so every chunk was split into a head and a tail and
+     * looked up under THEIR keys — while the disk held the whole chunk under
+     * its own. Both halves missed and were bought again. The store existed and
+     * was bypassed on exactly the path it was built for: reloading, and jumping
+     * to a chunk you have already heard.
+     */
+    async function chooseSegments() {
+      const wholeKey = cacheKey(text, voiceId);
+      alreadyHave = cache.has(wholeKey) || await diskHas(wholeKey);
+
+      const allSegments = alreadyHave
+        ? [text]
+        : splitHead(text, headCharsFor(opts.rate));
+
+      /*
+       * Starting partway in: begin at the segment the offset lands in. Earlier
+       * segments are never requested, so skipping into the middle of a chunk
+       * does not pay for the part you skipped.
+       */
+      let firstSeg = 0;
+      while (firstSeg < allSegments.length - 1 && seekChars >= allSegments[firstSeg].length) {
+        seekChars -= allSegments[firstSeg].length;
+        firstSeg++;
+      }
+      skippedChars = allSegments.slice(0, firstSeg).reduce((n, x) => n + x.length, 0);
+      segments = allSegments.slice(firstSeg);
+
+      log("speak", { chars: text.length, segments: segments.length,
+                     have: alreadyHave ? "yes" : "no", rate: opts.rate || 1,
+                     startAt: opts.startOffset || 0 });
+
+      /*
+       * Ask for the FIRST segment only. The tail is requested once the head is
+       * actually playing (see playSegment), so a jump you abandon in the first
+       * second costs a head rather than a whole chunk — which is the difference
+       * between skimming cheaply and paying for eight times what you hear.
+       */
+      wanted[0] = acquire(segments[0], voiceId, controller.signal);
+      wanted[0].catch(() => { /* surfaced when we await it */ });
+    }
 
     const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
@@ -836,6 +959,7 @@ const SpeechifyProvider = (function () {
       cancelAnimationFrame(rafId);
       audio.pause();
       audio.removeAttribute("src");
+      if (currentUrl) { inUse.delete(currentUrl); currentUrl = null; }
       if (err) opts.onError(err.message || "Speechify failed", err);
       else opts.onEnd();
     }
@@ -866,6 +990,10 @@ const SpeechifyProvider = (function () {
       marks = entry.marks;
       lastReported = -1;
       segOffset = skippedChars + segments.slice(0, i).reduce((n, s) => n + s.length, 0);
+
+      if (currentUrl) inUse.delete(currentUrl);
+      currentUrl = entry.url;
+      inUse.add(currentUrl);
 
       audio.src = entry.url;
       audio.playbackRate = opts.rate || 1;
@@ -911,9 +1039,27 @@ const SpeechifyProvider = (function () {
        */
       if (i === 0) {
         const waited = nowMs() - startedAt;
-        recordFirstAudio(waited);
-        log("sound", { waitedMs: Math.round(waited), cached: alreadyHave });
+        /*
+         * Only a genuine synthesis says anything about how long a wait is. A
+         * cache hit returns in ~20ms, and folding those into the median trained
+         * the "~1.5s" estimate down towards zero — so the bar promised a wait
+         * it could not honour the next time a chunk was cold.
+         */
+        if (!alreadyHave) recordFirstAudio(waited);
+        log("sound", { waitedMs: Math.round(waited), from: alreadyHave ? "cache" : "network" });
         endStatus("speaking");
+
+        /*
+         * NOW ask for the rest of the chunk. Deferring it to this moment is
+         * what makes skimming cheap: a jump abandoned before the head plays
+         * never buys the tail at all.
+         */
+        for (let n = 1; n < segments.length; n++) {
+          if (!wanted[n]) {
+            wanted[n] = acquire(segments[n], voiceId, controller.signal);
+            wanted[n].catch(() => { /* surfaced when awaited */ });
+          }
+        }
       }
 
       cancelAnimationFrame(rafId);
@@ -921,7 +1067,11 @@ const SpeechifyProvider = (function () {
     }
 
     beginStatus();
-    playSegment(0);
+    chooseSegments().then(function () {
+      if (!stopped) playSegment(0);
+    }, function (err) {
+      if (!stopped) done(err);
+    });
 
     /*
      * Warm the chunk that comes next while this one plays. Without it every
@@ -936,6 +1086,7 @@ const SpeechifyProvider = (function () {
         finished = true;
         endStatus("stopped");
         controller.abort();
+        if (currentUrl) { inUse.delete(currentUrl); currentUrl = null; }
         cancelAnimationFrame(rafId);
         audio.onended = null;
         audio.onerror = null;
@@ -1012,6 +1163,9 @@ const SpeechifyProvider = (function () {
     setVoiceId: setVoiceId,
     currentVoiceId: currentVoiceId,
 
+    // Called when reading stops, so no lookahead keeps buying.
+    cancelPrefetch: cancelPrefetch,
+
     // The audio store, for the settings panel.
     diskUsage: diskUsage,
     clearDisk: clearDisk,
@@ -1034,5 +1188,6 @@ const SpeechifyProvider = (function () {
     _splitHead: splitHead,
     _markAt: markAt,
     _markAtChar: markAtChar,
+    _headCharsFor: headCharsFor,
   };
 })();

@@ -753,7 +753,11 @@ const TTS = (function () {
 
   function stop(reachedEnd) {
     playing = false;
+    prepStatus = null;
     if (handle) { handle.stop(); handle = null; }
+    // Nothing should keep synthesising ahead for a reader that has stopped.
+    const p = provider();
+    if (p && p.cancelPrefetch) p.cancelPrefetch();
     if (reachedEnd) { chunkIdx = 0; curWord = null; curSentence = null; }
     clearPaint();
     updateBar();

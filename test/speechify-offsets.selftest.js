@@ -95,22 +95,23 @@ console.log("\n=== splitting a chunk so sound starts sooner ===");
   const short = "Just one short sentence.";
   ok("short text is not split at all", S._splitHead(short).length === 1);
 
-  const long = "The first sentence is here and it is a reasonable length. "
+  /* Must comfortably exceed the head budget, which now scales with rate. */
+  const long = ("The first sentence is here and it is a reasonable length. "
     + "The second sentence follows it directly. "
     + "A third sentence continues the paragraph well past the head budget. "
-    + "And a fourth keeps going for good measure.";
-  const parts = S._splitHead(long);
+    + "And a fourth keeps going for good measure. ").repeat(4);
+  const parts = S._splitHead(long, 220);
   ok("long text splits in two", parts.length === 2, String(parts.length));
   ok("the halves reassemble exactly", parts.join("") === long);
   ok("the head is small enough to arrive quickly",
-     parts[0].length <= 180, String(parts[0].length));
+     parts[0].length <= 320, String(parts[0].length));
   ok("the head is not so small it is pointless",
      parts[0].length >= 30, String(parts[0].length));
   ok("the seam lands after a sentence, where a pause belongs",
      /[.!?]["')\]]?\s*$/.test(parts[0]), JSON.stringify(parts[0].slice(-14)));
 
-  const noPunct = "word ".repeat(80);
-  const p2 = S._splitHead(noPunct);
+  const noPunct = "word ".repeat(200);
+  const p2 = S._splitHead(noPunct, 220);
   ok("text with no sentence end still splits, on a space",
      p2.length === 2 && p2.join("") === noPunct && /\s$/.test(p2[0]),
      JSON.stringify(p2[0].slice(-8)));
@@ -172,13 +173,64 @@ console.log("\n=== audio survives a reload ===");
   const src = fs.readFileSync(REPO + "/js/speechify.js", "utf8");
   ok("there is a disk store", /indexedDB\.open/.test(src));
   ok("it is checked BEFORE the network",
-     src.indexOf("await diskGet(key)") < src.indexOf("synthesizeWithRetry(text, voiceId, signal, label), label)"),
+     src.indexOf("await diskGet(key)") !== -1 &&
+     src.indexOf("await diskGet(key)") < src.indexOf("await enqueue("),
      "diskGet must come first in acquire()");
   ok("what is fetched is written back", /diskPut\(key, fresh\.blob/.test(src));
   ok("the store is bounded so it cannot grow forever", /DISK_BUDGET_BYTES/.test(src));
   ok("eviction drops the least recently used", /lastUsed/.test(src));
   ok("a browser without IndexedDB still reads",
      /no IndexedDB/.test(src) && /disk-unavailable/.test(src));
+}
+
+console.log("\n=== the money leaks found in the audit ===");
+{
+  const src = fs.readFileSync(REPO + "/js/speechify.js", "utf8");
+
+  ok("LEAK F: the split decision consults DISK, not just memory",
+     /await diskHas\(wholeKey\)/.test(src),
+     "a reload leaves memory empty; asking only memory re-buys the chunk");
+  ok("...and there is a disk check that does not load the blob",
+     /getKey\(key\)/.test(src));
+
+  ok("LEAK G: the tail is only bought once the head is playing",
+     src.indexOf("wanted[n] = acquire") > src.indexOf("endStatus(\"speaking\")"),
+     "a jump abandoned in the first second must not pay for a whole chunk");
+
+  ok("LEAK A: a queued job whose caller has gone is dropped",
+     /job\.signal && job\.signal\.aborted/.test(src));
+  ok("LEAK B: a retry wait is abortable",
+     /function sleep\(ms, signal\)/.test(src) && /sleep\(waitMs, signal\)/.test(src));
+  ok("LEAK C: prefetches can be cancelled",
+     /function cancelPrefetch/.test(src) && /prefetchAbort\.signal/.test(src));
+
+  ok("BUG D: cache hits do not train the wait estimate",
+     /if \(!alreadyHave\) recordFirstAudio/.test(src));
+  ok("BUG E: an object URL in use is never revoked",
+     /!inUse\.has\(dropped\.url\)/.test(src));
+}
+
+console.log("\n=== the head must out-speak the tail's download ===");
+{
+  /* Measured: download ~ 0.80s + 0.00705s/char, speech ~ 0.051s/char. */
+  const dl = (c) => 0.80 + c * 0.00705;
+  const spk = (c) => c * 0.0510;
+  const CHUNK = 1200;
+
+  const at = (rate) => {
+    const h = S._headCharsFor(rate);
+    return { h, headSpeech: spk(h) / rate, tailDownload: dl(CHUNK - h) };
+  };
+
+  [1, 1.5, 2, 3].forEach((rate) => {
+    const r = at(rate);
+    ok(`at ${rate}x the head (${r.h} chars) outlasts the tail's download`,
+       r.headSpeech >= r.tailDownload,
+       `head speaks ${r.headSpeech.toFixed(1)}s, tail needs ${r.tailDownload.toFixed(1)}s`);
+  });
+
+  ok("the head grows with rate", S._headCharsFor(3) > S._headCharsFor(1));
+  ok("but is capped so a cold start stays fast", S._headCharsFor(10) <= 560);
 }
 
 console.log("\n=== the provider satisfies the interface tts.js calls ===");
