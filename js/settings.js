@@ -336,6 +336,32 @@ const Settings = (function () {
       });
     }
 
+    /*
+     * Audio is kept on disk so a paragraph is paid for once and replays free
+     * after a reload. Showing the size makes that visible rather than something
+     * you have to take on trust, and gives a way to reclaim the space.
+     */
+    const cacheStatus = document.getElementById("speechify-cache-status");
+    const cacheBtn = document.getElementById("speechify-cache-clear-btn");
+
+    async function showCacheSize() {
+      if (!cacheStatus || !SpeechifyProvider.diskUsage) return;
+      const u = await SpeechifyProvider.diskUsage();
+      cacheStatus.className = "voice-key-status voice-key-status-muted";
+      cacheStatus.textContent = u.entries
+        ? `${u.entries} passages saved (${(u.bytes / 1048576).toFixed(1)} MB) — these replay free`
+        : "No audio saved yet";
+    }
+    showCacheSize();
+
+    if (cacheBtn) {
+      cacheBtn.addEventListener("click", async () => {
+        await SpeechifyProvider.clearDisk();
+        await showCacheSize();
+        setStatus(status, "Audio cleared — the next read will synthesise again", "muted");
+      });
+    }
+
     clearBtn.addEventListener("click", () => {
       SpeechifyProvider.clearKey();
       input.value = "";

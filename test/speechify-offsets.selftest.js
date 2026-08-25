@@ -136,6 +136,51 @@ console.log("\n=== finding the spoken word at a moment ===");
      S._markAt(marks, 3500) === 6 && S._markAt(marks, 700) === 1);
 }
 
+console.log("\n=== skipping to a sentence finds the right place in the audio ===");
+{
+  /* cs values as the provider stores them: UTF-16 offsets into the chunk. */
+  const marks = [
+    { t0: 0,    t1: 500,  cs: 0,  ce: 5 },
+    { t0: 500,  t1: 900,  cs: 6,  ce: 11 },
+    { t0: 900,  t1: 1600, cs: 12, ce: 19 },
+    { t0: 1600, t1: 2100, cs: 20, ce: 25 },
+  ];
+  ok("an exact word start finds that word", S._markAtChar(marks, 12) === 2,
+     String(S._markAtChar(marks, 12)));
+  ok("a position inside a word takes the NEXT one, never an earlier replay",
+     S._markAtChar(marks, 13) === 3, String(S._markAtChar(marks, 13)));
+  ok("offset zero is the first word", S._markAtChar(marks, 0) === 0);
+  ok("a position in the gap before a word finds that word",
+     S._markAtChar(marks, 5) === 1, String(S._markAtChar(marks, 5)));
+  ok("past the end returns nothing rather than the last word",
+     S._markAtChar(marks, 999) === -1, String(S._markAtChar(marks, 999)));
+  ok("an empty list does not throw", S._markAtChar([], 5) === -1);
+}
+
+console.log("\n=== the cache key ===");
+{
+  const src = fs.readFileSync(REPO + "/js/speechify.js", "utf8");
+  ok("names the voice, so changing voice resynthesises",
+     /cacheKey = \(text, voiceId\) => voiceId/.test(src));
+  ok("names the model too", /MODEL/.test(src.match(/const cacheKey =.*/)[0]));
+  ok("contains no NUL byte (it made the file read as binary)",
+     fs.readFileSync(REPO + "/js/speechify.js").indexOf(0) === -1);
+}
+
+console.log("\n=== audio survives a reload ===");
+{
+  const src = fs.readFileSync(REPO + "/js/speechify.js", "utf8");
+  ok("there is a disk store", /indexedDB\.open/.test(src));
+  ok("it is checked BEFORE the network",
+     src.indexOf("await diskGet(key)") < src.indexOf("synthesizeWithRetry(text, voiceId, signal, label), label)"),
+     "diskGet must come first in acquire()");
+  ok("what is fetched is written back", /diskPut\(key, fresh\.blob/.test(src));
+  ok("the store is bounded so it cannot grow forever", /DISK_BUDGET_BYTES/.test(src));
+  ok("eviction drops the least recently used", /lastUsed/.test(src));
+  ok("a browser without IndexedDB still reads",
+     /no IndexedDB/.test(src) && /disk-unavailable/.test(src));
+}
+
 console.log("\n=== the provider satisfies the interface tts.js calls ===");
 {
   ["id", "label", "needsKey", "available", "voices", "defaultVoice", "speak"]

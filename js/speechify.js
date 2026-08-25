@@ -279,7 +279,7 @@ const SpeechifyProvider = (function () {
     log("audio-ready", { chars: text.length, ms: Date.now() - reqStart,
                          kb: Math.round(blob.size / 1024), words: marks.length,
                          billed: billed });
-    return { url: URL.createObjectURL(blob), marks: marks, billed: billed };
+    return { url: URL.createObjectURL(blob), marks: marks, billed: billed, blob: blob };
   }
 
   /*
@@ -416,6 +416,140 @@ const SpeechifyProvider = (function () {
   }
 
   // ==========================================================================
+  // DISK CACHE — so a reload never costs money twice
+  // ==========================================================================
+
+  /*
+   * Audio survives a reload, in IndexedDB.
+   *
+   * The rest of Folio keeps everything in localStorage, and this deliberately
+   * does not: a single 1,200-character chunk is roughly 200KB of mp3, and a
+   * real document (md.md, 18,043 words) is about 40MB against localStorage's
+   * ~5MB ceiling. It would not fit, and Blobs cannot go in there anyway.
+   *
+   * What this buys is simple and worth the exception: you pay for a paragraph
+   * ONCE. Reloading the page, re-reading yesterday's document, or scrolling
+   * back to a section all replay from disk with no request and no charge.
+   *
+   * Keyed by voice + model + the exact text sent, so changing voice
+   * synthesises afresh (correctly — the timings belong to a voice) while
+   * re-reading the same words does not.
+   */
+  const DB_NAME = "folio-speech";
+  const DB_STORE = "audio";
+  const DB_VERSION = 1;
+  const DISK_BUDGET_BYTES = 250 * 1024 * 1024;
+
+  let dbPromise = null;
+
+  function openDb() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+      if (typeof indexedDB === "undefined") return reject(new Error("no IndexedDB"));
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function () {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) {
+          const store = db.createObjectStore(DB_STORE, { keyPath: "key" });
+          // Eviction walks oldest-used first, so it needs its own index.
+          store.createIndex("lastUsed", "lastUsed");
+        }
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error || new Error("IndexedDB failed to open")); };
+    }).catch(function (err) {
+      // Private browsing and some lockdown modes refuse. Degrade to memory.
+      log("disk-unavailable", { why: String(err && err.message).slice(0, 60) });
+      return null;
+    });
+    return dbPromise;
+  }
+
+  function tx(db, mode) {
+    return db.transaction(DB_STORE, mode).objectStore(DB_STORE);
+  }
+
+  const asPromise = (req) => new Promise(function (resolve, reject) {
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error); };
+  });
+
+  async function diskGet(key) {
+    try {
+      const db = await openDb();
+      if (!db) return null;
+      const rec = await asPromise(tx(db, "readonly").get(key));
+      if (!rec) return null;
+      // Record the touch so eviction knows what is still in use.
+      rec.lastUsed = Date.now();
+      try { tx(db, "readwrite").put(rec); } catch { /* touch is best effort */ }
+      return rec;
+    } catch (err) {
+      log("disk-read-failed", { why: String(err && err.message).slice(0, 60) });
+      return null;
+    }
+  }
+
+  async function diskPut(key, blob, marks) {
+    try {
+      const db = await openDb();
+      if (!db) return;
+      await asPromise(tx(db, "readwrite").put({
+        key: key, blob: blob, marks: marks,
+        bytes: blob.size, lastUsed: Date.now(),
+      }));
+      evictIfOver();
+    } catch (err) {
+      // A full disk must never stop the reading; it only stops the saving.
+      log("disk-write-failed", { why: String(err && err.message).slice(0, 60) });
+    }
+  }
+
+  /*
+   * Drop the least recently used entries until we are back inside budget.
+   * Runs after a write and never blocks playback.
+   */
+  async function evictIfOver() {
+    try {
+      const db = await openDb();
+      if (!db) return;
+      const all = await asPromise(tx(db, "readonly").getAll());
+      let total = all.reduce((n, r) => n + (r.bytes || 0), 0);
+      if (total <= DISK_BUDGET_BYTES) return;
+
+      all.sort((a, b) => (a.lastUsed || 0) - (b.lastUsed || 0));
+      const store = tx(db, "readwrite");
+      let dropped = 0;
+      for (const rec of all) {
+        if (total <= DISK_BUDGET_BYTES * 0.9) break;
+        store.delete(rec.key);
+        total -= rec.bytes || 0;
+        dropped++;
+      }
+      log("disk-evicted", { dropped: dropped, mb: Math.round(total / 1048576) });
+    } catch { /* eviction is housekeeping; failing is survivable */ }
+  }
+
+  /* How much is stored, for the settings panel. */
+  async function diskUsage() {
+    try {
+      const db = await openDb();
+      if (!db) return { entries: 0, bytes: 0 };
+      const all = await asPromise(tx(db, "readonly").getAll());
+      return { entries: all.length, bytes: all.reduce((n, r) => n + (r.bytes || 0), 0) };
+    } catch { return { entries: 0, bytes: 0 }; }
+  }
+
+  async function clearDisk() {
+    try {
+      const db = await openDb();
+      if (!db) return;
+      await asPromise(tx(db, "readwrite").clear());
+      log("disk-cleared", {});
+    } catch { /* ignore */ }
+  }
+
+  // ==========================================================================
   // CACHE — audio and its timings, always together
   // ==========================================================================
 
@@ -428,7 +562,13 @@ const SpeechifyProvider = (function () {
   const cache = new Map();
   const inFlight = new Map();
 
-  const cacheKey = (text, voiceId) => `${voiceId} ${text}`;
+  /*
+   * Voice AND model are part of the key: timings belong to the voice that
+   * produced them, so a voice change must resynthesise rather than replay
+   * someone else's marks. The separator is a character that cannot occur in
+   * a voice id.
+   */
+  const cacheKey = (text, voiceId) => voiceId + "\u241f" + MODEL + "\u241f" + text;
 
   function remember(key, entry) {
     cache.set(key, entry);
@@ -450,15 +590,36 @@ const SpeechifyProvider = (function () {
   function acquire(text, voiceId, signal) {
     const key = cacheKey(text, voiceId);
     const hit = cache.get(key);
-    if (hit) { log("cache-hit", { chars: text.length }); return Promise.resolve(hit); }
+    if (hit) { log("cache-hit", { chars: text.length, from: "memory" }); return Promise.resolve(hit); }
 
     const pending = inFlight.get(key);
     if (pending) { log("shared", { chars: text.length }); return pending; }
 
     const label = `${text.length}ch "${text.slice(0, 24).replace(/\s+/g, " ")}…"`;
-    const p = enqueue(() => synthesizeWithRetry(text, voiceId, signal, label), label)
-      .then((entry) => { remember(key, entry); inFlight.delete(key); return entry; })
-      .catch((err) => { inFlight.delete(key); throw err; });
+
+    /*
+     * Disk before network, always. This is the whole point of the store: a
+     * paragraph you have already heard must never be bought twice, whether you
+     * reloaded the page, came back tomorrow, or scrolled up to re-read it.
+     */
+    const p = (async function () {
+      const rec = await diskGet(key);
+      if (rec && rec.blob) {
+        const entry = { url: URL.createObjectURL(rec.blob), marks: rec.marks, blob: rec.blob };
+        remember(key, entry);
+        log("cache-hit", { chars: text.length, from: "disk",
+                           kb: Math.round((rec.bytes || 0) / 1024) });
+        return entry;
+      }
+      const fresh = await enqueue(
+        () => synthesizeWithRetry(text, voiceId, signal, label), label);
+      remember(key, fresh);
+      if (fresh.blob) diskPut(key, fresh.blob, fresh.marks);   // not awaited
+      return fresh;
+    })();
+
+    p.then(function () { inFlight.delete(key); },
+           function () { inFlight.delete(key); });
 
     inFlight.set(key, p);
     return p;
@@ -554,6 +715,20 @@ const SpeechifyProvider = (function () {
    * correct themselves on the next frame with no special handling for any of
    * them.
    */
+  /*
+   * The first word at or after a character offset — how a sentence skip turns
+   * into a position in audio we already hold.
+   */
+  function markAtChar(marks, cs) {
+    let lo = 0, hi = marks.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (marks[mid].cs >= cs) { best = mid; hi = mid - 1; }
+      else lo = mid + 1;
+    }
+    return best;
+  }
+
   function markAt(marks, t) {
     let lo = 0, hi = marks.length - 1, best = -1;
     while (lo <= hi) {
@@ -589,9 +764,25 @@ const SpeechifyProvider = (function () {
      * So the split is for the cold start, which is the only place it helps.
      */
     const alreadyHave = cache.has(cacheKey(text, voiceId));
-    const segments = alreadyHave ? [text] : splitHead(text);
+    const allSegments = alreadyHave ? [text] : splitHead(text);
+
+    /*
+     * Starting partway in: find the segment the offset lands in and begin
+     * there. The segments before it are never requested, so skipping into the
+     * middle of a chunk does not pay for the part you skipped.
+     */
+    let firstSeg = 0;
+    let seekChars = Math.max(0, opts.startOffset || 0);
+    while (firstSeg < allSegments.length - 1 && seekChars >= allSegments[firstSeg].length) {
+      seekChars -= allSegments[firstSeg].length;
+      firstSeg++;
+    }
+    const skippedChars = allSegments.slice(0, firstSeg).reduce((n, x) => n + x.length, 0);
+    const segments = allSegments.slice(firstSeg);
+
     log("speak", { chars: text.length, segments: segments.length,
-                   cached: alreadyHave, rate: opts.rate || 1 });
+                   cached: alreadyHave, rate: opts.rate || 1,
+                   startAt: opts.startOffset || 0 });
 
     const audio = new Audio();
     audio.preservesPitch = true;
@@ -674,10 +865,26 @@ const SpeechifyProvider = (function () {
 
       marks = entry.marks;
       lastReported = -1;
-      segOffset = segments.slice(0, i).reduce((n, s) => n + s.length, 0);
+      segOffset = skippedChars + segments.slice(0, i).reduce((n, s) => n + s.length, 0);
 
       audio.src = entry.url;
       audio.playbackRate = opts.rate || 1;
+
+      /*
+       * Jump to the requested word rather than replaying from the top. This is
+       * what makes a sentence skip instant: the audio is already here and the
+       * marks say exactly where that character is spoken.
+       */
+      if (i === 0 && seekChars > 0) {
+        const mi = markAtChar(entry.marks, seekChars);
+        if (mi !== -1) {
+          const at = entry.marks[mi].t0 / 1000;
+          const seekWhenReady = function () { try { audio.currentTime = at; } catch { /* not seekable yet */ } };
+          if (audio.readyState >= 1) seekWhenReady();
+          else audio.addEventListener("loadedmetadata", seekWhenReady, { once: true });
+          log("seek", { toChar: seekChars, toMs: Math.round(at * 1000) });
+        }
+      }
       audio.onended = function () {
         if (stopped) return;
         segIndex++;
@@ -767,6 +974,11 @@ const SpeechifyProvider = (function () {
     id: "speechify",
     label: "Speechify Simba 3.2",
     needsKey: true,
+    /*
+     * Audio can be scrubbed, so js/tts.js sends the whole chunk and an offset
+     * instead of slicing the text — which would miss the cache and re-bill.
+     */
+    canSeek: true,
 
     available: function () {
       return hasKey() && typeof Audio !== "undefined" && typeof fetch === "function";
@@ -800,6 +1012,10 @@ const SpeechifyProvider = (function () {
     setVoiceId: setVoiceId,
     currentVoiceId: currentVoiceId,
 
+    // The audio store, for the settings panel.
+    diskUsage: diskUsage,
+    clearDisk: clearDisk,
+
     // Diagnostics.
     getLog: getLog,
     clearLog: clearLog,
@@ -817,5 +1033,6 @@ const SpeechifyProvider = (function () {
     _codePointToUtf16Map: codePointToUtf16Map,
     _splitHead: splitHead,
     _markAt: markAt,
+    _markAtChar: markAtChar,
   };
 })();

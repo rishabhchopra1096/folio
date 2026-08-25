@@ -59,7 +59,16 @@ const TTS = (function () {
 
   // Target size of a synthesis chunk, in characters. Small enough that a
   // speed change (which restarts the current chunk) is barely noticeable.
-  const CHUNK_CHARS = 400;
+  /*
+   * A synthesis unit. Raised from 400 once reading moved to a network voice:
+   * time-to-first-audio is a flat ~800ms whatever you ask for, so a 400-char
+   * chunk paid that toll 339 times on an 18,000-word document. At 1,200 it is
+   * paid 113 times. Billing is per character, so larger chunks cost no more —
+   * they only cost more to throw away when you skip past one.
+   *
+   * The local voice does not care either way; it never waits.
+   */
+  const CHUNK_CHARS = 1200;
 
   // Speeds the rate chip cycles through.
   const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
@@ -619,11 +628,24 @@ const TTS = (function () {
     if (chunkIdx >= chunks.length) { stop(); return; }
     const c = chunks[chunkIdx];
     const start = typeof fromOffset === "number" ? Math.max(c.ds, fromOffset) : c.ds;
-    const text = docText.slice(start, c.de);
+
+    /*
+     * Starting mid-chunk used to mean sending only the REMAINDER of the chunk.
+     * For a network voice that is a different string, so it missed the cache
+     * and bought the same paragraph again — skipping five sentences billed five
+     * overlapping synthesises of one chunk, each with its own wait.
+     *
+     * An engine that can seek gets the WHOLE chunk every time, with the offset
+     * to start at. Its timings already map every character to a millisecond, so
+     * skipping is a seek in audio we are holding: instant, and free.
+     */
+    const seekable = !!provider().canSeek;
+    const text = seekable ? docText.slice(c.ds, c.de) : docText.slice(start, c.de);
+    const startOffset = seekable ? start - c.ds : 0;
 
     if (!text.trim()) { chunkIdx++; speakChunk(); return; }
 
-    spokenFrom = start;
+    spokenFrom = seekable ? c.ds : start;
 
     /*
      * The text that comes after this one, for engines that synthesise ahead.
@@ -638,6 +660,7 @@ const TTS = (function () {
       rate: rate,
       voice: selectedVoice,
       next: nextText,
+      startOffset: startOffset,
       onWord: function (charIndex, charLength) {
         const ds = spokenFrom + charIndex;
         // Some engines report charLength 0 — derive the end from the text.

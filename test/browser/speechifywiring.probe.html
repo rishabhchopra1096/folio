@@ -141,6 +141,56 @@ async function main() {
   ok("and the naive reading really is wrong",
      TEXT.slice(8, 13) !== "bravo", JSON.stringify(TEXT.slice(8, 13)));
 
+  /*
+   * THE COST QUESTION: audio must survive a reload, or every reload re-bills.
+   * Written and read back through the shipped store, with a real Blob.
+   */
+  ok("the provider exposes its audio store",
+     typeof w.__sp.diskUsage === "function" && typeof w.__sp.clearDisk === "function");
+
+  const before = await w.__sp.diskUsage();
+  ok("the store opens and reports a size", typeof before.bytes === "number",
+     JSON.stringify(before));
+
+  // Put a record in the way acquire() does, then read it back out.
+  const wrote = await new Promise((resolve) => {
+    const req = w.indexedDB.open("folio-speech", 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const st = db.transaction("audio", "readwrite").objectStore("audio");
+      const blob = new w.Blob([new Uint8Array(2048)], { type: "audio/mpeg" });
+      const put = st.put({ key: "probe-key", blob, marks: [{ t0: 0, t1: 9, cs: 0, ce: 4 }],
+                           bytes: 2048, lastUsed: Date.now() });
+      put.onsuccess = () => resolve(true);
+      put.onerror = () => resolve(false);
+    };
+    req.onerror = () => resolve(false);
+  });
+  ok("audio can be written to the store", wrote === true);
+
+  const after = await w.__sp.diskUsage();
+  ok("and it is counted", after.bytes >= before.bytes + 2048,
+     `${before.bytes} -> ${after.bytes}`);
+
+  const readBack = await new Promise((resolve) => {
+    const req = w.indexedDB.open("folio-speech", 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const g = db.transaction("audio", "readonly").objectStore("audio").get("probe-key");
+      g.onsuccess = () => resolve(g.result);
+      g.onerror = () => resolve(null);
+    };
+  });
+  ok("it reads back as a Blob, which is what survives a reload",
+     !!readBack && readBack.blob && readBack.blob.size === 2048,
+     readBack ? String(readBack.blob && readBack.blob.size) : "nothing stored");
+  ok("its timings came back with it",
+     !!readBack && Array.isArray(readBack.marks) && readBack.marks.length === 1);
+
+  await w.__sp.clearDisk();
+  const cleared = await w.__sp.diskUsage();
+  ok("clearing the store empties it", cleared.entries === 0, JSON.stringify(cleared));
+
   // ── No key may ever be baked into the shipped file ──
   const src = await (await fetch("/js/speechify.js")).text();
   ok("the shipped module contains no API key", !/sk_[A-Za-z0-9]{20,}/.test(src));
