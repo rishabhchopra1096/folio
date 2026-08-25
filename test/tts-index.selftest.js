@@ -125,12 +125,30 @@ ok("block is the right <p>", b && b.el.tagName === "P" && b.el.textContent.inclu
    b ? b.el.tagName + ": " + b.el.textContent.slice(0, 30) : "null");
 
 console.log("\n=== chunking ===");
-ok("no chunk exceeds ~2x target", I.chunks.every(c => c.text.length <= 900),
+ok("no chunk exceeds the backstop", I.chunks.every(c => c.text.length <= 2000),
    "max=" + Math.max(...I.chunks.map(c => c.text.length)));
 ok("chunk text matches its own doc range",
    I.chunks.every(c => c.text === I.docText.slice(c.ds, c.de)));
-ok("chunks stay inside one block",
-   I.chunks.every(c => I.blocks.some(b => c.ds >= b.ds && c.de <= b.de)));
+
+/*
+ * A chunk MAY now span consecutive paragraphs, and that is deliberate: stopping
+ * at every one produced 545 tiny chunks on a real document, and for a network
+ * voice each is a separate request paying a flat latency floor.
+ *
+ * What still has to hold is the reason the old rule existed — a seam must land
+ * where a pause belongs. That is a SENTENCE boundary, which is a stronger and
+ * more honest statement of the intent than "inside one block".
+ */
+ok("every chunk starts exactly where a sentence starts",
+   I.chunks.every(c => I.sentences.some(s => s.ds === c.ds)),
+   "offending=" + JSON.stringify(I.chunks.filter(c => !I.sentences.some(s => s.ds === c.ds))
+     .map(c => c.ds).slice(0, 5)));
+ok("every chunk ends exactly where a sentence ends",
+   I.chunks.every(c => I.sentences.some(s => s.de === c.de)),
+   "offending=" + JSON.stringify(I.chunks.filter(c => !I.sentences.some(s => s.de === c.de))
+     .map(c => c.de).slice(0, 5)));
+ok("chunks together cover every sentence, none dropped",
+   I.sentences.every(s => I.chunks.some(c => s.ds >= c.ds && s.de <= c.de)));
 ok("chunks are ordered and non-overlapping",
    I.chunks.every((c, i) => i === 0 || c.ds >= I.chunks[i - 1].de));
 

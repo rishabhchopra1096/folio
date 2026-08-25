@@ -1,0 +1,132 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chunking: fewer requests, and boundaries an edit cannot move</title>
+<!--
+  Two properties, measured on a document shaped like a real one — mostly short
+  paragraphs with a few long ones.
+
+  1. A chunk may span consecutive paragraphs. It used to stop at every one, and
+     since the median paragraph is ~90 characters that meant hundreds of tiny
+     requests, each paying a flat ~0.8s floor with only one allowed in flight.
+
+  2. Where a chunk ends is decided by the sentence's own text, not by how much
+     came before it. Accumulating to a character cap meant inserting one word
+     could shift every later boundary — and a shifted boundary is new text, so
+     a network voice buys it again.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_chunking";
+
+/* A document with a realistic shape: many short paragraphs, a few long. */
+function buildBlocks(extraWord) {
+  const blocks = [];
+  for (let i = 0; i < 60; i++) {
+    if (i === 3) {
+      blocks.push({ type: "paragraph", data: { text:
+        (extraWord ? "Truly. " : "") +
+        ("This is a much longer paragraph that runs on for a while and contains " +
+         "several separate sentences. It keeps going past the point where one " +
+         "chunk would normally end. And then it continues further still, so the " +
+         "grouping has to make more than one decision inside it. ").repeat(6) } });
+    } else {
+      blocks.push({ type: "paragraph", data: { text:
+        `Paragraph number ${i} is short, as most real paragraphs are.` } });
+    }
+  }
+  return blocks;
+}
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Chunking Test", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC,
+    JSON.stringify({ time: Date.now(), blocks: buildBlocks(false) }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__tts = TTS;");
+
+  const before = w.__tts.debugChunks();
+  ok("the document was chunked", before.length > 0, String(before.length));
+
+  const paras = d.querySelectorAll("#article p").length;
+  ok("it really is mostly short paragraphs", paras >= 55, String(paras));
+
+  // ── 1. Chunks span paragraphs ──
+  ok("there are far fewer chunks than paragraphs",
+     before.length < paras / 2, `${before.length} chunks for ${paras} paragraphs`);
+  const sizes = before.map((c) => c.chars).sort((a, b) => a - b);
+  const median = sizes[Math.floor(sizes.length / 2)];
+  ok("the median chunk is a useful size, not a fragment",
+     median >= 300, String(median));
+  ok("and none is unreasonably large",
+     sizes[sizes.length - 1] <= 2600, String(sizes[sizes.length - 1]));
+
+  // ── 2. Chunks tile the document with no gaps or overlaps ──
+  let contiguous = true;
+  for (let i = 1; i < before.length; i++) {
+    if (before[i].ds < before[i - 1].de) { contiguous = false; break; }
+  }
+  ok("chunks never overlap", contiguous);
+  ok("they start at the beginning", before[0].ds === 0, String(before[0].ds));
+
+  // ── 3. An edit must not move boundaries after it ──
+  w.localStorage.setItem("folio_doc_" + DOC,
+    JSON.stringify({ time: Date.now(), blocks: buildBlocks(true) }));
+  w.location.hash = "#/";
+  await wait(500);
+  w.location.hash = "#/doc/" + DOC;
+  await wait(2000);
+
+  const after = w.__tts.debugChunks();
+  ok("the edited document still chunks", after.length > 0, String(after.length));
+
+  /*
+   * The edit adds 7 characters inside chunk containing block 3. Everything
+   * after it should keep the same LENGTH — identical text means the network
+   * voice replays it from cache instead of buying it again.
+   */
+  const lensBefore = before.map((c) => c.chars);
+  const lensAfter = after.map((c) => c.chars);
+  let changed = 0;
+  const n = Math.min(lensBefore.length, lensAfter.length);
+  for (let i = 0; i < n; i++) if (lensBefore[i] !== lensAfter[i]) changed++;
+  changed += Math.abs(lensBefore.length - lensAfter.length);
+
+  ok("a one-word edit disturbs only a couple of chunks",
+     changed <= 3, `${changed} of ${lensBefore.length} chunks changed`);
+  /*
+   * Everything PAST the edit must be untouched. Slicing a fixed number off the
+   * end is not the test — with only a handful of chunks that window includes
+   * the edited one, which is exactly how this assertion first "failed" against
+   * correct behaviour.
+   */
+  let firstDiff = 0;
+  while (firstDiff < n && lensBefore[firstDiff] === lensAfter[firstDiff]) firstDiff++;
+  ok("only chunks at the edit change; every later one keeps its identity",
+     lensBefore.slice(firstDiff + 1).join(",") === lensAfter.slice(firstDiff + 1).join(","),
+     `first difference at ${firstDiff} | before [${lensBefore.join(",")}] after [${lensAfter.join(",")}]`);
+  ok("and the difference is exactly the text that was inserted",
+     lensAfter[firstDiff] - lensBefore[firstDiff] === 7,
+     `${lensBefore[firstDiff]} -> ${lensAfter[firstDiff]}`);
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

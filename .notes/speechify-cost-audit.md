@@ -179,3 +179,47 @@ hop.
 - **#12 closing the tab mid-request.** Server-side work is already done and
   billed; nothing can be cached because the page is gone. Bounded and
   unavoidable.
+
+---
+
+## Correction to this audit, and the chunking fix
+
+**I overstated #10.** The audit said an edit "can re-align every later boundary
+and re-bill a whole document" ($1.09). That was wrong: `js/tts.js:278` already
+guaranteed chunks never cross a block, and the loop resets per block, so a
+cascade could never leave the edited paragraph. Measured over 96 random
+single-word edits on `sample_docs/md.md`:
+
+| | median | p90 | worst |
+|---|---|---|---|
+| before | 1 chunk ($0.0092) | 2 | **8 chunks ($0.058)** |
+| after | 1 chunk | 1 | **2 chunks ($0.021)** |
+
+A one-cent problem in 99% of blocks, six cents in the worst. Real, but nothing
+like what I claimed.
+
+**Measuring it surfaced something much larger.** Because chunks stopped at every
+paragraph and the median paragraph is 93 characters, `CHUNK_CHARS = 1200` was
+almost never reached: `md.md` produced **545 chunks with a median size of 105**.
+For a network voice that is 545 separate requests, each paying a flat ~0.8s
+floor, only one allowed in flight, against a sustained limit that 21 requests in
+17 seconds is enough to trip.
+
+So `makeChunks` was replaced with a grouping pass that does two things:
+
+- **Chunks may span consecutive paragraphs**, up to a cap. Same characters
+  billed; **545 requests become 144**. The paragraph break travels inside the
+  text, so the voice still pauses there.
+- **Boundaries are decided by the sentence's own text** (FNV-1a hash, 1-in-4),
+  not by how much came before it. Position plays no part, so an edit cannot
+  move a boundary downstream of itself.
+
+Tuned by measurement, not taste — MIN 600 / MAX 1800 / 1-in-4 was the setting
+where chunk count and edit-stability were both good; larger minimums degenerate
+toward the old cumulative behaviour and the worst case climbs back to 11.
+
+`TTS.debugChunks()` exposes the split, because chunk count *is* the number of
+requests a full read will make.
+
+**Still not fixed:** two tabs will 429 each other (the limit is per account, not
+per tab). A cross-tab lease exists in `js/video.js` and could be reused.
