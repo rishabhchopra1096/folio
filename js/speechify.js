@@ -110,23 +110,144 @@ const SpeechifyProvider = (function () {
    * gap between sentences could be the network, the queue or a retry. This
    * records enough to tell those apart. Kept in memory only.
    */
-  const LOG_MAX = 400;
-  const logEntries = [];
+  const LOG_MAX = 1200;
+  const LOG_STORAGE = "folio_speechify_log";
+  const STATS_STORAGE = "folio_speechify_stats";
   const t0Session = Date.now();
+
+  /*
+   * The log is PERSISTED, not just held in memory.
+   *
+   * A reading session spans reloads — that is rather the point of caching audio
+   * on disk — and an in-memory log would lose exactly the history that explains
+   * what a session cost. Capped, and it holds no text beyond a short excerpt.
+   */
+  let logEntries = (function () {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LOG_STORAGE) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch { return []; }
+  })();
+
+  /*
+   * Running totals, so a session can be costed without replaying the log.
+   *
+   * `billedChars` is what was actually SENT to Speechify — the thing on the
+   * invoice. `savedChars` is what was served from memory or disk instead, i.e.
+   * what caching avoided paying for. Their ratio against the document's own
+   * length is the number that says whether anything is leaking.
+   */
+  const BLANK_STATS = {
+    billedChars: 0, savedChars: 0, requests: 0,
+    memHits: 0, diskHits: 0, shared: 0,
+    retries: 0, rateLimited: 0, dropped: 0, failed: 0,
+    fetched: {},          // key excerpt -> chars, for spotting what was bought
+    played: {},           // key excerpt -> times played
+    startedAt: null,
+  };
+  let stats = (function () {
+    try {
+      const raw = JSON.parse(localStorage.getItem(STATS_STORAGE) || "null");
+      return raw && typeof raw === "object" ? Object.assign({}, BLANK_STATS, raw)
+                                            : Object.assign({}, BLANK_STATS);
+    } catch { return Object.assign({}, BLANK_STATS); }
+  })();
+
+  let flushTimer = null;
+  function persistSoon() {
+    if (flushTimer) return;
+    flushTimer = setTimeout(function () {
+      flushTimer = null;
+      try {
+        localStorage.setItem(LOG_STORAGE, JSON.stringify(logEntries.slice(-LOG_MAX)));
+        localStorage.setItem(STATS_STORAGE, JSON.stringify(stats));
+      } catch { /* storage full or private mode — the session still reads */ }
+    }, 500);
+  }
 
   function log(ev, fields) {
     const entry = Object.assign({ t: Date.now() - t0Session, ev: ev }, fields || {});
     logEntries.push(entry);
     if (logEntries.length > LOG_MAX) logEntries.shift();
+    if (stats.startedAt === null) stats.startedAt = new Date().toISOString();
+    persistSoon();
     return entry;
   }
 
   function getLog() { return logEntries.slice(); }
-  function clearLog() { logEntries.length = 0; }
+  function clearLog() {
+    logEntries = [];
+    stats = Object.assign({}, BLANK_STATS, { fetched: {}, played: {} });
+    try {
+      localStorage.removeItem(LOG_STORAGE);
+      localStorage.removeItem(STATS_STORAGE);
+    } catch { /* ignore */ }
+  }
 
-  /* Human-readable, for pasting somewhere. */
+  /* A short, stable stand-in for a chunk, so the report is readable. */
+  function excerpt(text) {
+    return text.slice(0, 40).replace(/\s+/g, " ").trim() + "…";
+  }
+
+  /*
+   * What this session cost, and what it would have cost without the cache.
+   *
+   * `wasted` is the important one: audio that was paid for and never played.
+   * Every entry there is money spent on sound nobody heard.
+   */
+  function costReport(perMillion) {
+    const rate = (typeof perMillion === "number" ? perMillion : 6) / 1e6;
+    const wasted = Object.keys(stats.fetched)
+      .filter((k) => !stats.played[k])
+      .map((k) => ({ chunk: k, chars: stats.fetched[k] }));
+    const wastedChars = wasted.reduce((n, w) => n + w.chars, 0);
+
+    return {
+      startedAt: stats.startedAt,
+      billedChars: stats.billedChars,
+      savedChars: stats.savedChars,
+      spent: +(stats.billedChars * rate).toFixed(4),
+      savedByCache: +(stats.savedChars * rate).toFixed(4),
+      requests: stats.requests,
+      memHits: stats.memHits,
+      diskHits: stats.diskHits,
+      sharedInFlight: stats.shared,
+      retries: stats.retries,
+      rateLimited: stats.rateLimited,
+      droppedBeforeSending: stats.dropped,
+      failed: stats.failed,
+      paidForButNeverPlayed: wasted.length,
+      wastedChars: wastedChars,
+      wastedSpend: +(wastedChars * rate).toFixed(4),
+      wastedDetail: wasted.slice(0, 20),
+    };
+  }
+
+  /* Human-readable, for pasting somewhere. Summary first. */
   function formatLog() {
-    return logEntries.map((e) => {
+    const r = costReport();
+    const head = [
+      "===== SPEECHIFY SESSION =====",
+      `started              ${r.startedAt || "(nothing yet)"}`,
+      `characters BILLED    ${r.billedChars.toLocaleString()}   ($${r.spent})`,
+      `characters from cache${String(r.savedChars.toLocaleString()).padStart(6)}   (saved $${r.savedByCache})`,
+      `requests             ${r.requests}`,
+      `  memory hits        ${r.memHits}`,
+      `  disk hits          ${r.diskHits}`,
+      `  shared in-flight   ${r.sharedInFlight}`,
+      `  dropped unsent     ${r.droppedBeforeSending}`,
+      `retries              ${r.retries}  (rate limited ${r.rateLimited})`,
+      `failed               ${r.failed}`,
+      `PAID FOR, NEVER HEARD${String(r.paidForButNeverPlayed).padStart(5)}   ` +
+        `(${r.wastedChars.toLocaleString()} chars, $${r.wastedSpend})`,
+    ];
+    if (r.wastedDetail.length) {
+      head.push("  wasted chunks:");
+      r.wastedDetail.forEach((wd) => head.push(`    ${wd.chars} ch  ${wd.chunk}`));
+    }
+    head.push("===== EVENTS =====");
+
+    return head.join("\n") + "\n" + logEntries.map((e) => {
       const rest = Object.keys(e)
         .filter((k) => k !== "t" && k !== "ev")
         .map((k) => `${k}=${typeof e[k] === "object" ? JSON.stringify(e[k]) : e[k]}`)
@@ -203,8 +324,26 @@ const SpeechifyProvider = (function () {
    * `marks` come back with UTF-16 offsets relative to `text`, already sorted,
    * which is the shape the highlighter wants.
    */
-  async function synthesize(text, voiceId, signal) {
+  /*
+   * NOTE THE MISSING ABORT SIGNAL, AND WHY IT IS MISSING.
+   *
+   * Aborting the fetch does not stop Speechify working. Measured directly: one
+   * second into a long request the client abort was issued, and the account's
+   * single concurrency slot stayed occupied for another ~4 seconds — the server
+   * carried on generating. Generation is what is billed, so an abandoned
+   * request costs exactly as much as a completed one and yields nothing.
+   *
+   * So once a request has STARTED it is left to finish, and its audio is cached
+   * even if whoever asked for it has since paused, skipped away or closed the
+   * player. The money is spent either way; this at least buys the audio, which
+   * is then free the next time that passage is read.
+   *
+   * Abort still matters, but earlier: a job sitting in the queue has not been
+   * sent yet, and dropping that genuinely saves the charge. See pump().
+   */
+  async function synthesize(text, voiceId) {
     const reqStart = Date.now();
+    stats.requests++;
     log("request", { chars: text.length, voice: voiceId });
 
     if (keyWasRejected()) {
@@ -225,7 +364,6 @@ const SpeechifyProvider = (function () {
         audio_format: "mp3",
         model: MODEL,
       }),
-      signal: signal,
     });
 
     if (!res.ok) throw await describeFailure(res);
@@ -290,9 +428,18 @@ const SpeechifyProvider = (function () {
     if (!parts.length) throw new Error("Speechify returned no audio");
 
     const blob = new Blob(parts, { type: "audio/mpeg" });
+    /*
+     * `billed` here is what Speechify reported. It is summed across events, and
+     * if the API sends a running total rather than a delta that sum overstates
+     * it — so the invoice figure we trust is the characters we SENT, which is
+     * what is actually charged for.
+     */
+    stats.billedChars += text.length;
+    stats.fetched[excerpt(text)] = text.length;
     log("audio-ready", { chars: text.length, ms: Date.now() - reqStart,
                          kb: Math.round(blob.size / 1024), words: marks.length,
-                         billed: billed });
+                         reportedBilled: billed,
+                         totalBilledChars: stats.billedChars });
     return { url: URL.createObjectURL(blob), marks: marks, billed: billed, blob: blob };
   }
 
@@ -392,6 +539,7 @@ const SpeechifyProvider = (function () {
        * played.
        */
       if (job.signal && job.signal.aborted) {
+        stats.dropped++;
         log("dropped", { for: job.label, why: "abandoned before its turn" });
         job.reject(abortError());
         continue;
@@ -451,15 +599,18 @@ const SpeechifyProvider = (function () {
   async function synthesizeWithRetry(text, voiceId, signal, label) {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await synthesize(text, voiceId, signal);
+        return await synthesize(text, voiceId);
       } catch (err) {
         if (err && err.name === "AbortError") throw err;
         if (!err || !err.retryable || attempt >= RETRY_MS.length) {
+          stats.failed++;
           log("failed", { for: label, attempt: attempt + 1,
                           why: String(err && err.message).slice(0, 90) });
           throw err;
         }
         const waitMs = err.retryAfterMs || RETRY_MS[attempt];
+        stats.retries++;
+        if (err.rateLimited) stats.rateLimited++;
         log("retry", { for: label, attempt: attempt + 1, waitMs: waitMs,
                        why: err.rateLimited ? "rate limited" : "server error" });
         await sleep(waitMs, signal);
@@ -664,10 +815,19 @@ const SpeechifyProvider = (function () {
   function acquire(text, voiceId, signal) {
     const key = cacheKey(text, voiceId);
     const hit = cache.get(key);
-    if (hit) { log("cache-hit", { chars: text.length, from: "memory" }); return Promise.resolve(hit); }
+    if (hit) {
+      stats.memHits++; stats.savedChars += text.length;
+      log("cache-hit", { chars: text.length, from: "memory",
+                         totalSavedChars: stats.savedChars });
+      return Promise.resolve(hit);
+    }
 
     const pending = inFlight.get(key);
-    if (pending) { log("shared", { chars: text.length }); return pending; }
+    if (pending) {
+      stats.shared++; stats.savedChars += text.length;
+      log("shared", { chars: text.length, totalSavedChars: stats.savedChars });
+      return pending;
+    }
 
     const label = `${text.length}ch "${text.slice(0, 24).replace(/\s+/g, " ")}…"`;
 
@@ -681,12 +841,19 @@ const SpeechifyProvider = (function () {
       if (rec && rec.blob) {
         const entry = { url: URL.createObjectURL(rec.blob), marks: rec.marks, blob: rec.blob };
         remember(key, entry);
+        stats.diskHits++; stats.savedChars += text.length;
         log("cache-hit", { chars: text.length, from: "disk",
-                           kb: Math.round((rec.bytes || 0) / 1024) });
+                           kb: Math.round((rec.bytes || 0) / 1024),
+                           totalSavedChars: stats.savedChars });
         return entry;
       }
       const fresh = await enqueue(
         () => synthesizeWithRetry(text, voiceId, signal, label), label, signal);
+      /*
+       * Cached unconditionally. Whoever asked may have paused or skipped by
+       * now, but the characters have been billed, so the audio is worth keeping
+       * — it makes that passage free the next time it is read.
+       */
       remember(key, fresh);
       if (fresh.blob) diskPut(key, fresh.blob, fresh.marks);   // not awaited
       return fresh;
@@ -892,7 +1059,17 @@ const SpeechifyProvider = (function () {
      */
     async function chooseSegments() {
       const wholeKey = cacheKey(text, voiceId);
-      alreadyHave = cache.has(wholeKey) || await diskHas(wholeKey);
+      /*
+       * IN FLIGHT COUNTS AS HAVING IT.
+       *
+       * Checking only memory and disk misses the window where the whole chunk
+       * has been requested but has not arrived — which is precisely the moment
+       * a pause-and-resume lands in. The resumed read saw no cached whole
+       * chunk, split it, and bought a head and a tail alongside the whole one
+       * already on its way: the same passage paid for twice.
+       */
+      alreadyHave = cache.has(wholeKey) || inFlight.has(wholeKey) ||
+                    await diskHas(wholeKey);
 
       const allSegments = alreadyHave
         ? [text]
@@ -995,6 +1172,9 @@ const SpeechifyProvider = (function () {
       currentUrl = entry.url;
       inUse.add(currentUrl);
 
+      const heard = excerpt(segments[i]);
+      stats.played[heard] = (stats.played[heard] || 0) + 1;
+
       audio.src = entry.url;
       audio.playbackRate = opts.rate || 1;
 
@@ -1046,7 +1226,8 @@ const SpeechifyProvider = (function () {
          * it could not honour the next time a chunk was cold.
          */
         if (!alreadyHave) recordFirstAudio(waited);
-        log("sound", { waitedMs: Math.round(waited), from: alreadyHave ? "cache" : "network" });
+        log("sound", { waitedMs: Math.round(waited), chars: segments[0].length,
+                       from: alreadyHave ? "cache" : "network" });
         endStatus("speaking");
 
         /*
@@ -1171,6 +1352,7 @@ const SpeechifyProvider = (function () {
     clearDisk: clearDisk,
 
     // Diagnostics.
+    costReport: costReport,
     getLog: getLog,
     clearLog: clearLog,
     formatLog: formatLog,

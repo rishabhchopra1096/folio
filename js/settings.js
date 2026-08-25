@@ -362,6 +362,19 @@ const Settings = (function () {
       });
     }
 
+    /*
+     * Start a clean session. The log and its running totals persist across
+     * reloads on purpose — a reading session spans them — so there has to be a
+     * way to say "measure from here".
+     */
+    const resetBtn = document.getElementById("speechify-log-reset-btn");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => {
+        SpeechifyProvider.clearLog();
+        setStatus(status, "Log reset — this session starts from zero", "ok");
+      });
+    }
+
     clearBtn.addEventListener("click", () => {
       SpeechifyProvider.clearKey();
       input.value = "";
