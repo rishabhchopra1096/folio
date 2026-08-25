@@ -538,6 +538,8 @@ const SpeechifyProvider = (function () {
        * arrives. Running it anyway spends money on audio that will never be
        * played.
        */
+      if (job.key) queuedByKey.delete(job.key);
+
       if (job.signal && job.signal.aborted) {
         stats.dropped++;
         log("dropped", { for: job.label, why: "abandoned before its turn" });
@@ -553,13 +555,34 @@ const SpeechifyProvider = (function () {
     }
   }
 
-  function enqueue(run, label, signal) {
+  /* Jobs still waiting to be sent, by cache key, so a second caller can claim
+     one before it is thrown away. See keepQueued. */
+  const queuedByKey = new Map();
+
+  function enqueue(run, label, signal, key) {
     return new Promise(function (resolve, reject) {
-      queue.push({ run: run, resolve: resolve, reject: reject,
-                   label: label, signal: signal });
+      const job = { run: run, resolve: resolve, reject: reject,
+                    label: label, signal: signal, key: key };
+      queue.push(job);
+      if (key) queuedByKey.set(key, job);
       if (queue.length > 1) log("queued", { for: label, ahead: queue.length - 1 });
       pump();
     });
+  }
+
+  /*
+   * Somebody else wants this too, so it must survive the first caller losing
+   * interest.
+   *
+   * A real session showed what it costs otherwise: play was pressed, the
+   * request queued, that attempt was superseded two seconds later, and
+   * dropping its queued job killed the request the SECOND attempt was already
+   * waiting on. The chunk had to be asked for all over again, sixteen seconds
+   * later.
+   */
+  function keepQueued(key) {
+    const job = queuedByKey.get(key);
+    if (job) job.signal = null;
   }
 
   /*
@@ -824,6 +847,7 @@ const SpeechifyProvider = (function () {
 
     const pending = inFlight.get(key);
     if (pending) {
+      keepQueued(key);            // a second claimant: it must not be dropped now
       stats.shared++; stats.savedChars += text.length;
       log("shared", { chars: text.length, totalSavedChars: stats.savedChars });
       return pending;
@@ -848,7 +872,7 @@ const SpeechifyProvider = (function () {
         return entry;
       }
       const fresh = await enqueue(
-        () => synthesizeWithRetry(text, voiceId, signal, label), label, signal);
+        () => synthesizeWithRetry(text, voiceId, signal, label), label, signal, key);
       /*
        * Cached unconditionally. Whoever asked may have paused or skipped by
        * now, but the characters have been billed, so the audio is worth keeping
@@ -1100,6 +1124,18 @@ const SpeechifyProvider = (function () {
        */
       wanted[0] = acquire(segments[0], voiceId, controller.signal);
       wanted[0].catch(() => { /* surfaced when we await it */ });
+
+      /*
+       * The lookahead goes in AFTER the chunk being played, never before.
+       *
+       * This used to fire from the body of speak(), which runs before this
+       * function's `await diskHas` resolves — so with one request allowed at a
+       * time the NEXT chunk was synthesised first and the one you were waiting
+       * for queued behind it. A real session showed 22 seconds between pressing
+       * play and hearing anything, six of them spent rendering a passage that
+       * had not been reached yet.
+       */
+      if (opts.next) prefetch(opts.next, voiceId);
     }
 
     const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -1254,12 +1290,6 @@ const SpeechifyProvider = (function () {
       if (!stopped) done(err);
     });
 
-    /*
-     * Warm the chunk that comes next while this one plays. Without it every
-     * chunk boundary would pay the full synthesis wait again, which is audible
-     * as a gap roughly every twenty seconds.
-     */
-    if (opts.next) prefetch(opts.next, voiceId);
 
     return {
       stop: function () {

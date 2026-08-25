@@ -210,6 +210,30 @@ console.log("\n=== the money leaks found in the audit ===");
      /!inUse\.has\(dropped\.url\)/.test(src));
 }
 
+console.log("\n=== what a real session log exposed ===");
+{
+  const src = fs.readFileSync(REPO + "/js/speechify.js", "utf8");
+
+  /*
+   * With ONE request allowed at a time, whatever is enqueued first is what you
+   * wait for. A logged session spent 6s rendering the NEXT chunk before
+   * starting the one that had just been asked for, and 22s passed before any
+   * sound came out.
+   */
+  const chooseAt = src.indexOf("wanted[0] = acquire(segments[0]");
+  const prefetchAt = src.indexOf("if (opts.next) prefetch(opts.next, voiceId);");
+  ok("the lookahead is queued AFTER the chunk being played",
+     chooseAt !== -1 && prefetchAt !== -1 && prefetchAt > chooseAt,
+     `current at ${chooseAt}, lookahead at ${prefetchAt}`);
+  ok("and there is only one place it can be fired from",
+     src.split("prefetch(opts.next").length - 1 === 1);
+
+  ok("a queued job a second caller is waiting on is not dropped",
+     /function keepQueued/.test(src) && /keepQueued\(key\);/.test(src));
+  ok("jobs are tracked by key so they can be claimed",
+     /queuedByKey/.test(src));
+}
+
 console.log("\n=== the head must out-speak the tail's download ===");
 {
   /* Measured: download ~ 0.80s + 0.00705s/char, speech ~ 0.051s/char. */
