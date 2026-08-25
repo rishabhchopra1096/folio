@@ -612,3 +612,42 @@
     display: flex !important;
   }
 }
+
+
+/* ── DRAGGING PAGES — reparent and reorder ──
+   Three drop targets per row: a line above or below means "put it here among
+   the siblings", a tinted row means "put it inside this page". They have to
+   look different, because they do different things. */
+.page-item[draggable="true"] {
+  /* Rows are clickable AND draggable; grab is the honest cursor for that. */
+  cursor: grab;
+}
+.page-item.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+/* Inside — this page becomes the parent. */
+.page-item.drop-inside {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  border-radius: 6px;
+}
+
+/* Above / below — a seam between siblings. Drawn with an inset shadow rather
+   than a border so the row does not change height and shove the tree around
+   as you drag over it. */
+.page-item.drop-above { box-shadow: inset 0 2px 0 0 var(--accent); }
+.page-item.drop-below { box-shadow: inset 0 -2px 0 0 var(--accent); }
+
+/* The space under the tree: drop here to make a page top level again. */
+#sidebar-root-drop {
+  min-height: 48px;
+  margin: 4px 8px 12px;
+  border-radius: 8px;
+  transition: background 0.12s, box-shadow 0.12s;
+}
+#sidebar-root-drop.drop-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}

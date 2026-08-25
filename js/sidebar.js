@@ -60,6 +60,41 @@ const SidebarUI = (function () {
       const el = buildPageItem(doc, 0);
       pagesContainer.appendChild(el);
     });
+
+    pagesContainer.appendChild(buildRootDropZone());
+  }
+
+  /*
+   * The empty space below the tree accepts a drop and makes the page top level.
+   *
+   * Without it there is no way to UN-nest by dragging — only to drag onto some
+   * other root page, which is a different intent and leaves a page you wanted
+   * at the top buried one level down.
+   */
+  function buildRootDropZone() {
+    const zone = document.createElement("div");
+    zone.id = "sidebar-root-drop";
+
+    zone.addEventListener("dragover", (e) => {
+      if (!draggingId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      clearDropMarks();
+      zone.classList.add("drop-active");
+    });
+    zone.addEventListener("dragleave", () => zone.classList.remove("drop-active"));
+    zone.addEventListener("drop", (e) => {
+      if (!draggingId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const moved = draggingId;
+      draggingId = null;
+      clearDropMarks();
+      FolioStore.reorderDocument(moved, null, Number.MAX_SAFE_INTEGER);
+      renderPageTree();
+    });
+
+    return zone;
   }
 
   // Build a single page item element (recursively includes children)
@@ -139,6 +174,8 @@ const SidebarUI = (function () {
       window.location.hash = `#/doc/${doc.id}`;
     });
 
+    attachDragHandlers(item, doc);
+
     wrapper.appendChild(item);
 
     // Render children if expanded
@@ -152,6 +189,162 @@ const SidebarUI = (function () {
     }
 
     return wrapper;
+  }
+
+  // ==========================================================================
+  // DRAGGING PAGES — reparent and reorder
+  // ==========================================================================
+
+  /*
+   * Every row is three drop targets, not one.
+   *
+   *   ┌──────────────────────────┐
+   *   │  top 25%    → drop ABOVE │   reorder among siblings
+   *   │  middle 50% → drop INSIDE│   becomes a child of this page
+   *   │  bottom 25% → drop BELOW │   reorder among siblings
+   *   └──────────────────────────┘
+   *
+   * One zone cannot express both "put it here in the list" and "put it inside
+   * this page", and both are things people expect from a tree. The middle is
+   * the larger half because nesting is the more common intent; the edges stay
+   * big enough to hit deliberately.
+   */
+  let draggingId = null;
+  let expandTimer = null;
+
+  const ZONE_INSIDE = "inside";
+  const ZONE_ABOVE = "above";
+  const ZONE_BELOW = "below";
+  const AUTO_EXPAND_MS = 600;
+
+  function zoneFor(item, clientY) {
+    const r = item.getBoundingClientRect();
+    const y = (clientY - r.top) / (r.height || 1);
+    if (y < 0.25) return ZONE_ABOVE;
+    if (y > 0.75) return ZONE_BELOW;
+    return ZONE_INSIDE;
+  }
+
+  function clearDropMarks() {
+    pagesContainer.querySelectorAll(".drop-inside, .drop-above, .drop-below")
+      .forEach((el) => el.classList.remove("drop-inside", "drop-above", "drop-below"));
+    const root = document.getElementById("sidebar-root-drop");
+    if (root) root.classList.remove("drop-active");
+    if (expandTimer) { clearTimeout(expandTimer); expandTimer = null; }
+  }
+
+  /*
+   * A page cannot be dropped into itself or into anything beneath it. Allowing
+   * it would leave the subtree in storage but unreachable from the root — it
+   * would simply vanish from the sidebar, which looks exactly like data loss.
+   */
+  function dropAllowed(target, zone) {
+    if (!draggingId) return false;
+    if (target.id === draggingId) return false;
+
+    // Dropping INSIDE makes the target the new parent.
+    if (zone === ZONE_INSIDE) {
+      return !FolioStore.isDescendantOf(target.id, draggingId);
+    }
+
+    /*
+     * Dropping above or below makes the target's PARENT the new parent — which
+     * is its own way to build a cycle. Dragging A onto the gap beside its own
+     * child A1 would make A a child of A. Checking only the target would let
+     * that through.
+     */
+    const pid = target.parentId || null;
+    if (!pid) return true;                     // the root can never be a descendant
+    if (pid === draggingId) return false;
+    return !FolioStore.isDescendantOf(pid, draggingId);
+  }
+
+  function attachDragHandlers(item, doc) {
+    item.draggable = true;
+
+    item.addEventListener("dragstart", (e) => {
+      draggingId = doc.id;
+      /*
+       * A payload is required or Firefox refuses to start the drag, and the
+       * custom type keeps this distinguishable from a file drop — the sidebar
+       * already accepts dragged .md files and must keep doing so.
+       */
+      e.dataTransfer.setData("application/x-folio-page", doc.id);
+      e.dataTransfer.effectAllowed = "move";
+      item.classList.add("dragging");
+    });
+
+    item.addEventListener("dragend", () => {
+      draggingId = null;
+      item.classList.remove("dragging");
+      clearDropMarks();
+    });
+
+    item.addEventListener("dragover", (e) => {
+      if (!draggingId) return;                 // a file, or something else
+      const zone = zoneFor(item, e.clientY);
+      if (!dropAllowed(doc, zone)) {
+        e.dataTransfer.dropEffect = "none";
+        return;                                // no preventDefault → refused
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+
+      if (!item.classList.contains("drop-" + zone)) {
+        clearDropMarks();
+        item.classList.add("drop-" + zone);
+      }
+
+      /*
+       * Hovering a collapsed page opens it, so you can drop into a nested
+       * position without letting go and picking the drag up again.
+       */
+      if (zone === ZONE_INSIDE && !expandedNodes.has(doc.id) &&
+          FolioStore.getChildDocuments(doc.id).length && !expandTimer) {
+        expandTimer = setTimeout(() => {
+          expandTimer = null;
+          expandedNodes.add(doc.id);
+          renderPageTree();
+        }, AUTO_EXPAND_MS);
+      }
+    });
+
+    item.addEventListener("dragleave", () => {
+      item.classList.remove("drop-inside", "drop-above", "drop-below");
+      if (expandTimer) { clearTimeout(expandTimer); expandTimer = null; }
+    });
+
+    item.addEventListener("drop", (e) => {
+      if (!draggingId) return;
+      e.preventDefault();
+      e.stopPropagation();                     // never reach the file importer
+      const moved = draggingId;
+      const zone = zoneFor(item, e.clientY);
+      /*
+       * Decide BEFORE clearing the drag state. dropAllowed reads draggingId, so
+       * nulling it first made every drop refuse itself — including the ones
+       * that should have worked.
+       */
+      const allowed = dropAllowed(doc, zone);
+      clearDropMarks();
+      draggingId = null;
+
+      if (!allowed) return;
+
+      if (zone === ZONE_INSIDE) {
+        FolioStore.reorderDocument(moved, doc.id, Number.MAX_SAFE_INTEGER);
+        expandedNodes.add(doc.id);
+      } else {
+        const parentId = doc.parentId || null;
+        const siblings = (parentId ? FolioStore.getChildDocuments(parentId)
+                                   : FolioStore.getTopLevelDocuments())
+          .filter((d) => d.id !== moved);
+        let index = siblings.findIndex((d) => d.id === doc.id);
+        if (index === -1) index = siblings.length;
+        FolioStore.reorderDocument(moved, parentId, zone === ZONE_BELOW ? index + 1 : index);
+      }
+      renderPageTree();
+    });
   }
 
   // ==========================================================================

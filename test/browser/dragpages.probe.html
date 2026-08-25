@@ -1,0 +1,176 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dragging pages into pages</title>
+<!--
+  Drives the real sidebar with real drag events.
+
+  The assertion that matters most is the refusal: dropping a page into its own
+  descendant would leave that subtree in storage but unreachable from the root,
+  so it would disappear from the sidebar and look exactly like losing it.
+
+  Second most important is that dragging a PAGE has not broken dragging a FILE
+  in from Finder, which the sidebar has always accepted.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/*  a
+ *  ├── a1
+ *  │   └── a1x
+ *  └── a2
+ *  b
+ */
+function seed() {
+  const t = (n) => new Date(1787000000000 + n * 1000).toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: "a",   title: "Alpha",   icon: "", parentId: null, order: 0, createdAt: t(0), updatedAt: t(0) },
+    { id: "b",   title: "Bravo",   icon: "", parentId: null, order: 1, createdAt: t(1), updatedAt: t(1) },
+    { id: "a1",  title: "Alpha1",  icon: "", parentId: "a",  order: 0, createdAt: t(2), updatedAt: t(2) },
+    { id: "a2",  title: "Alpha2",  icon: "", parentId: "a",  order: 1, createdAt: t(3), updatedAt: t(3) },
+    { id: "a1x", title: "Alpha1X", icon: "", parentId: "a1", order: 0, createdAt: t(4), updatedAt: t(4) },
+  ]));
+  ["a", "b", "a1", "a2", "a1x"].forEach((id) => {
+    localStorage.setItem("folio_doc_" + id,
+      JSON.stringify({ time: Date.now(), blocks: [{ type: "paragraph", data: { text: id } }] }));
+    localStorage.setItem("folio_comments_" + id, "[]");
+    localStorage.setItem("folio_highlights_" + id, "[]");
+  });
+}
+
+async function main() {
+  seed();
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:900px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2000);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__store = FolioStore; window.__side = SidebarUI;");
+
+  const row = (id) => d.querySelector(`.page-item[data-id="${id}"]`);
+  const kids = (p) => (p ? w.__store.getChildDocuments(p) : w.__store.getTopLevelDocuments())
+      .map((x) => x.id).join(",");
+
+  // Expand everything so every row is on screen.
+  ["a", "a1"].forEach((id) => {
+    const t = row(id) && row(id).querySelector(".page-item-toggle");
+    if (t) t.click();
+  });
+  await wait(400);
+
+  ok("the tree rendered", !!row("a") && !!row("b"), "rows missing");
+  ok("nested rows are visible", !!row("a1") && !!row("a1x"),
+     "a1=" + !!row("a1") + " a1x=" + !!row("a1x"));
+  ok("rows are draggable", row("a").draggable === true);
+  ok("there is a root drop zone", !!d.getElementById("sidebar-root-drop"));
+
+  /* A DataTransfer the handlers can read, plus a y inside the wanted zone. */
+  function dt() {
+    const store = {};
+    return { setData: (k, v) => { store[k] = v; }, getData: (k) => store[k] || "",
+             files: [], effectAllowed: "", dropEffect: "" };
+  }
+  function yFor(el, zone) {
+    const r = el.getBoundingClientRect();
+    return zone === "above" ? r.top + r.height * 0.1
+         : zone === "below" ? r.top + r.height * 0.9
+         : r.top + r.height * 0.5;
+  }
+  function fire(el, type, transfer, clientY) {
+    const e = new w.Event(type, { bubbles: true, cancelable: true });
+    e.dataTransfer = transfer;
+    if (clientY !== undefined) e.clientY = clientY;
+    el.dispatchEvent(e);
+    return e;
+  }
+  async function drag(fromId, toId, zone) {
+    const t = dt();
+    fire(row(fromId), "dragstart", t);
+    const target = zone === "root" ? d.getElementById("sidebar-root-drop") : row(toId);
+    const y = zone === "root" ? undefined : yFor(target, zone);
+    fire(target, "dragover", t, y);
+    fire(target, "drop", t, y);
+    const src = row(fromId);
+    if (src) fire(src, "dragend", t);
+    await wait(300);
+  }
+
+  // ── THE REFUSAL ──
+  await drag("a", "a1", "inside");
+  ok("a page CANNOT be dropped into its own child",
+     kids(null) === "a,b" && kids("a") === "a1,a2",
+     `root=[${kids(null)}] a=[${kids("a")}]`);
+
+  await drag("a", "a1x", "inside");
+  ok("nor into a deeper descendant", kids(null) === "a,b", `root=[${kids(null)}]`);
+
+  await drag("a", "a", "inside");
+  ok("nor into itself", kids(null) === "a,b", `root=[${kids(null)}]`);
+
+  /*
+   * The subtle one: dropping A into the GAP beside its own child would make
+   * A's parent A1's parent — which is A itself.
+   */
+  await drag("a", "a1", "below");
+  ok("nor beside its own child, which would reparent it under itself",
+     kids(null) === "a,b" && !w.__store.getDocument("a").meta.parentId,
+     `root=[${kids(null)}] parent=${w.__store.getDocument("a").meta.parentId}`);
+
+  ok("every page is still reachable after four refused drops",
+     ["a", "b", "a1", "a2", "a1x"].every((id) => !!w.__store.getDocument(id)));
+
+  // ── A REAL MOVE ──
+  await drag("b", "a", "inside");
+  ok("dropping a page onto another makes it a child",
+     kids("a").indexOf("b") !== -1, `a=[${kids("a")}]`);
+  ok("and it left the root", kids(null) === "a", `root=[${kids(null)}]`);
+  await wait(200);
+  ok("the moved page is rendered under its new parent", !!row("b"));
+
+  // ── UN-NEST VIA THE ROOT ZONE ──
+  await drag("b", null, "root");
+  ok("dropping on the empty space below returns it to the top level",
+     kids(null).indexOf("b") !== -1, `root=[${kids(null)}]`);
+
+  // ── REORDER AMONG SIBLINGS ──
+  const beforeOrder = kids("a");
+  await drag("a2", "a1", "above");
+  ok("dropping above a sibling reorders rather than nests",
+     kids("a") === "a2,a1", `was [${beforeOrder}] now [${kids("a")}]`);
+  ok("neither one changed parent",
+     w.__store.getDocument("a2").meta.parentId === "a" &&
+     w.__store.getDocument("a1").meta.parentId === "a");
+
+  // ── ORDER SURVIVES A RELOAD ──
+  const order = kids("a");
+  w.location.reload();
+  await new Promise((res) => { f.onload = res; });
+  await wait(1500);
+  ok("the order is still the same after a reload",
+     f.contentWindow.eval("FolioStore.getChildDocuments('a').map(d=>d.id).join(',')") === order,
+     order);
+
+  // ── FILE IMPORT MUST STILL WORK ──
+  const w2 = f.contentWindow, d2 = f.contentDocument;
+  const before = JSON.parse(w2.localStorage.getItem("folio_documents")).length;
+  const fileEvent = new w2.Event("drop", { bubbles: true, cancelable: true });
+  fileEvent.dataTransfer = {
+    files: [new w2.File(["# Imported\n\nHello."], "imported.md", { type: "text/markdown" })],
+    getData: () => "",
+  };
+  d2.body.dispatchEvent(fileEvent);
+  await wait(900);
+  const after = JSON.parse(w2.localStorage.getItem("folio_documents")).length;
+  ok("dragging a .md file in still imports it", after === before + 1,
+     `${before} -> ${after}`);
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

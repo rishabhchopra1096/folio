@@ -71,13 +71,102 @@ const FolioStore = (function () {
   }
 
   // Get top-level documents (no parent)
+  /*
+   * Siblings come back in THEIR OWN order.
+   *
+   * listDocuments sorts by `order` across the whole collection, which mixes
+   * pages from different parents that happen to share a number — harmless while
+   * nothing ever reordered anything, wrong the moment dragging exists. Ordering
+   * is only ever meaningful among siblings, so it is applied here.
+   */
+  function sortSiblings(docs) {
+    return docs.sort(function (a, b) {
+      const ao = typeof a.order === "number" ? a.order : Infinity;
+      const bo = typeof b.order === "number" ? b.order : Infinity;
+      if (ao !== bo) return ao - bo;
+      // A tie means neither was placed deliberately; fall back to age so the
+      // tree at least stops rearranging itself between reloads.
+      return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+    });
+  }
+
   function getTopLevelDocuments() {
-    return listDocuments().filter((d) => !d.parentId);
+    return sortSiblings(listDocuments().filter((d) => !d.parentId));
   }
 
   // Get children of a specific document
   function getChildDocuments(parentId) {
-    return listDocuments().filter((d) => d.parentId === parentId);
+    return sortSiblings(listDocuments().filter((d) => d.parentId === parentId));
+  }
+
+  /*
+   * Is `maybeAncestor` somewhere above `id` in the tree?
+   *
+   * The guard that stops a page being dropped into its own descendant. Without
+   * it the subtree stays in storage but becomes unreachable from the root — it
+   * vanishes from the sidebar, which is indistinguishable from losing it.
+   *
+   * Walks upward with a hop limit rather than a visited set: if storage were
+   * already cyclic — which this exists to prevent, but a hand-edited backup
+   * could manage it — an unbounded walk would hang the tab.
+   */
+  function isDescendantOf(id, maybeAncestor) {
+    if (!id || !maybeAncestor) return false;
+    const docs = readJSON("folio_documents", []);
+    const byId = new Map(docs.map((d) => [d.id, d]));
+    let cur = byId.get(id);
+    for (let hops = 0; cur && hops < 1000; hops++) {
+      if (cur.parentId === maybeAncestor) return true;
+      cur = cur.parentId ? byId.get(cur.parentId) : null;
+    }
+    return false;
+  }
+
+  /*
+   * Move a page: a new parent, a new position among its siblings, or both.
+   * Returns true only if something actually changed.
+   *
+   * BOTH sibling lists are renumbered from zero afterwards — the one it left
+   * and the one it joined — so `order` never develops gaps or ties. Ties are
+   * what let the tree quietly rearrange itself between reloads.
+   */
+  function reorderDocument(id, newParentId, newIndex) {
+    const parentId = newParentId || null;
+
+    // A page cannot contain itself, directly or at any depth.
+    if (id === parentId) return false;
+    if (parentId && isDescendantOf(parentId, id)) return false;
+
+    const docs = readJSON("folio_documents", []);
+    const moved = docs.find((d) => d.id === id);
+    if (!moved) return false;
+
+    const oldParentId = moved.parentId || null;
+    const siblingsOf = (pid) => sortSiblings(
+      docs.filter((d) => d.id !== id && (d.parentId || null) === pid));
+
+    const target = siblingsOf(parentId);
+    const at = Math.max(0, Math.min(
+      typeof newIndex === "number" ? newIndex : target.length, target.length));
+
+    // Already exactly there — do not churn updatedAt or force a re-render.
+    if (oldParentId === parentId) {
+      const now = sortSiblings(docs.filter((d) => (d.parentId || null) === parentId));
+      if (now.indexOf(moved) === at) return false;
+    }
+
+    moved.parentId = parentId;
+    target.splice(at, 0, moved);
+    target.forEach((d, i) => { d.order = i; });
+
+    // The list it left now has a hole in it.
+    if (oldParentId !== parentId) {
+      siblingsOf(oldParentId).forEach((d, i) => { d.order = i; });
+    }
+
+    moved.updatedAt = new Date().toISOString();
+    writeJSON("folio_documents", docs);
+    return true;
   }
 
   // Get a single document's metadata and content (Editor.js JSON)
@@ -407,5 +496,7 @@ const FolioStore = (function () {
     saveSettings,
     exportAll,
     importAll,
+    reorderDocument,
+    isDescendantOf,
   };
 })();
