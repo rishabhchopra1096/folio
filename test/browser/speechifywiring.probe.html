@@ -66,18 +66,61 @@ async function main() {
   ok("...a save button", !!d.getElementById("speechify-key-save-btn"));
   ok("...a test button", !!d.getElementById("speechify-key-test-btn"));
   ok("...a clear button", !!d.getElementById("speechify-key-clear-btn"));
-  const sel = d.getElementById("speechify-voice-select");
-  ok("...and a voice picker", !!sel);
-  ok("the picker is populated from the provider",
-     !!sel && sel.options.length === 8, sel && String(sel.options.length));
-  ok("the picker is disabled until a key exists", !!sel && sel.disabled === true);
+  ok("there is NOT a second voice picker in settings",
+     !d.getElementById("speechify-voice-select"));
 
-  // ── WITH A KEY: it becomes selectable ──
+  /*
+   * THE REPORTED BUG. The reading bar's voice dropdown listed only the active
+   * engine's voices, so adding a key changed nothing you could see — the good
+   * voices existed with nowhere to pick them.
+   */
+  const vsel = () => d.getElementById("tts-voice");
+  const groups = () => Array.from(vsel().querySelectorAll("optgroup")).map((g) => g.label);
+  const simbaOpts = () => Array.from(vsel().querySelectorAll("optgroup"))
+      .filter((g) => /Speechify/i.test(g.label))
+      .reduce((n, g) => n + g.children.length, 0);
+
+  ok("the reading bar has a voice dropdown", !!vsel());
+  ok("with no key it offers no Speechify voices", simbaOpts() === 0, String(simbaOpts()));
+
+  // ── WITH A KEY ──
   w.localStorage.setItem("folio_speechify_key", "sk_fake_key_for_wiring_test_only");
   ok("now it reports itself available", w.__sp.available() === true);
-  ok("and can be selected", w.__tts.setProvider("speechify") === "speechify");
-  ok("the engine list reflects the change",
-     w.__tts.providerList().find((p) => p.active).id === "speechify");
+  w.__tts.reloadVoices();
+  await wait(200);
+
+  ok("all eight Simba voices appear in the SAME dropdown",
+     simbaOpts() === 8, `${simbaOpts()} — groups: ${groups().join(" / ")}`);
+  ok("they are grouped under the engine name",
+     groups().some((g) => /Speechify/i.test(g)), groups().join(" / "));
+  ok("the system voices are still offered alongside them",
+     groups().length >= 1 && vsel().options.length > 8,
+     `${vsel().options.length} options in ${groups().length} groups`);
+  ok("each option names its engine so the handler cannot guess wrong",
+     Array.from(vsel().options).every((o) => o.value.indexOf("|") !== -1),
+     Array.from(vsel().options).slice(0, 2).map((o) => o.value).join(" , "));
+
+  // Choosing a Simba voice must switch the engine, not just the label.
+  const simba = Array.from(vsel().options).find((o) => o.value.startsWith("speechify|"));
+  ok("a Simba voice is selectable", !!simba);
+  if (simba) {
+    vsel().value = simba.value;
+    vsel().dispatchEvent(new w.Event("change", { bubbles: true }));
+    await wait(200);
+    ok("picking it switches the engine",
+       w.__tts.providerList().find((p) => p.active).id === "speechify",
+       JSON.stringify(w.__tts.providerList().find((p) => p.active)));
+  }
+
+  // And back again, from the same control.
+  const sys = Array.from(vsel().options).find((o) => o.value.startsWith("webspeech|"));
+  if (sys) {
+    vsel().value = sys.value;
+    vsel().dispatchEvent(new w.Event("change", { bubbles: true }));
+    await wait(200);
+    ok("picking a system voice switches back",
+       w.__tts.providerList().find((p) => p.active).id === "webspeech");
+  }
 
   // ── A BROKEN key must not strand the reader ──
   ok("switching back to the system voice always works",

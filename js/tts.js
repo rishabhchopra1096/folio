@@ -1313,9 +1313,29 @@ const TTS = (function () {
 
     const vsel = bar.querySelector("#tts-voice");
     vsel.addEventListener("change", () => {
-      const v = provider().voices().find((x) => x.name === vsel.value);
+      // "engineId|voiceName" — split on the FIRST bar only; names may contain one.
+      const cut = vsel.value.indexOf("|");
+      const pid = cut === -1 ? providerId : vsel.value.slice(0, cut);
+      const name = cut === -1 ? vsel.value : vsel.value.slice(cut + 1);
+
+      const switched = pid !== providerId;
+      if (switched) setProvider(pid);
+
+      const v = provider().voices().find((x) => x.name === name);
       if (!v) return;
       selectedVoice = v;
+
+      /*
+       * Changing engine mid-sentence cannot be done in place — the audio
+       * belongs to the old one. Stop it and pick the same word up on the new
+       * engine, which is what a speed change already does.
+       */
+      if (switched && playing) {
+        if (handle) { handle.stop(); handle = null; }
+        saveSettings();
+        speakChunk(curWord ? curWord.ds : undefined);
+        return;
+      }
       // Mark this as a deliberate choice so it survives future ranking changes.
       const s = FolioStore.getSettings();
       s.ttsVoicePicked = true;
@@ -1326,18 +1346,42 @@ const TTS = (function () {
     });
   }
 
+  /*
+   * ONE dropdown, every engine that can actually run right now.
+   *
+   * The list used to hold only the active engine's voices, so adding a
+   * Speechify key changed nothing you could see — the good voices existed but
+   * there was nowhere to pick them, and a second dropdown elsewhere in Settings
+   * just raised the question of which one was in charge. Voices are what a
+   * reader thinks about; the engine behind one is an implementation detail, so
+   * choosing a voice is what switches engines.
+   *
+   * Each option carries "engineId|voiceName" so the change handler knows both
+   * without a lookup that could match the same name in two engines.
+   */
   function fillVoices() {
     if (!bar) return;
     const vsel = bar.querySelector("#tts-voice");
-    const vs = provider().voices();
     vsel.innerHTML = "";
-    vs.forEach((v) => {
-      const o = document.createElement("option");
-      o.value = v.name;
-      o.textContent = v.name.replace(/\s*\(English.*\)$/, "");
-      vsel.appendChild(o);
+
+    Object.keys(providers).forEach((pid) => {
+      const p = providers[pid];
+      if (!p.available()) return;               // no key, or unsupported here
+      const vs = p.voices();
+      if (!vs.length) return;
+
+      const group = document.createElement("optgroup");
+      group.label = p.label;
+      vs.forEach((v) => {
+        const o = document.createElement("option");
+        o.value = pid + "|" + v.name;
+        o.textContent = v.name.replace(/\s*\(English.*\)$/, "");
+        group.appendChild(o);
+      });
+      vsel.appendChild(group);
     });
-    if (selectedVoice) vsel.value = selectedVoice.name;
+
+    if (selectedVoice) vsel.value = providerId + "|" + selectedVoice.name;
   }
 
   function showBar() { if (bar) bar.classList.add("visible"); }
@@ -1392,6 +1436,7 @@ const TTS = (function () {
     // Before any voice is read: voices belong to an engine.
     setProvider(s.ttsProvider || "webspeech");
     const vs = provider().voices();
+    void vs;
     const stored = s.ttsVoice && vs.find((v) => v.name === s.ttsVoice);
 
     if (stored && s.ttsVoicePicked) {
@@ -1824,7 +1869,7 @@ const TTS = (function () {
     // Engine selection, for Settings.
     setProvider,
     providerList,
-    reloadVoices: loadSettings,
+    reloadVoices: function () { loadSettings(); fillVoices(); },
     isDictating,
     isPlaying: () => playing,
     isSupported: () => WebSpeechProvider.available(),

@@ -232,31 +232,26 @@ const Settings = (function () {
     const testBtn = document.getElementById("speechify-key-test-btn");
     const clearBtn = document.getElementById("speechify-key-clear-btn");
     const status = document.getElementById("speechify-key-status");
-    const select = document.getElementById("speechify-voice-select");
     if (!input || !saveBtn || typeof SpeechifyProvider === "undefined") return;
 
-    function fillVoices() {
-      if (!select) return;
-      const current = SpeechifyProvider.currentVoiceId();
-      select.innerHTML = "";
-      SpeechifyProvider.voices().forEach((v) => {
-        const o = document.createElement("option");
-        o.value = v.id;
-        o.textContent = v.name;
-        if (v.id === current) o.selected = true;
-        select.appendChild(o);
-      });
-      select.disabled = !SpeechifyProvider.hasKey();
-    }
-
+    /*
+     * Persist the choice BEFORE telling TTS to repaint. reloadVoices re-reads
+     * settings, so switching the live engine first and saving after would be
+     * immediately undone by the stale stored value.
+     */
     function useSpeechify(on) {
       if (typeof TTS === "undefined" || !TTS.setProvider) return;
-      TTS.setProvider(on ? "speechify" : "webspeech");
+      const st = FolioStore.getSettings();
+      st.ttsProvider = on ? "speechify" : "webspeech";
+      // Let the new engine choose its own default voice rather than keeping a
+      // name that belongs to the other one.
+      st.ttsVoicePicked = false;
+      FolioStore.saveSettings(st);
+      TTS.setProvider(st.ttsProvider);
       if (TTS.reloadVoices) TTS.reloadVoices();
     }
 
     if (SpeechifyProvider.hasKey()) input.placeholder = maskKey(SpeechifyProvider.getKey());
-    fillVoices();
 
     saveBtn.addEventListener("click", () => {
       const raw = input.value.trim();
@@ -264,9 +259,8 @@ const Settings = (function () {
       SpeechifyProvider.setKey(raw);
       input.value = "";
       input.placeholder = maskKey(raw);
-      fillVoices();
       useSpeechify(true);
-      setStatus(status, "Saved — open a page and press play", "ok");
+      setStatus(status, "Saved — pick a Simba voice in the reading bar", "ok");
     });
 
     if (testBtn) {
@@ -307,18 +301,10 @@ const Settings = (function () {
       SpeechifyProvider.clearKey();
       input.value = "";
       input.placeholder = "sk_...";
-      fillVoices();
       useSpeechify(false);
       setStatus(status, "Cleared — back to the system voice", "muted");
     });
 
-    if (select) {
-      select.addEventListener("change", () => {
-        SpeechifyProvider.setVoiceId(select.value);
-        if (typeof TTS !== "undefined" && TTS.reloadVoices) TTS.reloadVoices();
-        setStatus(status, "Voice set", "ok");
-      });
-    }
   }
 
   /*
