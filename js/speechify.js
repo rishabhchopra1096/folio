@@ -85,6 +85,43 @@ const SpeechifyProvider = (function () {
   const CACHE_MAX = 32;
 
   // ==========================================================================
+  // THE LOG — so a failure can be read afterwards instead of guessed at
+  // ==========================================================================
+
+  /*
+   * Every request, retry, cache hit and failure, with timings.
+   *
+   * Reading aloud fails in ways the console cannot explain on its own: a burst
+   * of 429s says the rate limit was hit but not by how many requests, and a
+   * gap between sentences could be the network, the queue or a retry. This
+   * records enough to tell those apart. Kept in memory only.
+   */
+  const LOG_MAX = 400;
+  const logEntries = [];
+  const t0Session = Date.now();
+
+  function log(ev, fields) {
+    const entry = Object.assign({ t: Date.now() - t0Session, ev: ev }, fields || {});
+    logEntries.push(entry);
+    if (logEntries.length > LOG_MAX) logEntries.shift();
+    return entry;
+  }
+
+  function getLog() { return logEntries.slice(); }
+  function clearLog() { logEntries.length = 0; }
+
+  /* Human-readable, for pasting somewhere. */
+  function formatLog() {
+    return logEntries.map((e) => {
+      const rest = Object.keys(e)
+        .filter((k) => k !== "t" && k !== "ev")
+        .map((k) => `${k}=${typeof e[k] === "object" ? JSON.stringify(e[k]) : e[k]}`)
+        .join(" ");
+      return `${String((e.t / 1000).toFixed(2)).padStart(8)}s  ${e.ev.padEnd(18)} ${rest}`;
+    }).join("\n");
+  }
+
+  // ==========================================================================
   // THE KEY — localStorage only, never in source
   // ==========================================================================
 
@@ -92,12 +129,31 @@ const SpeechifyProvider = (function () {
     try { return localStorage.getItem(KEY_STORAGE) || ""; } catch { return ""; }
   }
   function setKey(k) {
-    try { localStorage.setItem(KEY_STORAGE, String(k || "").trim()); } catch { /* private mode */ }
+    /*
+     * Strip whitespace AND any quotes a copy-paste dragged along. A key with a
+     * stray newline looks identical in a password field and fails with a 401
+     * that reads like the key itself is wrong.
+     */
+    const clean = String(k || "").trim().replace(/^["'\s]+|["'\s]+$/g, "");
+    rejectedKey = null;
+    try { localStorage.setItem(KEY_STORAGE, clean); } catch { /* private mode */ }
   }
   function clearKey() {
     try { localStorage.removeItem(KEY_STORAGE); } catch { /* ignore */ }
   }
   function hasKey() { return !!getKey(); }
+
+  /*
+   * A key the server has already rejected.
+   *
+   * Without this, one bad key produces a burst of 401s: the head, the tail and
+   * the lookahead each fire their own request, and every chunk tries again.
+   * The rejection is remembered against the key itself, so correcting it in
+   * Settings clears the block immediately with nothing to reset by hand.
+   */
+  let rejectedKey = null;
+  function keyWasRejected() { return rejectedKey !== null && rejectedKey === getKey(); }
+  function noteKeyRejected() { rejectedKey = getKey(); }
 
   // ==========================================================================
   // CODE POINTS -> UTF-16
@@ -134,6 +190,15 @@ const SpeechifyProvider = (function () {
    * which is the shape the highlighter wants.
    */
   async function synthesize(text, voiceId, signal) {
+    const reqStart = Date.now();
+    log("request", { chars: text.length, voice: voiceId });
+
+    if (keyWasRejected()) {
+      const err = new Error("Speechify rejected this key — check it in Settings.");
+      err.terminal = true;
+      throw err;
+    }
+
     const res = await fetch(STREAM_URL, {
       method: "POST",
       headers: {
@@ -211,6 +276,9 @@ const SpeechifyProvider = (function () {
     if (!parts.length) throw new Error("Speechify returned no audio");
 
     const blob = new Blob(parts, { type: "audio/mpeg" });
+    log("audio-ready", { chars: text.length, ms: Date.now() - reqStart,
+                         kb: Math.round(blob.size / 1024), words: marks.length,
+                         billed: billed });
     return { url: URL.createObjectURL(blob), marks: marks, billed: billed };
   }
 
@@ -225,7 +293,15 @@ const SpeechifyProvider = (function () {
     let detail = "";
     try {
       const body = await res.json();
-      detail = (body && (body.message || body.error || body.detail)) || "";
+      /*
+       * The message field is not always a string — Speechify returns an object
+       * for some errors, and concatenating it produced the useless
+       * "Speechify: [object Object]" that made a 429 unreadable.
+       */
+      const raw = body && (body.message || body.error || body.detail || body);
+      detail = typeof raw === "string" ? raw
+             : raw ? JSON.stringify(raw).slice(0, 300)
+             : "";
     } catch { /* body was not JSON */ }
 
     const err = new Error(
@@ -234,10 +310,26 @@ const SpeechifyProvider = (function () {
 
     if (res.status === 401 || res.status === 403) {
       err.terminal = true;
-      err.message = "Speechify rejected the API key — check it in Settings.";
+      noteKeyRejected();
+      /*
+       * Describe the key without printing it. A truncated paste is by far the
+       * likeliest cause, and a length is enough to see it — a working key is
+       * ~45 characters and starts "sk_".
+       */
+      const k = getKey();
+      const shape = !k ? "no key is saved"
+        : `the saved key is ${k.length} characters and starts "${k.slice(0, 3)}"`;
+      err.message = `Speechify rejected the API key — ${shape}. Re-paste it in Settings.`;
     } else if (res.status === 402 || /credit|quota|billing|subscription/i.test(detail)) {
       err.terminal = true;                 // more waiting will not fix an empty account
-    } else if (res.status === 429 || res.status >= 500) {
+    } else if (res.status === 429) {
+      err.retryable = true;
+      err.rateLimited = true;
+      // Honour the server's own figure when it gives one.
+      const ra = res.headers.get("retry-after");
+      if (ra) err.retryAfterMs = (parseFloat(ra) || 0) * 1000;
+      err.message = "Speechify is rate limiting — waiting before trying again.";
+    } else if (res.status >= 500) {
       err.retryable = true;
     }
     return err;
@@ -248,6 +340,79 @@ const SpeechifyProvider = (function () {
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
+  }
+
+  // ==========================================================================
+  // ONE REQUEST AT A TIME — because that is literally the plan's limit
+  // ==========================================================================
+
+  /*
+   * MEASURED, not guessed. Firing two requests at once returns:
+   *
+   *   429 {"error":{"code":"concurrency_limit_reached",
+   *        "message":"Concurrency limit exceeded: your plan allows 1
+   *        simultaneous request"}}
+   *
+   * The first design fired three per chunk — a head, a tail and a lookahead —
+   * so two of every three were refused, the chunk died, and reading stopped
+   * after a sentence or two. Everything goes through this queue now; nothing
+   * calls the API directly.
+   *
+   * A second, separate limit exists on sustained rate: 21 sequential requests
+   * in 17 seconds also drew a 429. The retry ladder below covers both, and the
+   * server tells us how long to wait in a Retry-After header.
+   */
+  const MAX_CONCURRENT = 1;
+  let activeRequests = 0;
+  const queue = [];
+
+  function pump() {
+    while (activeRequests < MAX_CONCURRENT && queue.length) {
+      const job = queue.shift();
+      activeRequests++;
+      job.run().then(job.resolve, job.reject).then(function () {
+        activeRequests--;
+        pump();
+      });
+    }
+  }
+
+  function enqueue(run, label) {
+    return new Promise(function (resolve, reject) {
+      queue.push({ run: run, resolve: resolve, reject: reject });
+      if (queue.length > 1) log("queued", { for: label, ahead: queue.length - 1 });
+      pump();
+    });
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /*
+   * Waiting out a refusal rather than reporting it.
+   *
+   * A concurrency 429 clears the moment the request ahead finishes, so the
+   * first wait is short. The server's own Retry-After is preferred over our
+   * guess whenever it sends one.
+   */
+  const RETRY_MS = [700, 2000, 5000, 10000];
+
+  async function synthesizeWithRetry(text, voiceId, signal, label) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await synthesize(text, voiceId, signal);
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err;
+        if (!err || !err.retryable || attempt >= RETRY_MS.length) {
+          log("failed", { for: label, attempt: attempt + 1,
+                          why: String(err && err.message).slice(0, 90) });
+          throw err;
+        }
+        const waitMs = err.retryAfterMs || RETRY_MS[attempt];
+        log("retry", { for: label, attempt: attempt + 1, waitMs: waitMs,
+                       why: err.rateLimited ? "rate limited" : "server error" });
+        await sleep(waitMs);
+      }
+    }
   }
 
   // ==========================================================================
@@ -285,12 +450,13 @@ const SpeechifyProvider = (function () {
   function acquire(text, voiceId, signal) {
     const key = cacheKey(text, voiceId);
     const hit = cache.get(key);
-    if (hit) return Promise.resolve(hit);
+    if (hit) { log("cache-hit", { chars: text.length }); return Promise.resolve(hit); }
 
     const pending = inFlight.get(key);
-    if (pending) return pending;
+    if (pending) { log("shared", { chars: text.length }); return pending; }
 
-    const p = synthesize(text, voiceId, signal)
+    const label = `${text.length}ch "${text.slice(0, 24).replace(/\s+/g, " ")}…"`;
+    const p = enqueue(() => synthesizeWithRetry(text, voiceId, signal, label), label)
       .then((entry) => { remember(key, entry); inFlight.delete(key); return entry; })
       .catch((err) => { inFlight.delete(key); throw err; });
 
@@ -300,8 +466,51 @@ const SpeechifyProvider = (function () {
 
   /* Warm a piece of text without waiting for it or caring if it fails. */
   function prefetch(text, voiceId) {
-    if (!text || !text.trim() || !hasKey()) return;
+    if (!text || !text.trim() || !hasKey() || keyWasRejected()) return;
     acquire(text, voiceId, undefined).catch(() => { /* best effort */ });
+  }
+
+  // ==========================================================================
+  // HOW LONG THE WAIT ACTUALLY IS
+  // ==========================================================================
+
+  /*
+   * A network voice cannot start instantly, so the only honest thing to do is
+   * say how long it will be — and then be right about it.
+   *
+   * Rather than quoting a number from a benchmark, this remembers how long the
+   * last few starts really took on this machine and this connection, and shows
+   * the median of those. The seed is the measured figure from
+   * techDocs/speechify-phase0-measured.md (a ~120-character head completes in
+   * about 1.5s), used only until there is real evidence to replace it.
+   */
+  const TIMING_STORAGE = "folio_speechify_timings";
+  const SEED_FIRST_AUDIO_MS = 1500;
+  const TIMING_SAMPLES = 8;
+
+  function recordedTimings() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TIMING_STORAGE) || "[]");
+      return Array.isArray(raw) ? raw.filter((n) => typeof n === "number" && n > 0) : [];
+    } catch { return []; }
+  }
+
+  function recordFirstAudio(ms) {
+    try {
+      const all = recordedTimings().concat(ms).slice(-TIMING_SAMPLES);
+      localStorage.setItem(TIMING_STORAGE, JSON.stringify(all));
+    } catch { /* private mode — we just keep quoting the seed */ }
+  }
+
+  /*
+   * The median, not the mean: one stalled request on a bad connection should
+   * not drag the quoted figure up for the next eight reads.
+   */
+  function expectedFirstAudioMs() {
+    const all = recordedTimings();
+    if (!all.length) return SEED_FIRST_AUDIO_MS;
+    const sorted = all.slice().sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
   }
 
   // ==========================================================================
@@ -366,8 +575,23 @@ const SpeechifyProvider = (function () {
    */
   function speak(text, opts) {
     const voiceId = (opts.voice && opts.voice.id) || currentVoiceId();
-    const segments = splitHead(text);
     const controller = new AbortController();
+
+    /*
+     * Split ONLY when we would otherwise be waiting.
+     *
+     * The head/tail split buys a fast start by getting a short first sentence
+     * back in about a second — but it costs an extra request, and with a plan
+     * that allows one request at a time an extra request is an extra stall.
+     * A chunk that was already prefetched while the previous one played needs
+     * no split at all: it is sitting in the cache, ready to play instantly.
+     *
+     * So the split is for the cold start, which is the only place it helps.
+     */
+    const alreadyHave = cache.has(cacheKey(text, voiceId));
+    const segments = alreadyHave ? [text] : splitHead(text);
+    log("speak", { chars: text.length, segments: segments.length,
+                   cached: alreadyHave, rate: opts.rate || 1 });
 
     const audio = new Audio();
     audio.preservesPitch = true;
@@ -377,6 +601,8 @@ const SpeechifyProvider = (function () {
     let finished = false;
     let rafId = null;
     let segIndex = 0;
+    let statusTimer = null;
+    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
     let segOffset = 0;          // UTF-16 offset of this segment within `text`
     let marks = [];
     let lastReported = -1;
@@ -385,13 +611,41 @@ const SpeechifyProvider = (function () {
     const wanted = segments.map((s) => acquire(s, voiceId, controller.signal));
     wanted.forEach((p) => p.catch(() => { /* surfaced when we await it */ }));
 
+    const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+    /*
+     * Say what is happening while there is nothing to hear.
+     *
+     * Deliberately silent for the first fifth of a second: a prefetched chunk
+     * starts almost immediately, and flashing "preparing" at every chunk seam
+     * would be noise rather than information.
+     */
+    function beginStatus() {
+      if (!opts.onStatus) return;
+      statusTimer = setInterval(function () {
+        const elapsed = nowMs() - startedAt;
+        if (elapsed < 200) return;
+        opts.onStatus({
+          phase: "preparing",
+          elapsedMs: elapsed,
+          expectedMs: expectedFirstAudioMs(),
+        });
+      }, 100);
+    }
+
+    function endStatus(phase) {
+      if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+      if (opts.onStatus) opts.onStatus({ phase: phase });
+    }
+
     function done(err) {
       if (finished) return;
       finished = true;
+      endStatus(err ? "error" : "ended");
       cancelAnimationFrame(rafId);
       audio.pause();
       audio.removeAttribute("src");
-      if (err) opts.onError(err.message || "Speechify failed");
+      if (err) opts.onError(err.message || "Speechify failed", err);
       else opts.onEnd();
     }
 
@@ -428,6 +682,8 @@ const SpeechifyProvider = (function () {
         if (stopped) return;
         segIndex++;
         if (segIndex >= segments.length) return done(null);
+        // If the next segment is not ready yet, this is where a gap is heard.
+        log("seam", { to: segIndex, ready: !!cache.get(cacheKey(segments[segIndex], voiceId)) });
         playSegment(segIndex);
       };
       audio.onerror = function () {
@@ -441,10 +697,23 @@ const SpeechifyProvider = (function () {
         // from here — the caller needs a real user gesture.
         return done(new Error("Playback was blocked by the browser"));
       }
+      /*
+       * Sound is out. Only the FIRST segment tells us anything about the wait —
+       * later ones were prefetched while this one played, so timing them would
+       * quietly train the estimate down towards zero and make the number a lie.
+       */
+      if (i === 0) {
+        const waited = nowMs() - startedAt;
+        recordFirstAudio(waited);
+        log("sound", { waitedMs: Math.round(waited), cached: alreadyHave });
+        endStatus("speaking");
+      }
+
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(tick);
     }
 
+    beginStatus();
     playSegment(0);
 
     /*
@@ -458,6 +727,7 @@ const SpeechifyProvider = (function () {
       stop: function () {
         stopped = true;
         finished = true;
+        endStatus("stopped");
         controller.abort();
         cancelAnimationFrame(rafId);
         audio.onended = null;
@@ -530,8 +800,20 @@ const SpeechifyProvider = (function () {
     setVoiceId: setVoiceId,
     currentVoiceId: currentVoiceId,
 
+    // Diagnostics.
+    getLog: getLog,
+    clearLog: clearLog,
+    formatLog: formatLog,
+
+    // True once the server has rejected the key currently saved.
+    keyWasRejected: keyWasRejected,
+
+    // What the wait is expected to be, in ms, learned from real starts.
+    expectedFirstAudioMs: expectedFirstAudioMs,
+
     // Exposed for tests and for warming the first chunk when a document opens.
     prefetch: prefetch,
+    _recordFirstAudio: recordFirstAudio,
     _codePointToUtf16Map: codePointToUtf16Map,
     _splitHead: splitHead,
     _markAt: markAt,

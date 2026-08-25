@@ -256,7 +256,18 @@ const Settings = (function () {
     saveBtn.addEventListener("click", () => {
       const raw = input.value.trim();
       if (!raw) { setStatus(status, "Paste a key first", "muted"); return; }
+      /*
+       * Say what was actually stored. A truncated or quote-wrapped paste is the
+       * commonest cause of a 401, and it is invisible in a password field.
+       */
       SpeechifyProvider.setKey(raw);
+      const saved = SpeechifyProvider.getKey();
+      if (!/^sk_/.test(saved) || saved.length < 20) {
+        setStatus(status,
+          `That does not look like a Speechify key — stored ${saved.length} characters starting "${saved.slice(0, 3)}". Keys start "sk_".`,
+          "err");
+        return;
+      }
       input.value = "";
       input.placeholder = maskKey(raw);
       useSpeechify(true);
@@ -288,11 +299,39 @@ const Settings = (function () {
             setTimeout(() => reject(new Error("Timed out after 20 seconds")), 20000);
           });
           setStatus(status, "Working — that was Simba 3.2", "ok");
+          useSpeechify(true);
         } catch (err) {
           if (handle) handle.stop();
           setStatus(status, (err && err.message) || "Test failed", "err");
         } finally {
           testBtn.disabled = false;
+        }
+      });
+    }
+
+    /*
+     * Reading aloud fails in ways the console cannot explain on its own — a
+     * burst of 429s says the limit was hit but not by how many requests, and a
+     * gap between sentences could be the network, the queue or a retry. This
+     * hands over the whole timeline.
+     */
+    const logBtn = document.getElementById("speechify-log-copy-btn");
+    if (logBtn) {
+      logBtn.addEventListener("click", async () => {
+        const text = SpeechifyProvider.formatLog();
+        if (!text) { setStatus(status, "Nothing logged yet — press play first", "muted"); return; }
+        try {
+          await navigator.clipboard.writeText(text);
+          setStatus(status, `Copied ${SpeechifyProvider.getLog().length} log lines`, "ok");
+        } catch {
+          // Clipboard can be blocked; a file always works.
+          const blob = new Blob([text], { type: "text/plain" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "folio-speechify-log.txt";
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(a.href);
+          setStatus(status, "Clipboard blocked — saved as a file instead", "ok");
         }
       });
     }

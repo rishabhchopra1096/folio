@@ -1092,3 +1092,14 @@ body[data-video-doc] #article-wrap {
 /* Retry appears only when the transcript is short of the video's end. */
 .fv-btn.fv-retry { color: var(--accent); }
 .fv-btn.fv-retry:hover { background: var(--accent); color: var(--paper); }
+
+/*
+ * While a network voice is fetching audio there is nothing to hear, so the
+ * time-left slot shows the WAIT instead. Tinted so it reads as a temporary
+ * state rather than a number you are meant to act on.
+ */
+#tts-eta.tts-preparing {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

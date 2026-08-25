@@ -581,6 +581,26 @@ const TTS = (function () {
     lastEtaPaint = now;
     const el = bar.querySelector("#tts-eta");
     if (!el) return;
+
+    /*
+     * While we are waiting for audio, this slot shows the WAIT rather than the
+     * time left. Time-left is meaningless before the first word is spoken, and
+     * the wait is the only thing you actually want to know at that moment.
+     *
+     * The quoted figure is the median of real starts on this machine, not a
+     * number from a benchmark — see expectedFirstAudioMs in js/speechify.js.
+     */
+    if (prepStatus) {
+      const secs = (prepStatus.elapsedMs / 1000).toFixed(1);
+      const expected = Math.max(1, Math.round(prepStatus.expectedMs / 100) / 10);
+      el.textContent = prepStatus.elapsedMs > prepStatus.expectedMs * 2
+        ? `Preparing ${secs}s — slower than usual`
+        : `Preparing ${secs}s of ~${expected}s`;
+      el.classList.add("tts-preparing");
+      return;
+    }
+    el.classList.remove("tts-preparing");
+
     if (!chunks.length) { el.textContent = ""; return; }
     el.textContent = formatDuration(remainingSeconds());
   }
@@ -634,10 +654,48 @@ const TTS = (function () {
         if (chunkIdx >= chunks.length) { stop(true); return; }
         speakChunk();
       },
-      onError: function (msg) {
+      onError: function (msg, err) {
+        prepStatus = null;
+        console.error("[tts]", msg);
+
+        /*
+         * A rejected key or an empty account will never fix itself, and
+         * stopping dead leaves a document that simply refuses to be read.
+         * Fall back to the local voice and carry on from the same word: the
+         * voice is worse, but reading is the point.
+         *
+         * Only for terminal failures. A timeout or a busy server is worth
+         * surfacing where it happened rather than silently downgrading the
+         * voice for the rest of the session.
+         */
+        if (err && err.terminal && providerId !== "webspeech" && playing) {
+          setProvider("webspeech");
+          const sp = FolioStore.getSettings();
+          sp.ttsProvider = "webspeech";
+          sp.ttsVoicePicked = false;
+          FolioStore.saveSettings(sp);
+          selectedVoice = provider().defaultVoice();
+          fillVoices();
+          if (handle) { handle.stop(); handle = null; }
+          toast(escapeForToast(msg) + "<br>Reading on the system voice instead.", 6000);
+          speakChunk(curWord ? curWord.ds : undefined);
+          return;
+        }
+
         playing = false;
         updateBar();
-        console.error("[tts]", msg);
+        updateEta(true);
+        toast(escapeForToast(msg), 4200);
+      },
+      /*
+       * Optional, and only a network-backed engine ever calls it. A voice that
+       * has to be fetched cannot start instantly, and a play button that sits
+       * there doing nothing for a second and a half reads as broken — so say
+       * what is happening and how long it usually takes.
+       */
+      onStatus: function (info) {
+        prepStatus = (info && info.phase === "preparing") ? info : null;
+        updateEta(true);
       },
     });
   }
@@ -660,6 +718,7 @@ const TTS = (function () {
   function pause() {
     if (!playing) return;
     playing = false;
+    prepStatus = null;
     if (handle) { handle.stop(); handle = null; }
     updateBar();
     updateEta(true);
@@ -1553,6 +1612,13 @@ const TTS = (function () {
    * untouched — and these are page listeners, so nothing fires unless Folio
    * has focus.
    */
+
+  /*
+   * Set while an engine is fetching audio and there is nothing to hear yet.
+   * Null at every other moment, including for the local voice, which never
+   * reports a wait because it never has one.
+   */
+  let prepStatus = null;
 
   let spaceDownAt = 0;
   let spaceHoldTimer = null;
