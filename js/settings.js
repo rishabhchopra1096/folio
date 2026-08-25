@@ -120,6 +120,7 @@ const Settings = (function () {
     initVoiceKeyUI();
     // Video: Gemini API key handlers
     initGeminiKeyUI();
+    initSpeechifyUI();
     // Video: which model transcribes, and the diagnostic log
     initGeminiModel();
     initGeminiLog();
@@ -210,6 +211,114 @@ const Settings = (function () {
       input.placeholder = "AIza...";
       setStatus(status, "Cleared", "muted");
     });
+  }
+
+
+  /*
+   * Speechify key + voice, for reading aloud.
+   *
+   * Same arrangement as the other two: the user's own key, in this browser
+   * only, never in the shipped source. This repo is public and `sk_` keys are
+   * exactly what secret scanners match.
+   *
+   * Choosing an engine here is deliberately not a toggle the user can get
+   * wrong: saving a key switches to Simba, clearing it switches back. TTS
+   * refuses any provider that is not actually available, so the document always
+   * reads even if this ends up in a strange state.
+   */
+  function initSpeechifyUI() {
+    const input = document.getElementById("speechify-key-input");
+    const saveBtn = document.getElementById("speechify-key-save-btn");
+    const testBtn = document.getElementById("speechify-key-test-btn");
+    const clearBtn = document.getElementById("speechify-key-clear-btn");
+    const status = document.getElementById("speechify-key-status");
+    const select = document.getElementById("speechify-voice-select");
+    if (!input || !saveBtn || typeof SpeechifyProvider === "undefined") return;
+
+    function fillVoices() {
+      if (!select) return;
+      const current = SpeechifyProvider.currentVoiceId();
+      select.innerHTML = "";
+      SpeechifyProvider.voices().forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v.id;
+        o.textContent = v.name;
+        if (v.id === current) o.selected = true;
+        select.appendChild(o);
+      });
+      select.disabled = !SpeechifyProvider.hasKey();
+    }
+
+    function useSpeechify(on) {
+      if (typeof TTS === "undefined" || !TTS.setProvider) return;
+      TTS.setProvider(on ? "speechify" : "webspeech");
+      if (TTS.reloadVoices) TTS.reloadVoices();
+    }
+
+    if (SpeechifyProvider.hasKey()) input.placeholder = maskKey(SpeechifyProvider.getKey());
+    fillVoices();
+
+    saveBtn.addEventListener("click", () => {
+      const raw = input.value.trim();
+      if (!raw) { setStatus(status, "Paste a key first", "muted"); return; }
+      SpeechifyProvider.setKey(raw);
+      input.value = "";
+      input.placeholder = maskKey(raw);
+      fillVoices();
+      useSpeechify(true);
+      setStatus(status, "Saved — open a page and press play", "ok");
+    });
+
+    if (testBtn) {
+      testBtn.addEventListener("click", async () => {
+        if (!SpeechifyProvider.hasKey()) {
+          setStatus(status, "Save a key first", "muted"); return;
+        }
+        setStatus(status, "Testing…", "muted");
+        testBtn.disabled = true;
+        /*
+         * Synthesises three words rather than checking the key's shape — the
+         * only failure worth reporting is the one that happens on a real call,
+         * and this costs a fraction of a cent.
+         */
+        let handle = null;
+        try {
+          await new Promise((resolve, reject) => {
+            handle = SpeechifyProvider.speak("Speechify is working.", {
+              rate: 1,
+              voice: SpeechifyProvider.defaultVoice(),
+              onWord: function () {},
+              onEnd: resolve,
+              onError: reject,
+            });
+            setTimeout(() => reject(new Error("Timed out after 20 seconds")), 20000);
+          });
+          setStatus(status, "Working — that was Simba 3.2", "ok");
+        } catch (err) {
+          if (handle) handle.stop();
+          setStatus(status, (err && err.message) || "Test failed", "err");
+        } finally {
+          testBtn.disabled = false;
+        }
+      });
+    }
+
+    clearBtn.addEventListener("click", () => {
+      SpeechifyProvider.clearKey();
+      input.value = "";
+      input.placeholder = "sk_...";
+      fillVoices();
+      useSpeechify(false);
+      setStatus(status, "Cleared — back to the system voice", "muted");
+    });
+
+    if (select) {
+      select.addEventListener("change", () => {
+        SpeechifyProvider.setVoiceId(select.value);
+        if (typeof TTS !== "undefined" && TTS.reloadVoices) TTS.reloadVoices();
+        setStatus(status, "Voice set", "ok");
+      });
+    }
   }
 
   /*

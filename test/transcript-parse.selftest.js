@@ -92,9 +92,15 @@ ok("first line starts at the video's first moment", one[0].t < 60, String(one[0]
 console.log("\n=== real captions, straight from yt-dlp, round-trip ===");
 /* Proves the parser handles the OTHER end of the pipeline too: a caption file
    rendered as text and read back must keep its timings exactly. */
-const capFile = fs.readdirSync("/tmp").find((f) => /^cap_.*\.en\.json3$/.test(f));
-if (capFile) {
-  const cap = JSON.parse(fs.readFileSync("/tmp/" + capFile, "utf8"));
+/*
+ * The fixture is checked in. This used to hunt for /tmp/cap_*.en.json3, left
+ * behind by an earlier helper run — so the assertion silently became a FAILURE
+ * once /tmp was cleaned, and would have been a false PASS on a stale file. Test
+ * data belongs in the repo, not in whatever /tmp happens to hold today.
+ */
+const capPath = REPO + "/test/fixtures/captions.en.json3";
+if (fs.existsSync(capPath)) {
+  const cap = JSON.parse(fs.readFileSync(capPath, "utf8"));
   const cues = [];
   for (const e of cap.events || []) {
     if (!e.segs) continue;
@@ -118,7 +124,7 @@ if (capFile) {
   ok("every timestamp is preserved exactly",
      back.every((b, i) => b.t === expected[i].t));
 } else {
-  ok("caption fixture available", false, "no /tmp/cap_*.en.json3");
+  ok("caption fixture available", false, "missing test/fixtures/captions.en.json3");
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

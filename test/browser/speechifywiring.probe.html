@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Simba slots in without changing anything</title>
+<!--
+  The stated requirement for this feature was "make sure the functionality
+  doesn't change". So the assertions that matter most here are the negative
+  ones: with no Speechify key, the reader must behave exactly as it did — same
+  engine, same voices, same shortcuts — and a key that is present but broken
+  must never leave a document unable to read.
+
+  No real API call is made. The point is the wiring and the fallback, and a
+  live call would cost money and need a network.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_simba_wiring";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Reading Test", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "The first paragraph is here to be read aloud." } },
+    { type: "paragraph", data: { text: "A second paragraph follows it directly." } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  localStorage.removeItem("folio_speechify_key");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__tts = TTS; window.__sp = SpeechifyProvider;");
+
+  // ── The module loaded at all ──
+  ok("speechify.js loaded", !!w.__sp);
+  ok("it is registered as an engine",
+     w.__tts.providerList().some((p) => p.id === "speechify"),
+     JSON.stringify(w.__tts.providerList()));
+  ok("all eight simba-3.2 voices are offered", w.__sp.voices().length === 8);
+
+  // ── WITHOUT A KEY: nothing may change ──
+  ok("with no key it reports itself unavailable", w.__sp.available() === false);
+  ok("the active engine is still the system voice",
+     w.__tts.providerList().find((p) => p.active).id === "webspeech",
+     JSON.stringify(w.__tts.providerList().find((p) => p.active)));
+  ok("asking for it anyway falls back rather than breaking",
+     w.__tts.setProvider("speechify") === "webspeech");
+  ok("an unknown engine name also falls back",
+     w.__tts.setProvider("nonsense-engine") === "webspeech");
+  ok("reading is still reported as supported", w.__tts.isSupported() === true);
+
+  // ── The settings controls exist and are wired in BOTH entry points ──
+  ok("the settings panel has a key field", !!d.getElementById("speechify-key-input"));
+  ok("...a save button", !!d.getElementById("speechify-key-save-btn"));
+  ok("...a test button", !!d.getElementById("speechify-key-test-btn"));
+  ok("...a clear button", !!d.getElementById("speechify-key-clear-btn"));
+  const sel = d.getElementById("speechify-voice-select");
+  ok("...and a voice picker", !!sel);
+  ok("the picker is populated from the provider",
+     !!sel && sel.options.length === 8, sel && String(sel.options.length));
+  ok("the picker is disabled until a key exists", !!sel && sel.disabled === true);
+
+  // ── WITH A KEY: it becomes selectable ──
+  w.localStorage.setItem("folio_speechify_key", "sk_fake_key_for_wiring_test_only");
+  ok("now it reports itself available", w.__sp.available() === true);
+  ok("and can be selected", w.__tts.setProvider("speechify") === "speechify");
+  ok("the engine list reflects the change",
+     w.__tts.providerList().find((p) => p.active).id === "speechify");
+
+  // ── A BROKEN key must not strand the reader ──
+  ok("switching back to the system voice always works",
+     w.__tts.setProvider("webspeech") === "webspeech");
+
+  // ── The contract tts.js relies on ──
+  const needed = ["id", "label", "needsKey", "available", "voices", "defaultVoice", "speak"];
+  ok("the provider implements the whole interface",
+     needed.every((k) => w.__sp[k] !== undefined),
+     needed.filter((k) => w.__sp[k] === undefined).join(","));
+
+  // ── The measured trap, verified through the shipped module ──
+  const TEXT = "Alpha 🎨 bravo charlie.";
+  const map = w.__sp._codePointToUtf16Map(TEXT);
+  ok("code-point offsets convert to the right UTF-16 slice",
+     TEXT.slice(map[8], map[13]) === "bravo",
+     JSON.stringify(TEXT.slice(map[8], map[13])));
+  ok("and the naive reading really is wrong",
+     TEXT.slice(8, 13) !== "bravo", JSON.stringify(TEXT.slice(8, 13)));
+
+  // ── No key may ever be baked into the shipped file ──
+  const src = await (await fetch("/js/speechify.js")).text();
+  ok("the shipped module contains no API key", !/sk_[A-Za-z0-9]{20,}/.test(src));
+
+  w.localStorage.removeItem("folio_speechify_key");
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

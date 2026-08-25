@@ -442,8 +442,34 @@ const TTS = (function () {
   // Registry. Additional providers (hosted Kokoro, Speechify) slot in here and
   // only need to satisfy the speak() contract above.
   const providers = { webspeech: WebSpeechProvider };
+  if (typeof SpeechifyProvider !== "undefined") providers.speechify = SpeechifyProvider;
+
   let providerId = "webspeech";
   function provider() { return providers[providerId] || WebSpeechProvider; }
+
+  /*
+   * Choose the engine, refusing anything that cannot actually run right now.
+   *
+   * A provider can be configured and still be unusable — the key was removed,
+   * the browser has no Audio. Selecting it anyway would mean pressing play and
+   * getting silence. The document always has to read, so an unavailable choice
+   * silently falls back to the system voice rather than failing.
+   */
+  function setProvider(id) {
+    const p = providers[id];
+    providerId = (p && p.available()) ? id : "webspeech";
+    return providerId;
+  }
+
+  function providerList() {
+    return Object.keys(providers).map((k) => ({
+      id: k,
+      label: providers[k].label,
+      needsKey: !!providers[k].needsKey,
+      available: providers[k].available(),
+      active: k === providerId,
+    }));
+  }
 
   let selectedVoice = null;
 
@@ -579,9 +605,19 @@ const TTS = (function () {
 
     spokenFrom = start;
 
+    /*
+     * The text that comes after this one, for engines that synthesise ahead.
+     * Without it a network-backed voice pays the full synthesis wait at every
+     * chunk boundary, which is audible as a gap every twenty seconds or so.
+     * Engines that speak locally ignore it.
+     */
+    const after = chunks[chunkIdx + 1];
+    const nextText = after ? docText.slice(after.ds, after.de) : "";
+
     handle = provider().speak(text, {
       rate: rate,
       voice: selectedVoice,
+      next: nextText,
       onWord: function (charIndex, charLength) {
         const ds = spokenFrom + charIndex;
         // Some engines report charLength 0 — derive the end from the text.
@@ -655,6 +691,13 @@ const TTS = (function () {
     // normalized to rate 1 — no need to observe the new rate first.
     updateEta(true);
     if (!playing) return;
+    /*
+     * An engine that can change rate mid-utterance does so in place. Web Speech
+     * cannot — an utterance's rate is fixed once it starts — so for that one we
+     * still stop and respeak the remainder of the chunk, which is exactly what
+     * this always did.
+     */
+    if (handle && handle.setRate) { handle.setRate(rate); return; }
     if (handle) { handle.stop(); handle = null; }
     speakChunk(curWord ? curWord.ds : undefined);
   }
@@ -1331,6 +1374,7 @@ const TTS = (function () {
   function saveSettings() {
     const s = FolioStore.getSettings();
     s.ttsRate = rate;
+    s.ttsProvider = providerId;
     s.ttsVoice = selectedVoice ? selectedVoice.name : null;
     FolioStore.saveSettings(s);
   }
@@ -1345,6 +1389,8 @@ const TTS = (function () {
   function loadSettings() {
     const s = getSettings();
     rate = s.ttsRate || 1;
+    // Before any voice is read: voices belong to an engine.
+    setProvider(s.ttsProvider || "webspeech");
     const vs = provider().voices();
     const stored = s.ttsVoice && vs.find((v) => v.name === s.ttsVoice);
 
@@ -1775,6 +1821,10 @@ const TTS = (function () {
     setExternalClock,
     // Providers reuse the player's status line.
     toast,
+    // Engine selection, for Settings.
+    setProvider,
+    providerList,
+    reloadVoices: loadSettings,
     isDictating,
     isPlaying: () => playing,
     isSupported: () => WebSpeechProvider.available(),

@@ -216,6 +216,22 @@
         <div class="backup-hint">Your pages are stored in this browser. Export a JSON backup occasionally so nothing is lost if the browser clears its storage.</div>
       </div>
       <div class="setting-group">
+        <label>Read aloud — Speechify voice</label>
+        <input type="password" id="speechify-key-input" class="voice-key-input" placeholder="sk_..." autocomplete="off" />
+        <div class="voice-key-btns">
+          <button id="speechify-key-save-btn" class="backup-btn">Save</button>
+          <button id="speechify-key-test-btn" class="backup-btn">Test</button>
+          <button id="speechify-key-clear-btn" class="backup-btn">Clear</button>
+        </div>
+        <div class="voice-key-status" id="speechify-key-status"></div>
+        <select id="speechify-voice-select" class="voice-key-input" style="margin-top:8px"></select>
+        <div class="backup-hint">
+          Replaces the system voice with Simba 3.2. Takes about a second to start
+          and costs roughly 50 cents per 10,000-word document. Without a key,
+          reading falls back to the free system voice. Stored only in this browser.
+        </div>
+      </div>
+      <div class="setting-group">
         <label>Video — Gemini API key</label>
         <input type="password" id="gemini-key-input" class="voice-key-input" placeholder="AIza..." autocomplete="off" />
         <div class="voice-key-btns">
@@ -406,6 +422,7 @@
     <script src="js/highlights.js"></script>
     <script src="js/comments.js"></script>
     <script src="js/video.js"></script>
+    <script src="js/speechify.js"></script>
     <script src="js/tts.js"></script>
     <script src="js/app.js"></script>
   </body>
