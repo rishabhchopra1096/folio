@@ -348,8 +348,18 @@ const Settings = (function () {
       if (!cacheStatus || !SpeechifyProvider.diskUsage) return;
       const u = await SpeechifyProvider.diskUsage();
       cacheStatus.className = "voice-key-status voice-key-status-muted";
+      /*
+       * Say whether the browser has promised to keep this. "Best effort" means
+       * it can be cleared without warning — Safari does so after about a week
+       * without a visit — and the only symptom would be paying again.
+       */
+      const durability = SpeechifyProvider.storageDurability
+        ? SpeechifyProvider.storageDurability() : "unknown";
+      const kept = durability === "yes" ? "kept until you clear it"
+                 : durability === "no" ? "may be cleared by the browser after a week or so"
+                 : "storage durability unknown yet";
       cacheStatus.textContent = u.entries
-        ? `${u.entries} passages saved (${(u.bytes / 1048576).toFixed(1)} MB) — these replay free`
+        ? `${u.entries} passages saved (${(u.bytes / 1048576).toFixed(1)} MB) — replay free, ${kept}`
         : "No audio saved yet";
     }
     showCacheSize();

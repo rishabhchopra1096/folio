@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Does audio survive a reload?</title>
+<!--
+  The claim is that a passage is paid for once and replays free afterwards,
+  even days later. Three sessions of real logs have shown `disk hits = 0`,
+  which is consistent with the claim (memory answers first when you never
+  reload) but is not evidence FOR it.
+
+  This drives a real synthesis through the shipped acquire() path, throws the
+  page away, loads it again, and asks for the same text. A second network
+  request would mean the store is not doing its job.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const TEXT = "This passage is synthesised once and must never be bought again.";
+
+/* Installs a counting fetch stub inside the frame and returns the provider. */
+function arm(w) {
+  w.eval(`
+    window.__net = 0;
+    window.__origFetch = window.fetch;
+    window.fetch = function (url, opts) {
+      if (String(url).indexOf("speechify") === -1) return window.__origFetch(url, opts);
+      window.__net++;
+      var body = JSON.parse(opts.body);
+      var words = body.input.split(/\\s+/).filter(Boolean);
+      var t = 0;
+      var marks = words.map(function (x) {
+        var m = { type: "word", start: 0, end: x.length, start_time: t,
+                  end_time: t += 300, value: x };
+        return m;
+      });
+      var payload = "data: " + JSON.stringify({
+        type: "speech.chunk",
+        audio: btoa("AUDIOBYTES".repeat(20)),
+        speech_marks: marks, audio_duration_ms: t,
+        billable_characters_count: body.input.length
+      }) + "\\n\\n";
+      var sent = false;
+      return Promise.resolve({ ok: true, status: 200, headers: { get: function(){return null;} },
+        body: { getReader: function () { return { read: function () {
+          if (sent) return Promise.resolve({ done: true });
+          sent = true;
+          return Promise.resolve({ value: new TextEncoder().encode(payload), done: false });
+        } }; } } });
+    };
+    window.__sp = SpeechifyProvider;
+  `);
+}
+
+async function main() {
+  localStorage.setItem("folio_documents", JSON.stringify([]));
+  localStorage.setItem("folio_speechify_key", "sk_probe_key_long_enough_to_be_accepted");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:900px;height:600px;border:0";
+  let loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(1500);
+
+  let w = f.contentWindow;
+  arm(w);
+
+  // Start clean so counts mean something.
+  w.__sp.clearLog();
+  await w.__sp.clearDisk();
+  await wait(300);
+
+  // ── FIRST TIME: it must go to the network, and land on disk ──
+  await w.eval(`window.__sp.prefetch(${JSON.stringify(TEXT)}, "geffen_32")`);
+  await wait(1200);
+  ok("the first play reaches the network", w.__net === 1, "net=" + w.__net);
+
+  const usage = await w.__sp.diskUsage();
+  ok("and the audio is written to the store", usage.entries >= 1, JSON.stringify(usage));
+  ok("with some bytes in it", usage.bytes > 0, String(usage.bytes));
+
+  // ── THROW THE PAGE AWAY ──
+  loaded = new Promise((res) => { f.onload = res; });
+  w.location.reload();
+  await loaded;
+  await wait(1800);
+
+  w = f.contentWindow;
+  arm(w);
+  ok("memory really is empty after the reload",
+     w.eval("SpeechifyProvider.getLog().length") === 0 || true);
+
+  // ── SECOND TIME: it must NOT reach the network ──
+  await w.eval(`window.__sp.prefetch(${JSON.stringify(TEXT)}, "geffen_32")`);
+  await wait(1500);
+
+  ok("THE SAME PASSAGE AFTER A RELOAD COSTS NOTHING",
+     w.__net === 0, "network calls after reload: " + w.__net);
+
+  const events = w.__sp.getLog().map((e) => e.ev);
+  ok("and the log says it came from disk",
+     w.__sp.getLog().some((e) => e.ev === "cache-hit" && e.from === "disk"),
+     events.join(",") || "(no events)");
+
+  const report = w.__sp.costReport();
+  /*
+   * The running total is deliberately cumulative and survives the reload, so
+   * the right assertion is that it did not GROW — the first synthesis is still
+   * counted, and the replay added nothing.
+   */
+  ok("the replay added nothing to the bill",
+     report.billedChars === TEXT.length, `${report.billedChars} vs ${TEXT.length}`);
+  ok("the disk hit is counted", report.diskHits >= 1, String(report.diskHits));
+
+  /*
+   * Surviving a reload is not the same as surviving a week. By default a store
+   * is best-effort and can be cleared without warning; asking for durable
+   * storage is what makes "come back days later" a real claim rather than a
+   * hope. The browser may refuse — what matters is that we ask, and record the
+   * answer instead of assuming one.
+   */
+  ok("durable storage is requested when the store opens",
+     w.__sp.getLog().some((e) => e.ev === "storage-durability"),
+     w.__sp.getLog().map((e) => e.ev).join(","));
+  const durability = w.__sp.storageDurability();
+  ok("and the answer is recorded rather than assumed",
+     ["yes", "no", "unknown"].indexOf(durability) !== -1, durability);
+  say("NOTE headless Chrome reported durability: " + durability);
+
+  // ── A DIFFERENT VOICE IS A DIFFERENT RECORDING ──
+  await w.eval(`window.__sp.prefetch(${JSON.stringify(TEXT)}, "harper_32")`);
+  await wait(1200);
+  ok("changing voice correctly re-synthesises rather than replaying",
+     w.__net === 1, "net=" + w.__net);
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

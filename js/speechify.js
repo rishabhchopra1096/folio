@@ -701,8 +701,53 @@ const SpeechifyProvider = (function () {
 
   let dbPromise = null;
 
+  /*
+   * Ask the browser not to throw the audio away.
+   *
+   * "It survives a reload" and "it is still there next week" are different
+   * claims. By default a store is BEST EFFORT: Safari's tracking prevention
+   * clears it after about seven days without a visit, and Chrome evicts it
+   * under storage pressure. Neither asks first, and the only symptom would be
+   * paying again for a document you had already bought.
+   *
+   * navigator.storage.persist() asks for durable storage instead. Chrome grants
+   * it silently on engagement signals (bookmarked, frequently visited); Safari
+   * grants it for installed web apps. It can be refused, so the answer is
+   * recorded and shown in Settings rather than assumed — a refusal is not a
+   * failure, it just means audio older than a week or so may need re-fetching.
+   */
+  const PERSIST_STORAGE = "folio_speechify_persisted";
+  let persistAsked = false;
+
+  async function requestDurableStorage() {
+    if (persistAsked) return;
+    persistAsked = true;
+    try {
+      if (!navigator.storage || !navigator.storage.persist) {
+        log("storage-durability", { state: "unsupported" });
+        return;
+      }
+      const already = navigator.storage.persisted
+        ? await navigator.storage.persisted() : false;
+      const granted = already || await navigator.storage.persist();
+      try { localStorage.setItem(PERSIST_STORAGE, granted ? "yes" : "no"); } catch { /* ignore */ }
+      log("storage-durability", { state: granted ? "durable" : "best-effort",
+                                  alreadyHad: already });
+    } catch (err) {
+      log("storage-durability", { state: "failed",
+                                  why: String(err && err.message).slice(0, 60) });
+    }
+  }
+
+  /* What the browser said, for the settings panel. */
+  function storageDurability() {
+    try { return localStorage.getItem(PERSIST_STORAGE) || "unknown"; }
+    catch { return "unknown"; }
+  }
+
   function openDb() {
     if (dbPromise) return dbPromise;
+    requestDurableStorage();
     dbPromise = new Promise(function (resolve, reject) {
       if (typeof indexedDB === "undefined") return reject(new Error("no IndexedDB"));
       const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -1417,6 +1462,7 @@ const SpeechifyProvider = (function () {
     cancelPrefetch: cancelPrefetch,
 
     // The audio store, for the settings panel.
+    storageDurability: storageDurability,
     diskUsage: diskUsage,
     clearDisk: clearDisk,
 
