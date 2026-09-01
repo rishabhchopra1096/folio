@@ -124,6 +124,45 @@ ok("blockAt returns a block", !!b);
 ok("block is the right <p>", b && b.el.tagName === "P" && b.el.textContent.includes("Dr. Chen"),
    b ? b.el.tagName + ": " + b.el.textContent.slice(0, 30) : "null");
 
+console.log("\n=== a list item is its own block ===");
+/*
+ * THE REPORTED BUG. Blocks were the article's top-level children, so an entire
+ * <ul> was one block — and pausing to comment on a bullet highlighted the whole
+ * list instead of the line being read.
+ */
+{
+  const listBlocks = I.blocks.filter((b) => b.el.tagName === "LI");
+  ok("both bullets are blocks in their own right", listBlocks.length === 2,
+     "LI blocks=" + listBlocks.length);
+  ok("the <ul> itself is NOT a block",
+     !I.blocks.some((b) => b.el.tagName === "UL" || b.el.tagName === "OL"),
+     I.blocks.map((b) => b.el.tagName).join(","));
+
+  const firstAt = I.docText.indexOf("First item");
+  const secondAt = I.docText.indexOf("Second");
+  ok("both items are in the text", firstAt !== -1 && secondAt !== -1);
+
+  const b1 = I.blockAt(firstAt);
+  ok("a character in the first bullet resolves to that bullet",
+     b1 && b1.el.tagName === "LI", b1 ? b1.el.tagName : "null");
+  ok("and its block covers ONLY that bullet",
+     b1 && I.docText.slice(b1.ds, b1.de).trim() === "First item",
+     b1 ? JSON.stringify(I.docText.slice(b1.ds, b1.de)) : "null");
+
+  const b2 = I.blockAt(secondAt);
+  ok("the second bullet is a different block", b1 && b2 && b1.el !== b2.el);
+  ok("it spans the whole item including inline markup",
+     b2 && I.docText.slice(b2.ds, b2.de).trim() === "Second italic item",
+     b2 ? JSON.stringify(I.docText.slice(b2.ds, b2.de)) : "null");
+}
+
+console.log("\n=== skipped containers stay skipped ===");
+{
+  ok("nothing from <pre> is in the text", I.docText.indexOf("skipMe") === -1);
+  ok("nothing from <figure> is either", I.docText.indexOf("skip me too") === -1,
+     "figcaption leaked despite FIGURE being skipped");
+}
+
 console.log("\n=== chunking ===");
 ok("no chunk exceeds the backstop", I.chunks.every(c => c.text.length <= 2000),
    "max=" + Math.max(...I.chunks.map(c => c.text.length)));

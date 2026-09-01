@@ -173,29 +173,77 @@ const TTS = (function () {
    * between paragraphs. Those separator characters belong to no segment;
    * locate() clamps offsets that land in the gap.
    */
+  /*
+   * Elements that are a unit of text in their own right.
+   *
+   * LI is the one that matters. Blocks used to be the top-level children of the
+   * article, which makes an entire <ul> a single block — so commenting while
+   * reading a list highlighted the WHOLE list instead of the bullet being read.
+   * TD, DT and DD have the same shape of problem for tables and definition
+   * lists.
+   */
+  const BLOCK_TAGS = new Set([
+    "P", "H1", "H2", "H3", "H4", "H5", "H6",
+    "LI", "BLOCKQUOTE", "TD", "TH", "DT", "DD", "FIGCAPTION",
+  ]);
+
+  /*
+   * Which block a piece of text belongs to: the nearest enclosing block
+   * element, falling back to the top-level child of the article.
+   *
+   * Nearest-enclosing rather than descend-from-the-top is what makes nesting
+   * work. A bullet inside a bullet resolves to the inner LI, and the outer
+   * item's own words still resolve to the outer one, without either having to
+   * know the other exists.
+   */
+  function nearestBlock(node, root) {
+    let el = node.parentElement;
+    let topLevel = null;
+    while (el && el !== root) {
+      if (BLOCK_TAGS.has(el.tagName)) return el;
+      topLevel = el;
+      el = el.parentElement;
+    }
+    return topLevel || node.parentElement;
+  }
+
   function buildIndex(root) {
     docText = "";
     segments = [];
     blocks = [];
 
-    for (const el of Array.from(root.children)) {
-      if (SKIP_TAGS.has(el.tagName)) continue;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        // Anything inside a skipped container is skipped with it.
+        let el = n.parentElement;
+        while (el && el !== root) {
+          if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
+          el = el.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
 
-      const blockStart = docText.length;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      let node;
-      while ((node = walker.nextNode())) {
-        const t = node.nodeValue;
-        if (!t) continue;
-        segments.push({ ds: docText.length, de: docText.length + t.length, node: node, ns: 0 });
-        docText += t;
+    let open = null;           // the block being accumulated: { el, ds }
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = node.nodeValue;
+      if (!t) continue;
+
+      const owner = nearestBlock(node, root);
+      if (!open || owner !== open.el) {
+        if (open && docText.length > open.ds) {
+          blocks.push({ ds: open.ds, de: docText.length, el: open.el });
+          docText += "\n\n";
+        }
+        open = { el: owner, ds: docText.length };
       }
 
-      // Only record the block if it actually contributed text
-      if (docText.length > blockStart) {
-        blocks.push({ ds: blockStart, de: docText.length, el: el });
-        docText += "\n\n";
-      }
+      segments.push({ ds: docText.length, de: docText.length + t.length, node: node, ns: 0 });
+      docText += t;
+    }
+    if (open && docText.length > open.ds) {
+      blocks.push({ ds: open.ds, de: docText.length, el: open.el });
     }
 
     buildWordStarts();
