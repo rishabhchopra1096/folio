@@ -1,60 +1,133 @@
 /*
  * =============================================================================
- * PANEL.CSS — Layout Overrides for Folio's 400px Side Panel Mode
+ * PANEL.CSS — Complete Layout for Folio's 400px Side Panel
  * =============================================================================
  * FILE OVERVIEW:
- * When Folio runs inside Electron as a side panel, the normal 260px sidebar +
- * wide content area layout doesn't work (260 + content = wider than 400px).
+ * This file completely overrides the web app layout for a 400px side panel.
+ * The web app was designed for 1200px+ screens. This file makes it work in
+ * a narrow 400px Electron window at the right edge of the screen.
  *
- * This file overrides the web layout to create a VERTICAL STACK:
- * - Custom title bar (drag region) at the very top
- * - Sidebar becomes a collapsible top section
- * - Main content fills the remaining space below
- * - Slide animation: the whole app slides in from the right edge
- *
- * HOW IT WORKS:
- * 1. The app shell switches from horizontal flex to vertical flex
- * 2. The sidebar sits on top (collapsible) instead of on the left
- * 3. A custom title bar provides window dragging and a close button
- * 4. CSS transform handles the slide-in/slide-out animation
- * 5. All overrides use higher specificity — no existing CSS files are changed
+ * KEY DIFFERENCES FROM WEB VERSION:
+ * 1. No side-by-side sidebar — the sidebar is a collapsible overlay
+ * 2. A back button replaces the breadcrumb for navigation
+ * 3. All content is constrained to 400px with no overflow
+ * 4. An edge tab is visible when the panel is collapsed
+ * 5. Everything has overflow: hidden to prevent content bleeding out
  * =============================================================================
  */
 
-/* ── CUSTOM TITLE BAR — Drag region at the top of the panel ── */
+/* ── GLOBAL OVERFLOW PROTECTION ── */
 
 /*
- * Since we use a frameless window, we need a custom title bar that the user
- * can grab to move the window (though it's not movable, the drag region
- * gives a native feel). It also holds the app name and a close button.
+ * This is THE critical fix. Without this, Editor.js toolbars, comments panels,
+ * and wide text overflow the 400px window and render in the void.
  */
+html, body {
+  overflow: hidden !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* ── EDGE TAB — The thin strip visible when panel is collapsed ── */
+
+/*
+ * When the panel is collapsed, the Electron window shrinks to 8px wide.
+ * The edge tab is a colored strip the user can click to expand the panel.
+ * It lives outside the app-shell so it's always visible.
+ */
+#edge-tab {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100vh;
+  background: var(--accent, #8b7355);
+  cursor: pointer;
+  z-index: 999;
+  opacity: 0.6;
+  transition: opacity 0.2s, width 0.2s;
+}
+#edge-tab:hover {
+  opacity: 1;
+  width: 12px;
+}
+/* When the panel is expanded, hide the edge tab */
+body.panel-expanded #edge-tab {
+  display: none;
+}
+
+/* ── PANEL WRAPPER — Contains everything when expanded ── */
+
+/*
+ * When the panel is collapsed (8px window), hide all the app content.
+ * Only the edge tab is visible. When expanded, show everything.
+ */
+#panel-wrapper {
+  display: none;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg, #f5f0e8);
+}
+body.panel-expanded #panel-wrapper {
+  display: flex;
+}
+
+/* ── CUSTOM TITLE BAR — Drag region at the top ── */
+
 #panel-titlebar {
   display: flex;
   align-items: center;
   height: 36px;
-  padding: 0 12px;
+  min-height: 36px;
+  padding: 0 10px;
   background: var(--paper);
   border-bottom: 1px solid var(--line);
   font-family: var(--font-ui);
   font-size: 12px;
   font-weight: 500;
   color: var(--ink-soft);
-  /* This makes the title bar draggable (like a native macOS title bar) */
   -webkit-app-region: drag;
-  /* Prevent text selection while dragging */
   user-select: none;
   flex-shrink: 0;
 }
 
-/* The app name in the title bar */
+/* Back button — navigate back to page list */
+#panel-titlebar .panel-back-btn {
+  -webkit-app-region: no-drag;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-faint);
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+  display: none;
+  align-items: center;
+  margin-right: 4px;
+}
+#panel-titlebar .panel-back-btn:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+/* Show back button when a document is open */
+body.doc-open #panel-titlebar .panel-back-btn {
+  display: flex;
+}
+
+/* App title in the title bar */
 #panel-titlebar .panel-title-text {
   flex: 1;
   margin-left: 4px;
 }
 
-/* Close/hide button in the title bar */
+/* Close/hide button */
 #panel-titlebar .panel-close-btn {
-  /* Buttons inside a drag region need to be non-draggable */
   -webkit-app-region: no-drag;
   background: none;
   border: none;
@@ -70,215 +143,273 @@
   color: var(--ink);
 }
 
-/* ── SLIDE ANIMATION — The entire app slides in from the right ── */
+/* ── APP SHELL — Vertical layout, no horizontal flex ── */
 
-/*
- * The animation works by translating the entire app shell off-screen to the
- * right (translateX(100%)) and then sliding it to its normal position
- * (translateX(0)) when the panel is shown. This creates a smooth reveal
- * effect without needing to animate the window position.
- */
 #app-shell {
-  /* Start off-screen (hidden) */
-  transform: translateX(100%);
-  /* Smooth 300ms slide animation */
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* When the panel is visible, slide into view */
-#app-shell.panel-visible {
-  transform: translateX(0);
-}
-
-/* ── VERTICAL STACK LAYOUT — Sidebar on top, content below ── */
-
-/*
- * The web version uses a horizontal layout: sidebar (260px left) + content.
- * In the 400px panel, we stack them vertically: sidebar on top, content below.
- * The sidebar becomes a collapsible section with a max height.
- */
-#app-shell {
-  /* Switch from horizontal to vertical layout */
+  display: flex;
   flex-direction: column !important;
-  /* Fill the entire panel */
-  height: 100vh;
-  overflow: hidden;
+  flex: 1;
+  overflow: hidden !important;
+  min-height: 0;
+  /* Kill the web version's min-height: 100vh */
+  min-height: 0 !important;
 }
 
-/* ── SIDEBAR OVERRIDES — Collapsible top section ── */
+/* ── SIDEBAR — Now a collapsible overlay, not a fixed left column ── */
 
 /*
- * Instead of a fixed 260px left column, the sidebar becomes a collapsible
- * top section that takes up to 35% of the panel height. It scrolls if
- * there are many pages.
+ * In the panel, the sidebar is hidden by default. The user sees it on the
+ * welcome screen or by clicking the back button. When a document is open,
+ * the sidebar is hidden and the document fills the full panel.
  */
 #sidebar {
-  /* Remove fixed positioning — it's now part of the normal flow */
+  /* Remove ALL fixed positioning from the web version */
   position: relative !important;
-  /* Full width across the panel */
   width: 100% !important;
-  /* Height is auto, but capped at 35% so content always has space */
+  min-width: 0 !important;
   height: auto !important;
-  max-height: 35vh;
-  /* No fixed left column — stacked vertically */
+  max-height: none !important;
   border-right: none !important;
   border-bottom: 1px solid var(--line);
-  /* Smooth collapse/expand animation */
-  transition: max-height 0.3s ease, opacity 0.3s ease;
   overflow-y: auto;
+  overflow-x: hidden !important;
   flex-shrink: 0;
+  /* Remove the fixed-position transform from web CSS */
+  transform: none !important;
+  left: auto !important;
+  top: auto !important;
+  z-index: auto !important;
 }
 
-/* When the sidebar is collapsed, shrink it down to just the header */
+/* When a document is open, hide the sidebar completely */
+body.doc-open #sidebar {
+  display: none !important;
+}
+
+/* When sidebar is collapsed (via collapse button), hide it */
 #sidebar.collapsed {
-  max-height: 0 !important;
-  opacity: 0;
-  border-bottom: none;
-  overflow: hidden;
-  padding: 0 !important;
+  display: none !important;
 }
 
-/* Sidebar header adjustments for narrow panel */
+/* Sidebar header — tighter for panel */
 .sidebar-header {
-  padding: 8px 12px !important;
+  padding: 10px 12px 8px !important;
 }
-
-/* Make the sidebar logo smaller in panel mode */
 .sidebar-logo {
   font-size: 14px !important;
 }
 
-/* Tighter padding on page items */
+/* Page items — slightly more compact */
 .page-item {
-  padding-top: 4px !important;
-  padding-bottom: 4px !important;
+  padding: 5px 10px 5px 14px !important;
   font-size: 13px !important;
+  margin: 1px 6px !important;
 }
 
-/* Sidebar footer — horizontal in panel mode */
+/* Sidebar footer */
 .sidebar-footer {
-  padding: 6px 12px !important;
+  padding: 6px 8px !important;
 }
 .sidebar-footer-btn {
   font-size: 11px !important;
 }
 
-/* Search input — slightly smaller */
+/* Search */
 .sidebar-search input {
   font-size: 12px !important;
   padding: 6px 10px !important;
 }
 
-/* Section label — smaller */
+/* Section label */
 .sidebar-section-label {
   font-size: 9px !important;
-  padding: 4px 16px 2px !important;
+  padding: 6px 14px 2px !important;
 }
 
-/* ── MAIN CONTENT — Fills remaining space below sidebar ── */
+/* New page button */
+.sidebar-new-page {
+  margin: 0 10px 6px !important;
+  padding: 7px 14px !important;
+  width: calc(100% - 20px) !important;
+}
 
-#main-content {
-  /* Remove the left margin that accommodates the web sidebar */
-  margin-left: 0 !important;
-  /* Fill remaining vertical space */
-  flex: 1;
-  /* Full width */
-  width: 100% !important;
+/* Page tree scrollable area — give it a reasonable max height */
+.sidebar-pages {
+  max-height: 50vh;
   overflow-y: auto;
 }
 
-/* ── EDITOR OVERRIDES — Compact for 400px width ── */
+/* ── MAIN CONTENT — Fills all space when document is open ── */
 
-/*
- * The editor container normally has generous padding and a box shadow to
- * look like a paper card. In the narrow panel, we remove the shadow and
- * reduce padding to maximize usable editing space.
- */
-#editor-container {
-  /* Remove the paper card shadow — we're in a panel, not a page */
-  box-shadow: none !important;
-  /* Reduce padding for more editing space */
-  padding: 24px 16px !important;
-  /* No max-width constraint — fill the panel */
-  max-width: 100% !important;
-  /* No rounded corners — it's edge-to-edge */
-  border-radius: 0 !important;
+#main-content {
+  margin-left: 0 !important;
+  flex: 1;
+  width: 100% !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  min-height: 0;
 }
 
-/* Editor title — slightly smaller in panel */
-#editor-title {
-  font-size: 1.5em !important;
-}
+/* When no doc is open, the main content sits below the sidebar */
+/* When a doc is open, the main content fills the entire panel */
 
-/* Editor wrap — less padding */
-#editor-wrap {
-  padding: 8px 0 60px !important;
-}
-
-/* ── TOPBAR OVERRIDES — Compact for panel ── */
+/* ── TOPBAR — Compact, with action buttons ── */
 
 #topbar {
-  padding: 6px 12px !important;
+  padding: 4px 10px !important;
+  height: 40px !important;
+  gap: 6px !important;
+  overflow: hidden !important;
 }
 
-/* Hide the breadcrumb in panel mode — not enough space */
+/* Hide breadcrumb — we have the back button in title bar instead */
 .breadcrumb {
   display: none !important;
 }
 
-/* Control buttons — slightly smaller */
+/* Control buttons */
 .ctrl-btn {
   width: 28px !important;
   height: 28px !important;
+  padding: 4px !important;
+  flex-shrink: 0 !important;
 }
 
-/* Save indicator — smaller text */
+/* Save indicator */
 #save-indicator {
   font-size: 11px !important;
+  flex-shrink: 0;
 }
 
-/* ── HIDE UNNECESSARY ELEMENTS ── */
+/* ── EDITOR — Fills the panel width cleanly ── */
 
-/*
- * Some elements from the web version don't make sense in a 400px side panel.
- * We hide them to keep the UI clean and focused.
- */
+#editor-wrap {
+  padding: 0 !important;
+  overflow-x: hidden !important;
+}
 
-/* Progress ring — no room for floating elements */
+#editor-container {
+  box-shadow: none !important;
+  padding: 16px 14px !important;
+  max-width: 100% !important;
+  border-radius: 0 !important;
+  overflow-x: hidden !important;
+}
+
+/* Editor title — slightly smaller */
+#editor-title {
+  font-size: 1.4em !important;
+  width: 100% !important;
+}
+
+/* Editor.js container — prevent any overflow */
+#editorjs {
+  overflow-x: hidden !important;
+  max-width: 100% !important;
+}
+
+/* Editor.js internal elements — force them to stay within bounds */
+.codex-editor {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+.codex-editor__redactor {
+  padding-bottom: 100px !important;
+  max-width: 100% !important;
+}
+.ce-block__content {
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+.ce-toolbar__content {
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+.ce-toolbar__plus,
+.ce-toolbar__settings-btn {
+  left: -2px !important;
+}
+
+/* Toolbox — position it within the panel */
+.ce-toolbox {
+  left: 0 !important;
+  max-width: calc(100% - 20px) !important;
+}
+
+/* Editor.js settings popup — keep it inside the panel */
+.ce-settings {
+  right: 10px !important;
+  left: auto !important;
+  max-width: 200px !important;
+}
+
+/* ── READER — Full width, compact padding ── */
+
+#article-wrap {
+  padding: 12px 14px 80px !important;
+  overflow-x: hidden !important;
+}
+#article {
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+}
+
+/* ── HIDE ELEMENTS THAT DON'T WORK IN 400px ── */
+
+/* Progress ring — no room */
 #progress-ring-wrap {
   display: none !important;
 }
 
-/* Sidebar toggle button — we have the title bar instead */
+/* Sidebar toggle button — we use the back button in title bar */
 #sidebar-toggle {
   display: none !important;
 }
 
-/* ── SETTINGS PANEL — Position within the panel ── */
-
-#settings-panel {
-  /* Position relative to panel, not the full screen */
-  top: 40px !important;
-  right: 8px !important;
-  width: 200px !important;
-  font-size: 12px !important;
+/* Column width slider — meaningless in 400px panel */
+#width-slider {
+  display: none !important;
 }
 
-/* ── WELCOME SCREEN — Compact for panel ── */
+/* ── SETTINGS PANEL — Positioned within the panel ── */
+
+#settings-panel {
+  top: 80px !important;
+  right: 8px !important;
+  left: auto !important;
+  width: 200px !important;
+  max-width: calc(100% - 16px) !important;
+  font-size: 12px !important;
+  z-index: 200 !important;
+}
+
+/* ── COMMENTS PANEL — Must stay inside the 400px window ── */
+
+#comments-panel {
+  width: 100% !important;
+  max-width: 100% !important;
+  right: 0 !important;
+  overflow-x: hidden !important;
+}
+
+/* ── WELCOME SCREEN — Compact ── */
 
 .welcome-screen {
-  padding: 24px 16px !important;
+  padding: 20px 14px !important;
+  min-height: auto !important;
 }
 .welcome-screen h1 {
   font-size: 20px !important;
 }
 .welcome-screen p {
   font-size: 13px !important;
+  max-width: 100% !important;
 }
 
-/* Dropzone — smaller in panel */
+/* Dropzone */
 #dropzone {
-  padding: 24px 16px !important;
+  padding: 20px 14px !important;
 }
 #dropzone h2 {
   font-size: 14px !important;
@@ -287,35 +418,43 @@
   font-size: 12px !important;
 }
 
-/* ── COMMENTS PANEL — Full width in panel mode ── */
-
-#comments-panel {
-  width: 100% !important;
+/* New doc button on welcome screen */
+.new-doc-btn {
+  font-size: 13px !important;
 }
 
-/* ── ARTICLE/READER — Full width, compact ── */
-
-#article-wrap {
-  padding: 12px 16px 60px !important;
-}
-#article {
-  max-width: 100% !important;
-}
-
-/* ── CONTEXT MENU — Ensure it stays within panel bounds ── */
+/* ── CONTEXT MENU — Stay within bounds ── */
 
 .context-menu {
   max-width: 180px !important;
 }
 
+/* ── MODALS — Fit within 400px ── */
+
+.modal-overlay {
+  z-index: 300 !important;
+}
+.modal {
+  max-width: 360px !important;
+  width: 90% !important;
+}
+
+/* ── HIGHLIGHT TOOLBAR & POPOVER — Stay inside ── */
+
+#highlight-toolbar,
+#highlight-popover {
+  max-width: calc(100% - 20px) !important;
+}
+
+/* ── ICON PICKER — Fit within panel ── */
+
+.icon-picker {
+  max-width: calc(100% - 28px) !important;
+}
+
 /* ── NOTION SYNC UI ── */
 
-/*
- * Styles for the Notion sync settings, page picker modal, and sync badges.
- * These elements only exist in the Electron version.
- */
-
-/* Notion badge on synced pages in the sidebar */
+/* Notion badge on synced pages */
 .notion-badge {
   display: inline-flex;
   align-items: center;
@@ -332,7 +471,7 @@
   font-family: var(--font-ui);
 }
 
-/* Sync status indicator in the sidebar footer */
+/* Sync status indicator */
 .sync-status {
   font-family: var(--font-ui);
   font-size: 10px;
@@ -361,25 +500,7 @@
   50% { opacity: 0.4; }
 }
 
-/* ── NOTION SETTINGS SECTION ── */
-
-/*
- * The Notion settings section appears in the sidebar footer area. It has
- * a token input, connect/disconnect button, and a list of synced pages.
- */
-.notion-settings {
-  padding: 12px;
-  border-top: 1px solid var(--line);
-  font-family: var(--font-ui);
-}
-.notion-settings h4 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink-faint);
-  margin-bottom: 8px;
-  font-weight: 500;
-}
+/* Notion token input */
 .notion-token-input {
   width: 100%;
   padding: 6px 8px;
@@ -391,6 +512,7 @@
   color: var(--ink);
   outline: none;
   margin-bottom: 8px;
+  box-sizing: border-box;
 }
 .notion-token-input:focus {
   border-color: var(--accent);
@@ -406,10 +528,6 @@
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s;
-}
-.notion-connect-btn:hover {
-  opacity: 0.9;
 }
 .notion-connect-btn.disconnect {
   background: none;
@@ -417,8 +535,7 @@
   border: 1px solid var(--line);
 }
 
-/* ── NOTION PAGE PICKER MODAL ── */
-
+/* Notion page picker */
 .notion-picker-overlay {
   position: fixed;
   inset: 0;
@@ -433,6 +550,7 @@
   border: 1px solid var(--line);
   border-radius: 12px;
   width: 360px;
+  max-width: 95%;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -440,7 +558,7 @@
   font-family: var(--font-ui);
 }
 .notion-picker-header {
-  padding: 16px;
+  padding: 14px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
@@ -449,7 +567,6 @@
 .notion-picker-header h3 {
   font-size: 15px;
   font-weight: 500;
-  color: var(--ink);
 }
 .notion-picker-close {
   background: none;
@@ -460,16 +577,13 @@
   padding: 2px 6px;
   border-radius: 4px;
 }
-.notion-picker-close:hover {
-  background: var(--line);
-}
 .notion-picker-search {
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--line);
 }
 .notion-picker-search input {
   width: 100%;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   font-family: var(--font-ui);
@@ -477,14 +591,12 @@
   background: var(--paper);
   color: var(--ink);
   outline: none;
-}
-.notion-picker-search input:focus {
-  border-color: var(--accent);
+  box-sizing: border-box;
 }
 .notion-picker-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 6px;
 }
 .notion-picker-item {
   display: flex;
@@ -493,16 +605,11 @@
   padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.15s;
   font-size: 13px;
   color: var(--ink);
 }
 .notion-picker-item:hover {
   background: var(--line);
-}
-.notion-picker-item .picker-icon {
-  font-size: 16px;
-  flex-shrink: 0;
 }
 .notion-picker-item .picker-title {
   flex: 1;
@@ -519,34 +626,112 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: background 0.15s, border-color 0.15s;
 }
 .notion-picker-item .picker-check.checked {
   background: var(--accent);
   border-color: var(--accent);
 }
 .notion-picker-item .picker-check.checked::after {
-  content: "✓";
+  content: "\2713";
   color: #fff;
   font-size: 11px;
   font-weight: 700;
 }
 .notion-picker-footer {
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-top: 1px solid var(--line);
   display: flex;
   justify-content: flex-end;
   gap: 8px;
 }
-.notion-picker-empty {
-  padding: 24px;
-  text-align: center;
-  color: var(--ink-faint);
-  font-size: 13px;
-}
+.notion-picker-empty,
 .notion-picker-loading {
   padding: 24px;
   text-align: center;
   color: var(--ink-faint);
   font-size: 13px;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   READ ALOUD — text captured from another application.
+
+   Full-panel and above everything else: this arrives on a global shortcut, so
+   it must not depend on what Folio happened to be showing at the time.
+   ────────────────────────────────────────────────────────────────────────── */
+#view-readaloud {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--paper);
+  flex-direction: column;
+}
+#view-readaloud.active { display: flex; }
+
+.readaloud-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-faint);
+  flex-shrink: 0;
+}
+#readaloud-close {
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+#readaloud-close:hover { color: var(--ink); }
+
+#readaloud-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 22px 28px;
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+#readaloud-body p { margin: 0 0 1em; white-space: pre-wrap; }
+.readaloud-error { color: var(--ink-soft); font-style: italic; }
+
+/* Painted with the CSS Custom Highlight API, so the text nodes are never
+   mutated — which is what keeps the offset map valid while reading. */
+::highlight(ra-word) {
+  background-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  color: var(--ink);
+}
+::highlight(ra-sentence) {
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+#readaloud-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+#readaloud-bar button {
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+#readaloud-bar button:hover { background: var(--line); color: var(--ink); }
+#readaloud-play { min-width: 62px; }
+#readaloud-status { color: var(--accent); font-variant-numeric: tabular-nums; }

@@ -235,6 +235,12 @@ const App = (function () {
     Highlights.init();
     Comments.init();
     if (typeof TTS !== "undefined") TTS.init();
+    /*
+     * Reading a selection from another application. Electron only — the web
+     * build has no way to capture one, and the module is not loaded there.
+     */
+    if (typeof ReadAloud !== "undefined") ReadAloud.init();
+
     // Restart any transcription that a reload interrupted.
     if (typeof Video !== "undefined" && Video.resumePending) Video.resumePending();
 

@@ -412,7 +412,25 @@
     <script src="js/highlights.js"></script>
     <script src="js/comments.js"></script>
     <script src="js/video.js"></script>
+    <!--
+      READ ALOUD — text captured from another application.
+      Lives only in the Electron build; the web app cannot read a selection.
+    -->
+    <div id="view-readaloud">
+      <div class="readaloud-head">
+        <span id="readaloud-meta"></span>
+        <button id="readaloud-close" title="Close">&times;</button>
+      </div>
+      <div id="readaloud-body"></div>
+      <div id="readaloud-bar">
+        <button id="readaloud-play">Play</button>
+        <button id="readaloud-rate" title="Speed">1×</button>
+        <span id="readaloud-status"></span>
+      </div>
+    </div>
+
     <script src="js/speechify.js"></script>
+    <script src="js/readaloud.js"></script>
     <script src="js/tts.js"></script>
     <!-- Optional neural engine. ESM-only, so it loads as a module.
          Registering is free; the model downloads on first play. -->

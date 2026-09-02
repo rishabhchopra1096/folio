@@ -2,32 +2,34 @@
  * =============================================================================
  * PRELOAD.JS — Context Bridge for Folio Desktop
  * =============================================================================
- * FILE OVERVIEW:
- * This preload script runs in the renderer process but with access to Node.js
- * APIs. It exposes a safe, minimal API to the renderer via contextBridge.
- *
- * WHAT IT EXPOSES:
- * - Panel events: onPanelShow, onPanelHide, onNewPage, hidePanel
- * - Notion API: search, fetchPage, pushPage, getPageMeta
- * - Platform info: platform string for OS detection
+ * Exposes a safe API from Electron's main process to the renderer via
+ * contextBridge. This includes panel controls and Notion API proxy.
  * =============================================================================
  */
 
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("folio", {
-  // ==========================================================================
-  // PANEL CONTROLS — Show/hide animation triggers
-  // ==========================================================================
+  // ── Panel Controls ──
 
-  // Listen for panel show event from main process
-  onPanelShow: (callback) => {
-    ipcRenderer.on("panel-show", () => callback());
+  // Request the main process to expand the panel (edge tab click)
+  expandPanel: () => {
+    ipcRenderer.send("expand-panel");
   },
 
-  // Listen for panel hide event from main process
-  onPanelHide: (callback) => {
-    ipcRenderer.on("panel-hide", () => callback());
+  // Request the main process to collapse the panel
+  collapsePanel: () => {
+    ipcRenderer.send("collapse-panel");
+  },
+
+  // Listen for panel expand event
+  onPanelExpand: (callback) => {
+    ipcRenderer.on("panel-expand", () => callback());
+  },
+
+  // Listen for panel collapse event
+  onPanelCollapse: (callback) => {
+    ipcRenderer.on("panel-collapse", () => callback());
   },
 
   // Listen for new page request from tray menu
@@ -35,42 +37,35 @@ contextBridge.exposeInMainWorld("folio", {
     ipcRenderer.on("new-page", () => callback());
   },
 
-  // Request the main process to hide the panel
-  hidePanel: () => {
-    ipcRenderer.send("hide-panel");
+  /*
+   * Text selected in some OTHER application, captured when the read-aloud
+   * shortcut was pressed. Arrives as { text, app, method } on success, or
+   * { error, needsPermission } when nothing could be read — the renderer shows
+   * either, because a keypress that produces silence reads as a broken app.
+   */
+  onReadSelection: (callback) => {
+    ipcRenderer.on("read-selection", (_event, payload) => callback(payload));
   },
 
-  // ==========================================================================
-  // NOTION API — Proxied through main process to avoid CORS
-  // ==========================================================================
+  // ── Notion API (proxied through main process to avoid CORS) ──
 
-  // Search Notion pages shared with the integration
   notionSearch: (token, query) => {
     return ipcRenderer.invoke("notion:search", token, query);
   },
 
-  // Fetch a page's content as markdown
   notionFetchPage: (token, pageId) => {
     return ipcRenderer.invoke("notion:fetch-page", token, pageId);
   },
 
-  // Push markdown content to a Notion page
   notionPushPage: (token, pageId, markdown) => {
     return ipcRenderer.invoke("notion:push-page", token, pageId, markdown);
   },
 
-  // Get page metadata (title, last_edited_time, etc.)
   notionGetMeta: (token, pageId) => {
     return ipcRenderer.invoke("notion:get-meta", token, pageId);
   },
 
-  // ==========================================================================
-  // PLATFORM INFO
-  // ==========================================================================
-
-  // The OS platform string (darwin, win32, linux)
+  // ── Platform Info ──
   platform: process.platform,
-
-  // Whether we're running in Electron (renderer can check this)
   isElectron: true,
 });
