@@ -47,6 +47,21 @@ contextBridge.exposeInMainWorld("folio", {
     ipcRenderer.on("read-selection", (_event, payload) => callback(payload));
   },
 
+  /* Reading finished or was stopped — keeps the shortcut's toggle honest. */
+  readingEnded: () => {
+    ipcRenderer.send("reading-ended");
+  },
+
+  /* A button was pressed on the floating control pill. */
+  onReaderControl: (callback) => {
+    ipcRenderer.on("reader-control", (_event, msg) => callback(msg || {}));
+  },
+
+  /* Tell the pill what to show. The reader is the source of truth. */
+  reportReaderState: (state) => {
+    ipcRenderer.send("reader-state", state);
+  },
+
   // ── Notion API (proxied through main process to avoid CORS) ──
 
   notionSearch: (token, query) => {

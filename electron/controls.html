@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Folio reader</title>
+<!--
+  The transport controls for reading a selection.
+
+  A separate, tiny, always-on-top window rather than the panel, because the
+  whole point of this feature is that it does NOT take over the screen. It
+  never takes focus — you keep typing in whatever you were reading from — and
+  it only exists while something is being read.
+-->
+<style>
+  :root { color-scheme: dark light; }
+  html, body {
+    margin: 0; height: 100%;
+    background: transparent;
+    font-family: -apple-system, system-ui, sans-serif;
+    user-select: none; cursor: default;
+    overflow: hidden;
+  }
+  #pill {
+    display: flex; align-items: center; gap: 6px;
+    height: 100%;
+    padding: 0 10px;
+    background: rgba(28, 27, 22, 0.92);
+    color: #eae6d9;
+    border-radius: 999px;
+    /* Draggable, so it can be moved off whatever it happens to cover. */
+    -webkit-app-region: drag;
+  }
+  button {
+    -webkit-app-region: no-drag;
+    border: none; background: none; color: #eae6d9;
+    font: 500 12px/1 -apple-system, system-ui, sans-serif;
+    padding: 6px 8px; border-radius: 8px; cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { background: rgba(255,255,255,0.12); }
+  button:active { transform: scale(0.94); }
+  #play { min-width: 46px; font-weight: 600; }
+  #rate { min-width: 38px; font-variant-numeric: tabular-nums; }
+  #status {
+    -webkit-app-region: no-drag;
+    flex: 1; min-width: 0;
+    font-size: 11px; color: #9a9384;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #close { color: #9a9384; font-size: 15px; padding: 4px 6px; }
+  #close:hover { color: #eae6d9; background: none; }
+</style>
+
+<div id="pill">
+  <button id="play" title="Play / pause">Pause</button>
+  <button id="back" title="Back a chunk">↺</button>
+  <button id="fwd" title="Forward a chunk">↻</button>
+  <button id="rate" title="Speed">1×</button>
+  <span id="status"></span>
+  <button id="close" title="Stop reading">&times;</button>
+</div>
+
+<script>
+  const { ipcRenderer } = require("electron");
+  const $ = (id) => document.getElementById(id);
+
+  const send = (action, value) => ipcRenderer.send("reader-control", { action, value });
+
+  $("play").addEventListener("click", () => send("toggle"));
+  $("back").addEventListener("click", () => send("back"));
+  $("fwd").addEventListener("click", () => send("forward"));
+  $("rate").addEventListener("click", () => send("cycleRate"));
+  $("close").addEventListener("click", () => send("stop"));
+
+  /* The reader is the source of truth; this window only mirrors it. */
+  ipcRenderer.on("reader-state", (_e, s) => {
+    $("play").textContent = s.playing ? "Pause" : "Play";
+    $("rate").textContent = (s.rate || 1) + "×";
+    $("status").textContent = s.status || s.source || "";
+  });
+</script>

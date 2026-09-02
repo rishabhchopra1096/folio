@@ -3,19 +3,27 @@
  * READALOUD.JS — read text selected in any other application
  * =============================================================================
  * WHAT THIS IS FOR:
- * Press the shortcut anywhere on the Mac, and whatever is selected appears here
- * and is read aloud. The capturing happens in electron/capture.js; this file is
- * everything after the text arrives.
+ * Press the shortcut anywhere on the Mac and whatever is selected is read
+ * aloud. The capturing happens in electron/capture.js; this file is everything
+ * after the text arrives.
  *
- * WHY THE TEXT IS SHOWN HERE RATHER THAN HIGHLIGHTED IN PLACE:
- * The capture gives us a string and, at best, the screen rectangle of the whole
- * selection. It does not give per-word coordinates or character offsets into
- * the source application's own layout, so painting a moving highlight inside
- * Notes.app or Chrome is not possible — not difficult, impossible.
+ * NOTHING APPEARS ON SCREEN. Reading someone's selection into a window they did
+ * not ask to open is not a reader, it is a paste. The panel stays shut and the
+ * audio simply starts.
  *
- * That turns out to be a gift. Because we render the text ourselves, the hard
- * problem Folio solves in js/tts.js — mapping a character offset back onto a
- * live DOM node — collapses into a lookup, since we built the DOM.
+ * SO WHY IS THERE A VIEW AT ALL?
+ * Because a highlight has to be painted onto SOMETHING, and the source
+ * application cannot be that something: the capture yields a string and, at
+ * best, one screen rectangle — never per-word coordinates or character offsets
+ * into another app's layout. Highlighting inside Notes.app is impossible, not
+ * difficult.
+ *
+ * So the text is rendered into a hidden view. That view is what makes the
+ * word-level highlight and the transport controls possible, and it can be
+ * revealed from the tray when they are wanted. Kept hidden, it costs nothing.
+ * A pleasant side effect: because we build that DOM, mapping a character offset
+ * back onto a live node is a binary search and a subtraction, rather than the
+ * tree-walking index js/tts.js needs.
  *
  * THE RULE THIS FILE EXISTS TO OBEY:
  * The audio element and the thing painting the highlight live in the SAME
@@ -127,35 +135,49 @@ const ReadAloud = (function () {
     if (window.folio && window.folio.onReadSelection) {
       window.folio.onReadSelection(receive);
     }
+
+    if (window.folio && window.folio.onReaderControl) {
+      window.folio.onReaderControl(function (msg) {
+        switch (msg.action) {
+          case "toggle":    toggle(); break;
+          case "back":      skip(-1); break;
+          case "forward":   skip(1); break;
+          case "cycleRate": cycleRate(); break;
+          case "stop":      stop(); break;
+        }
+      });
+    }
   }
 
   // ==========================================================================
   // RECEIVING A SELECTION
   // ==========================================================================
 
+  /*
+   * A selection arrived. Read it — do NOT put it on screen.
+   *
+   * The panel stays shut. Someone who selects a paragraph in Notes and presses
+   * a shortcut wants to hear it, not to find their text has been copied into
+   * another application. The view is still built, because it is what makes the
+   * highlight and the transport controls possible, but it is only revealed if
+   * asked for.
+   *
+   * Errors do not surface here either — they are reported by the main process
+   * as a notification, because a hidden reader has nowhere on screen to put one.
+   */
   function receive(payload) {
     if (!view) return;
-    stop();
 
-    if (!payload || payload.error) {
-      show();
-      meta.textContent = "Couldn't read a selection";
-      body.innerHTML = "";
-      const p = document.createElement("p");
-      p.className = "readaloud-error";
-      p.textContent = (payload && payload.error) || "Nothing was captured.";
-      body.appendChild(p);
-      bar.style.display = "none";
-      return;
-    }
+    if (payload && payload.stop) { stop(); return; }
+    stop();
+    if (!payload || payload.error) return;
 
     docText = String(payload.text || "").replace(/\r\n/g, "\n").trim();
-    if (!docText) { receive({ error: "That selection was empty." }); return; }
+    if (!docText) return;
 
-    render(payload);
+    render(payload);                 // builds the DOM the highlight needs
     chunks = chunkText(docText);
     chunkIdx = 0;
-    show();
     play();                          // pressing the shortcut means "read it"
   }
 
@@ -224,15 +246,34 @@ const ReadAloud = (function () {
   // PLAYBACK
   // ==========================================================================
 
+  /*
+   * Which voice, and say so.
+   *
+   * The desktop app runs from a file:// origin, so it has its OWN localStorage
+   * — a Speechify key saved in the web app is invisible here. That is not
+   * obvious, and silently reading in the 2009 system voice instead of saying
+   * why is the kind of quiet downgrade that makes software feel broken.
+   */
+  let voiceLabel = "";
+
   function engine() {
-    if (typeof SpeechifyProvider !== "undefined" && SpeechifyProvider.available()) {
+    if (typeof SpeechifyProvider === "undefined") {
+      voiceLabel = "system voice";
+      return null;
+    }
+    if (SpeechifyProvider.available()) {
+      const v = SpeechifyProvider.defaultVoice();
+      voiceLabel = (v && v.name) ? v.name.replace(/\s*\(.*\)$/, "") : "Speechify";
       return SpeechifyProvider;
     }
-    return null;                     // caller falls back to the system voice
+    voiceLabel = SpeechifyProvider.keyWasRejected && SpeechifyProvider.keyWasRejected()
+      ? "system voice — Speechify key rejected"
+      : "system voice — add a Speechify key in Settings";
+    return null;
   }
 
   function speakChunk() {
-    if (chunkIdx >= chunks.length) { stop(); return; }
+    if (chunkIdx >= chunks.length) { stop(); return; }   // finished; stop() reports it
     const c = chunks[chunkIdx];
     const next = chunks[chunkIdx + 1];
 
@@ -261,10 +302,13 @@ const ReadAloud = (function () {
         if (info && info.phase === "preparing") {
           const s = (info.elapsedMs / 1000).toFixed(1);
           const exp = Math.max(1, Math.round(info.expectedMs / 100) / 10);
-          el("readaloud-status").textContent = `Preparing ${s}s of ~${exp}s`;
+          statusText = `Preparing ${s}s of ~${exp}s`;
         } else {
-          el("readaloud-status").textContent = "";
+          statusText = "";
         }
+        const node = el("readaloud-status");
+        if (node) node.textContent = statusText;
+        updateBar();                     // the pill shows it too
       },
     });
   }
@@ -304,10 +348,25 @@ const ReadAloud = (function () {
   function toggle() { playing ? pause() : play(); }
 
   function stop() {
+    const was = playing;
     playing = false;
     if (handle) { handle.stop(); handle = null; }
     if (wordHL) wordHL.clear();
     chunkIdx = 0;
+    updateBar();
+    // The shortcut is a toggle, and the main process owns that state.
+    if (was && window.folio && window.folio.readingEnded) window.folio.readingEnded();
+  }
+
+  /* Move a whole chunk at a time — the unit the audio is actually cached in,
+     so skipping backwards is instant and free rather than a re-synthesis. */
+  function skip(delta) {
+    if (!chunks.length) return;
+    const wasPlaying = playing;
+    if (handle) { handle.stop(); handle = null; }
+    chunkIdx = Math.max(0, Math.min(chunks.length - 1, chunkIdx + delta));
+    if (wordHL) wordHL.clear();
+    if (wasPlaying) { playing = true; speakChunk(); }
     updateBar();
   }
 
@@ -327,7 +386,24 @@ const ReadAloud = (function () {
     if (btn) btn.textContent = playing ? "Pause" : "Play";
     const r = el("readaloud-rate");
     if (r) r.textContent = rate + "×";
+
+    /*
+     * The floating pill mirrors this — it holds no state of its own, so there
+     * is never a version of the truth that can drift from the audio.
+     */
+    if (window.folio && window.folio.reportReaderState) {
+      window.folio.reportReaderState({
+        playing: playing,
+        rate: rate,
+        status: statusText,
+        source: voiceLabel,
+        chunk: chunkIdx + 1,
+        chunks: chunks.length,
+      });
+    }
   }
+
+  let statusText = "";
 
   function show() { if (view) view.classList.add("active"); }
 
@@ -336,5 +412,12 @@ const ReadAloud = (function () {
     if (view) view.classList.remove("active");
   }
 
-  return { init, receive, close, _chunkText: chunkText };
+  /* Reveal the reader — the only way the panel ever opens for this feature. */
+  function reveal() {
+    if (!view || !docText) return;
+    show();
+  }
+
+  return { init, receive, close, reveal, skip, isReading: () => playing,
+           _chunkText: chunkText };
 })();

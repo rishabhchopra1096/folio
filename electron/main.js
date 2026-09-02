@@ -30,6 +30,90 @@ const {
 
 /* Reading a selection from any other application. */
 const { captureSelection, stopHook } = require("./capture.js");
+
+/*
+ * ==========================================================================
+ * THE READER'S CONTROLS
+ * ==========================================================================
+ * A small always-on-top pill, not the panel. The point of reading a selection
+ * is that it does not take over the screen, so the controls must not either.
+ *
+ * NEVER FOCUSABLE, and always shown with showInactive(): you keep typing in
+ * whatever you were reading from. `"floating"` rather than `"screen-saver"`
+ * because the higher level drags full-screen Spaces around when it appears.
+ */
+let controlsWin = null;
+
+function createControls() {
+  if (controlsWin && !controlsWin.isDestroyed()) return controlsWin;
+  controlsWin = new BrowserWindow({
+    width: 300,
+    height: 44,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    focusable: false,              // must never steal the keyboard
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  controlsWin.setAlwaysOnTop(true, "floating", 1);
+  controlsWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  controlsWin.loadFile(path.join(__dirname, "controls.html"));
+  controlsWin.on("closed", () => { controlsWin = null; });
+  return controlsWin;
+}
+
+function showControls() {
+  const w = createControls();
+  if (w.isVisible()) return;
+  // Bottom-centre of the display the cursor is on, out of the way of text.
+  const { screen } = require("electron");
+  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  w.setBounds({
+    x: Math.round(area.x + (area.width - 300) / 2),
+    y: Math.round(area.y + area.height - 76),
+    width: 300, height: 44,
+  });
+  w.showInactive();               // never takes focus
+}
+
+function hideControls() {
+  if (controlsWin && !controlsWin.isDestroyed() && controlsWin.isVisible()) {
+    controlsWin.hide();
+  }
+}
+
+function sendReaderState(state) {
+  if (controlsWin && !controlsWin.isDestroyed()) {
+    controlsWin.webContents.send("reader-state", state || {});
+  }
+}
+
+/*
+ * Whether a selection is currently being read. Held here rather than in the
+ * renderer because the shortcut is a toggle and the main process is what sees
+ * the keypress.
+ */
+let readingNow = false;
+
+/*
+ * Say something without opening anything. The reader is deliberately invisible,
+ * so a failure has nowhere on screen to appear — a notification is the only
+ * honest way to report one.
+ */
+function notify(message) {
+  try {
+    const { Notification } = require("electron");
+    if (Notification.isSupported()) {
+      new Notification({ title: "Folio", body: String(message) }).show();
+      return;
+    }
+  } catch { /* fall through */ }
+  console.warn("[folio]", message);
+}
 const path = require("path");
 
 // =============================================================================
@@ -205,6 +289,21 @@ function updateTrayMenu() {
       click: togglePanel,
     },
     {
+      /*
+       * The reader is deliberately invisible while it plays. This is how you
+       * get at it when you want the transport controls or want to see where it
+       * has got to.
+       */
+      label: "Show reader",
+      click: () => {
+        expandPanel();
+        if (win && win.webContents) {
+          win.webContents.executeJavaScript(
+            "typeof ReadAloud !== 'undefined' && ReadAloud.reveal()").catch(() => {});
+        }
+      },
+    },
+    {
       label: "New Page",
       click: () => {
         if (!isExpanded) expandPanel();
@@ -262,6 +361,24 @@ function setupIPC() {
   });
 
   // Notion API proxy — all calls go through main process to avoid CORS
+  /* The renderer reports when reading ends, so the toggle does not get stuck. */
+  ipcMain.on("reading-ended", () => {
+    readingNow = false;
+    hideControls();
+  });
+
+  /* A button on the pill. The reader lives in the panel renderer, not here. */
+  ipcMain.on("reader-control", (_event, msg) => {
+    if (msg && msg.action === "stop") {
+      readingNow = false;
+      hideControls();
+    }
+    if (win && win.webContents) win.webContents.send("reader-control", msg);
+  });
+
+  /* The reader telling the pill what to display. */
+  ipcMain.on("reader-state", (_event, state) => sendReaderState(state));
+
   ipcMain.handle("notion:search", async (_event, token, query) => {
     return notionFetch(token, "POST", "/v1/search", {
       query: query || "",
@@ -353,6 +470,18 @@ app.whenReady().then(() => {
    * cannot Cmd+C itself while it is the one blocked handling the keystroke.
    */
   const readRegistered = globalShortcut.register("CommandOrControl+Shift+R", async () => {
+    /*
+     * Pressing it again while something is being read means STOP. Reaching for
+     * the mouse to silence a shortcut you started with the keyboard is worse
+     * than the reading itself.
+     */
+    if (readingNow) {
+      readingNow = false;
+      hideControls();
+      if (win && win.webContents) win.webContents.send("read-selection", { stop: true });
+      return;
+    }
+
     let result;
     try {
       result = await captureSelection();
@@ -360,7 +489,32 @@ app.whenReady().then(() => {
       result = { error: "Could not read the selection: " + err.message };
     }
 
-    expandPanel();
+    /*
+     * Always logged. This path runs with no window on screen, so without it a
+     * failure is genuinely invisible — which is exactly how it behaved the
+     * first time it broke.
+     */
+    console.log("[folio] read-selection:", result && result.error
+      ? "FAILED — " + result.error
+      : `${result.method} · ${result.app} · ${(result.text || "").length} chars`);
+
+    /*
+     * DELIBERATELY NOT expandPanel().
+     *
+     * You asked for a reader, not a place to put your text. The panel stays
+     * shut and the audio simply starts; the window is already alive as an 8px
+     * edge tab, which is all that is needed to play sound. Reading someone's
+     * selection into an app they did not ask to open is the behaviour this
+     * replaced.
+     */
+    if (result && result.error) {
+      // Silence would be indistinguishable from a broken shortcut.
+      notify(result.error);
+      return;
+    }
+
+    readingNow = true;
+    showControls();
     if (win && win.webContents) win.webContents.send("read-selection", result);
   });
 
@@ -390,6 +544,7 @@ app.on("second-instance", () => {
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   stopHook();
+  if (controlsWin && !controlsWin.isDestroyed()) controlsWin.destroy();
 });
 
 // Keep the app running when all windows are closed (tray app behavior)
