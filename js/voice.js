@@ -39,6 +39,22 @@ const Voice = (function () {
   // Groq's OpenAI-compatible audio transcription endpoint
   const GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 
+  /*
+   * The language dictation is expected to be in. English by default because
+   * that is what is dictated here; anything else is an explicit choice.
+   */
+  const DEFAULT_LANGUAGE = "en";
+
+  function transcriptionLanguage() {
+    try {
+      const s = FolioStore.getSettings();
+      // An explicitly empty string means "detect it", which is the old behaviour.
+      return typeof s.voiceLanguage === "string" ? s.voiceLanguage : DEFAULT_LANGUAGE;
+    } catch {
+      return DEFAULT_LANGUAGE;
+    }
+  }
+
   // whisper-large-v3 is Groq's best transcription model; free tier is generous
   const GROQ_MODEL = "whisper-large-v3";
 
@@ -232,6 +248,23 @@ const Voice = (function () {
     const form = new FormData();
     form.append("file", blob, `recording.${ext}`);
     form.append("model", GROQ_MODEL);
+
+    /*
+     * TELL IT THE LANGUAGE. Without this parameter Whisper detects the language
+     * itself, and on a short or accented clip it guesses — which is why a
+     * dictated comment would occasionally come back in another language
+     * entirely. Naming the language removes the guess, and also makes the
+     * transcription a little faster and more accurate.
+     *
+     * Override with, in the console:
+     *   const s = FolioStore.getSettings(); s.voiceLanguage = "hi";
+     *   FolioStore.saveSettings(s);
+     * Set it to "" to go back to letting Whisper decide.
+     */
+    const lang = transcriptionLanguage();
+    // An empty setting means "detect it" — omit the field rather than sending
+    // an empty one, which is a different and undefined request.
+    if (lang) form.append("language", lang);
 
     let response;
     try {
