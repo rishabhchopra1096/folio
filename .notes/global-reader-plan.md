@@ -383,3 +383,75 @@ that list should work. The genuinely unreachable cases are narrower:
 
 Which apps really fall into those is an empirical question, and that is what
 `npm run capture-test` is for.
+
+
+---
+
+## Step 1, run automatically — the real compatibility picture
+
+Driven by `tools/capture-matrix.js`, which opens its own scratch files, sends
+⌘A, and asks what was captured. **It verifies the CONTENT, not just that
+something came back** — the first run reported three false positives, all
+carrying the same 1,044 characters from an earlier test, because the clipboard
+fallback happily returns stale pasteboard data. Comparing lengths would have
+shipped a wrong conclusion.
+
+| app | result | method | note |
+|---|---|---|---|
+| TextEdit | **captured**, 169 ch | AXAPI | native Cocoa |
+| Google Chrome | **captured**, 169 ch | AXAPI | Chromium |
+| Cursor | **captured**, 169 ch | AXAPI | **Electron** |
+| Visual Studio Code | **captured**, 169 ch | AXAPI | **Electron** |
+| Sublime Text | nothing | — | custom-drawn text |
+| Safari | nothing | — | test artefact, see below |
+| Preview | skipped | — | PDF generation failed locally |
+
+All four successes reported **screen coordinates**.
+
+### Three findings that change the design
+
+**1. The two-second debounce is real but it warms up.** Chrome, Cursor and VS
+Code all answered through the **accessibility API**, not the clipboard — because
+this test waits 3.5 s before asking. An earlier ad-hoc test of Chrome, asking
+immediately, came back through the clipboard instead. So: **the first press
+against a Chromium or Electron app will miss AX; later ones will not.** The
+fallback carries the cold case, and the design must not assume either one.
+
+**2. `selection-hook`'s clipboard fallback does NOT fire on
+`getCurrentSelection()` in passive mode.** Diagnosed directly against Sublime
+Text:
+
+```
+Sublime Text:
+  selection:              null
+  clipboard now:          ""                          <- fallback never copied
+  after explicit Cmd+C:   "The quick brown fox ..."   <- but the text IS reachable
+```
+
+The text is right there; the library simply does not reach for it on the
+on-demand path. **So we implement that step ourselves** — if
+`getCurrentSelection()` returns null, send our own ⌘C and read the pasteboard.
+That is exactly the fallback described earlier in this document, and it now has
+a measured reason to exist rather than a theoretical one.
+
+**3. Safari was a test artefact, not an incompatibility.** It returned 86
+characters — `file:///private/var/folders/...`, the URL. ⌘A had gone to the
+address bar, because focus lands in the toolbar when a window opens. Safari is
+**unverified**, not broken; testing it properly needs a click into the page
+first.
+
+### What this means for the build
+
+The capture layer is now specified by measurement rather than by hope:
+
+```
+1. hook.getCurrentSelection()      — AX. Works in native Cocoa, and in
+                                     Chromium/Electron once warm.
+2. if null → synthetic ⌘C          — our own, because the library will not do
+                                     it here. Reaches Sublime and anything else
+                                     with a Copy command.
+3. if still nothing → say so       — naming the app, per the agreed design.
+```
+
+Steps 1 and 2 together cover every app tested where the text is reachable at
+all. Step 3 is honest about the rest.
