@@ -329,3 +329,57 @@ the queue, the rate handling all come along unchanged, which is the entire point
 3. **The chunker**, shared with `js/tts.js`.
 4. **Polish:** per-app method cache, failure messages, cost readout, the
    already-reading case.
+
+
+---
+
+## Step 1 result — capture works, and it is proven not assumed
+
+`selection-hook@2.1.1` installed with a **prebuilt `darwin-arm64` binary**: no
+compilation, no `electron-rebuild`. It is Folio's first runtime dependency; the
+web build is unaffected because Vercel serves static files and never sees
+`node_modules`.
+
+First real capture, from a live app:
+
+```
+app                   method      chars  coords  preview
+com.google.Chrome     CLIPBOARD    1044  yes    "Wait, I just skimmed throu"
+```
+
+Three things that confirms:
+
+1. **Capture works end to end** — 1,044 characters out of Chrome.
+2. **The research was right about Chromium.** It came back via `CLIPBOARD`, not
+   `AXAPI`, exactly as predicted by the two-second accessibility-tree debounce
+   in Electron's and Chrome's own source. Had we shipped pure-AX, this would
+   have returned nothing.
+3. **Coordinates come back too** — which contradicts the post-mortem's premise
+   that the capture path "yields text only — no screen coordinates". It gives no
+   per-word offsets, so in-place karaoke is still impossible and the
+   render-it-ourselves decision stands. But the reading window can open **beside
+   the selection** instead of at a fixed screen edge.
+
+`npm run capture-test [seconds]` runs the harness. It samples the current
+selection, records one row per app+method pair, and prints a compatibility
+summary. It synthesises nothing and bills nothing.
+
+### The failure design, settled
+
+AX first, then synthetic ⌘C, and only if both fail does it say so — naming the
+app. `selection-hook` does the first two internally; `enableClipboard: true`
+turns the fallback on.
+
+Worth correcting an earlier framing in this document: PopClip's non-working list
+is about **automatic** detection via I-beam cursor tracking, not about explicit
+triggers. PopClip's own guidance for JetBrains is that it "can be made to appear
+by using the keyboard shortcut". With a hotkey plus clipboard fallback, most of
+that list should work. The genuinely unreachable cases are narrower:
+
+- **password fields** — Secure Input blocks synthetic events system-wide, by
+  design, and reading a password aloud is not a feature anyway
+- **apps with no Copy command** — the synthetic ⌘C produces a system beep
+- **VMs (Parallels, Citrix, VMWare)** — the copy goes to the guest OS
+
+Which apps really fall into those is an empirical question, and that is what
+`npm run capture-test` is for.

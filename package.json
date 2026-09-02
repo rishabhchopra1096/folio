@@ -1,18 +1,19 @@
 {
   "name": "folio-desktop",
   "version": "1.0.0",
-  "description": "Folio — A macOS side panel for quick notes with Notion sync",
+  "description": "Folio \u2014 A macOS side panel for quick notes with Notion sync",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --mac",
-    "download-vendor": "node scripts/download-vendor.js"
+    "download-vendor": "node scripts/download-vendor.js",
+    "capture-test": "node tools/capture-test.js"
   },
   "author": "Rishabh Chopra",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
   },
   "build": {
     "appId": "com.folio.desktop",
@@ -21,5 +22,8 @@
       "category": "public.app-category.productivity",
       "target": "dmg"
     }
+  },
+  "dependencies": {
+    "selection-hook": "^2.1.1"
   }
 }
