@@ -54,7 +54,12 @@ dom.window.document.createElement = (tag) => {
 
 // Expose the exporter without running init().
 const src = fs.readFileSync(REPO+"/js/comments.js","utf8")
-  .replace("  return {\n    init,", "  return {\n    __export: exportAnnotations,\n    init,");
+  /*
+   * Reach the FULL export directly. exportAnnotations() now asks which of the
+   * two exports is wanted, and a test should say which one it means rather than
+   * depend on whichever happens to be the default.
+   */
+  .replace("  return {\n    init,", "  return {\n    __export: () => runExport(\"full\"),\n    init,");
 const C = eval(src + "; Comments;");
 C.__export();
 

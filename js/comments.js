@@ -724,11 +724,179 @@ const Comments = (function () {
      * commented lines would strip out the thing that gives them meaning.
      */
     const blocks = (doc && doc.content && doc.content.blocks) || [];
+    const isVideo = blocks.some((b) => b.type === "video");
+
+    if (!highlights.length && !comments.length && !blocks.length) {
+      notice("Nothing to export yet.");
+      return;
+    }
+
+    /*
+     * Two exports, because they answer different questions and neither
+     * replaces the other.
+     *
+     * The whole document with comments inline is what you want when the
+     * document is the point and your notes are annotations on it. A digest of
+     * just the highlighted passages is what you want when YOUR NOTES are the
+     * point and the document was only where you found them — the difference
+     * between re-reading a chapter and reviewing what you marked in it.
+     *
+     * This used to export only the digest, then only the full document. Asking
+     * is better than guessing which of those someone meant.
+     */
+    chooseExport(isVideo, function (kind) { runExport(kind, docId); });
+  }
+
+  /*
+   * Do one specific export. Separated from the chooser so that both are
+   * reachable directly — by a test that means a particular one, and by anything
+   * that already knows which is wanted.
+   */
+  function runExport(kind, docId) {
+    const id = docId || Reader.getCurrentDocId();
+    if (!id) { notice("Open a document first."); return; }
+
+    const doc = FolioStore.getDocument(id);
+    const highlights = FolioStore.getHighlights(id);
+    const comments = FolioStore.getComments(id);
+    const blocks = (doc && doc.content && doc.content.blocks) || [];
+
+    if (kind === "digest") return exportHighlightsDigest(doc, highlights, comments);
     if (blocks.some((b) => b.type === "video")) {
       return exportTranscript(doc, blocks, highlights, comments);
     }
-
     return exportTextDocument(doc, blocks, highlights, comments);
+  }
+
+  /*
+   * Ask which export is wanted.
+   *
+   * The wording says what you GET rather than naming a format, because
+   * "annotations" and "transcript" mean nothing until you have seen both.
+   */
+  function chooseExport(isVideo, done) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    const fullLabel = isVideo ? "Full transcript" : "Full document";
+    const fullDesc = isVideo
+      ? "Every line of the transcript, with your comments under the moment they belong to."
+      : "The whole document, with each comment inline under the passage it is about.";
+
+    overlay.innerHTML = `
+      <div class="modal export-choice">
+        <h3>Export</h3>
+        <button class="export-option" data-kind="full">
+          <span class="export-option-title">${fullLabel}</span>
+          <span class="export-option-desc">${fullDesc}</span>
+        </button>
+        <button class="export-option" data-kind="digest">
+          <span class="export-option-title">Highlights &amp; comments only</span>
+          <span class="export-option-desc">Just the passages you highlighted and what you
+            wrote about them, plus your page notes. Without the rest of the ${
+              isVideo ? "transcript" : "document"}.</span>
+        </button>
+        <div class="modal-actions">
+          <button class="modal-btn cancel-btn">Cancel</button>
+        </div>
+      </div>`;
+
+    const close = () => overlay.remove();
+    overlay.querySelector(".cancel-btn").onclick = close;
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    overlay.querySelectorAll(".export-option").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        close();
+        done(btn.dataset.kind);
+      });
+    });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+    });
+
+    document.body.appendChild(overlay);
+  }
+
+  /*
+   * ==========================================================================
+   * EXPORT: JUST WHAT YOU MARKED
+   * ==========================================================================
+   * The passages you highlighted, what you wrote about each, and your
+   * page-level notes — without the document around them.
+   *
+   * READ ONLY, like the other exports: it reads and writes a file, and calls
+   * nothing that saves.
+   */
+  function exportHighlightsDigest(doc, highlights, comments) {
+    if (!highlights.length && !comments.length) {
+      notice("No highlights or comments to export yet.");
+      return;
+    }
+
+    // Creation order, so the export roughly mirrors the order you read in.
+    const sortedHighlights = [...highlights].sort(
+      (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
+    );
+
+    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
+    const today = new Date().toISOString().slice(0, 10);
+
+    const lines = [];
+    lines.push(`# Highlights & comments — ${title}`);
+    lines.push(`_Exported ${today}_`);
+    lines.push("");
+
+    // Page-level notes first — they are about the whole thing, not a quote.
+    const generalNotes = comments.filter((c) => c.isGeneral || (c.highlightId === null));
+    if (generalNotes.length) {
+      lines.push("## General notes");
+      lines.push("");
+      generalNotes
+        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+        .forEach((c) => {
+          const noteLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+          if (!noteLines.length) return;
+          lines.push(`- ${noteLines[0]}`);
+          noteLines.slice(1).forEach((l) => lines.push(`  ${l}`));
+        });
+      lines.push("");
+      if (sortedHighlights.length) {
+        lines.push("## Highlights");
+        lines.push("");
+      }
+    }
+
+    sortedHighlights.forEach((hl) => {
+      // Collapse internal whitespace so a multi-line highlight reads as one quote.
+      const quoteText = (hl.text || "").replace(/\s+/g, " ").trim();
+      lines.push(`- "${quoteText}"`);
+      comments.filter((c) => c.highlightId === hl.id).forEach((c) => {
+        // Indented so a comment visually attaches to its quote.
+        const commentLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
+        commentLines.forEach((cl, i) => {
+          lines.push(`${i === 0 ? "  → " : "    "}${cl}`);
+        });
+      });
+      lines.push("");
+    });
+
+    /*
+     * Comments whose highlight was deleted after the fact. Dropping them would
+     * silently lose something the user wrote, so they are kept and labelled.
+     */
+    const orphans = comments.filter((c) =>
+      !c.isGeneral && c.highlightId != null &&
+      !highlights.some((h) => h.id === c.highlightId));
+    if (orphans.length) {
+      lines.push("---");
+      lines.push("");
+      lines.push("**Notes whose highlight was removed:**");
+      lines.push("");
+      orphans.forEach((c) => lines.push(`- ${c.text || ""}`));
+    }
+
+    const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
+    downloadBlob(lines.join("\n"), `${safeTitle}-highlights-${today}.md`, "text/markdown");
   }
 
   /*
@@ -1192,5 +1360,11 @@ const Comments = (function () {
     attachToHighlight,
     unanchor,
     revealCommentsFor,
+    /*
+     * The two exports, individually. exportAnnotations() asks which one;
+     * these do one without asking.
+     */
+    exportFull: (docId) => runExport("full", docId),
+    exportDigest: (docId) => runExport("digest", docId),
   };
 })();

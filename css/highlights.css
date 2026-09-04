@@ -1103,3 +1103,38 @@ body[data-video-doc] #article-wrap {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── EXPORT CHOOSER ──
+   Two exports that answer different questions, so the choice is presented as
+   what you GET rather than as a format name. */
+.modal.export-choice { max-width: 420px; }
+.export-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  transition: border-color 0.15s, background 0.15s;
+}
+.export-option:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.export-option-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 3px;
+}
+.export-option-desc {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+}

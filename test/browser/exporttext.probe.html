@@ -92,6 +92,22 @@ async function main() {
   w.URL.createObjectURL = function (blob) { captured = blob; return realCreate(blob); };
 
   d.getElementById("comments-export").click();
+  await wait(400);
+
+  /*
+   * Export now ASKS, because the two exports answer different questions and
+   * neither replaces the other. Pick the full document for these assertions.
+   */
+  const chooser = d.querySelector(".modal.export-choice");
+  ok("export offers a choice", !!chooser);
+  const options = chooser ? chooser.querySelectorAll(".export-option") : [];
+  ok("there are two of them", options.length === 2, String(options.length));
+  ok("one is the full document",
+     !!Array.from(options).find((b) => b.dataset.kind === "full"));
+  ok("the other is highlights only",
+     !!Array.from(options).find((b) => b.dataset.kind === "digest"));
+
+  Array.from(options).find((b) => b.dataset.kind === "full").click();
   await wait(800);
 
   ok("an export file was produced", !!captured);
@@ -142,6 +158,32 @@ async function main() {
 
   const after = JSON.parse(w.localStorage.getItem("folio_comments_" + DOC));
   ok("all four comments still exist afterwards", after.length === 4, String(after.length));
+
+  // ── THE OTHER OPTION: just what was marked ──
+  captured = null;
+  d.getElementById("comments-export").click();
+  await wait(400);
+  const chooser2 = d.querySelector(".modal.export-choice");
+  ok("the chooser appears again", !!chooser2);
+  if (chooser2) {
+    Array.from(chooser2.querySelectorAll(".export-option"))
+      .find((b) => b.dataset.kind === "digest").click();
+    await wait(800);
+  }
+  const digest = captured ? await captured.text() : "";
+
+  ok("the digest was produced", !!digest, "nothing captured");
+  ok("it quotes the highlighted passage",
+     digest.includes(HL_ONE), digest.slice(0, 200));
+  ok("it carries the comment on that passage",
+     digest.includes("this is the decided bit"));
+  ok("it keeps the page-level note under its own heading",
+     /## General notes/.test(digest) && digest.includes("a page level note"),
+     digest.slice(0, 300));
+  ok("it keeps a note whose highlight was deleted",
+     digest.includes("orphaned but still mine"));
+  ok("and it does NOT contain the rest of the document",
+     !digest.includes(P_TWO), "P_TWO leaked into the digest");
 
   say("DONE");
 }
