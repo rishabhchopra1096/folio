@@ -229,6 +229,20 @@ const App = (function () {
   // ==========================================================================
 
   function init() {
+    /*
+     * Ask to keep the data BEFORE anything else. Every page lives in this
+     * browser and nowhere else, and browsers evict best-effort storage without
+     * warning — Safari after about a week of not visiting. Asking first is the
+     * difference between "my notes are gone" and not.
+     */
+    FolioStore.requestDurableStorage().then(function (state) {
+      if (state === "best-effort") {
+        console.warn("[folio] The browser would not promise to keep this data. " +
+                     "Export a backup from Settings, and consider installing Folio " +
+                     "as an app so it is not evicted.");
+      }
+    });
+
     // Initialize all modules
     Settings.init();
     SidebarUI.init();

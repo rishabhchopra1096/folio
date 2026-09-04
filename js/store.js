@@ -32,6 +32,50 @@ const FolioStore = (function () {
   // ==========================================================================
 
   // Generate a unique ID by combining a timestamp with a random string
+  /*
+   * ==========================================================================
+   * KEEPING THE DATA
+   * ==========================================================================
+   * Every page, highlight and comment in Folio lives in this browser and
+   * nowhere else. By default that storage is BEST EFFORT: Safari's tracking
+   * prevention clears it after about seven days without a visit, and Chrome
+   * evicts under storage pressure. Neither asks first, and the symptom would be
+   * someone's notes simply being gone.
+   *
+   * navigator.storage.persist() asks for durable storage instead. Chrome grants
+   * it silently on engagement signals; Safari grants it for installed web apps.
+   * It can be refused, so the answer is recorded rather than assumed.
+   *
+   * This used to be requested only when the read-aloud audio cache first
+   * opened — so a user who never turned on a paid voice never got it for their
+   * DOCUMENTS, which is the thing that actually matters.
+   */
+  async function requestDurableStorage() {
+    try {
+      if (!navigator.storage || !navigator.storage.persist) return "unsupported";
+      const already = navigator.storage.persisted
+        ? await navigator.storage.persisted() : false;
+      const granted = already || await navigator.storage.persist();
+      try { localStorage.setItem("folio_storage_durable", granted ? "yes" : "no"); }
+      catch { /* nothing more we can do */ }
+      return granted ? "durable" : "best-effort";
+    } catch { return "failed"; }
+  }
+
+  function storageDurability() {
+    try { return localStorage.getItem("folio_storage_durable") || "unknown"; }
+    catch { return "unknown"; }
+  }
+
+  /* How much room is left, so a warning can precede a failure. */
+  async function storageEstimate() {
+    try {
+      if (!navigator.storage || !navigator.storage.estimate) return null;
+      const e = await navigator.storage.estimate();
+      return { usage: e.usage || 0, quota: e.quota || 0 };
+    } catch { return null; }
+  }
+
   function generateId(prefix) {
     const timestamp = Date.now();
     const random = Math.random().toString(36).slice(2, 7);
@@ -496,6 +540,9 @@ const FolioStore = (function () {
     saveSettings,
     exportAll,
     importAll,
+    requestDurableStorage,
+    storageDurability,
+    storageEstimate,
     reorderDocument,
     isDescendantOf,
   };
