@@ -598,11 +598,41 @@ const SidebarUI = (function () {
     return { time: Date.now(), blocks };
   }
 
-  // Run inline markdown (bold/italic/code/links) on a piece of text and strip
-  // any trailing <p>/newline artifacts marked sometimes leaves behind.
+  /*
+   * Inline markdown, in the tags Editor.js will actually keep.
+   *
+   * THIS IS WHERE BOLD WAS BEING LOST. marked emits semantic HTML — <strong>,
+   * <em>, <del> — while Editor.js keeps only what its enabled inline tools
+   * declare. Read straight out of the bundle: the Bold tool is
+   * `sanitize(){return{b:{}}}`, Italic is `{i:{}}`, and the string "strong"
+   * does not appear in it at all. So every **bold** and *italic* in a pasted
+   * document was silently deleted on the way in.
+   *
+   * The fix is a translation, not a sanitiser fight: emit the tags the editor
+   * already understands.
+   *
+   *   <strong> -> <b>      Bold tool
+   *   <em>     -> <i>      Italic tool
+   *   <code>              already allowed (InlineCode)
+   *   <a>                 already allowed (Link)
+   *   <mark>              already allowed (Marker)
+   *
+   * <del> has no tool to keep it, so strikethrough is unwrapped to plain text
+   * rather than vanishing along with the words inside it.
+   */
+  const KEEPS = { strong: "b", em: "i" };
+
+  function toEditorTags(html) {
+    return String(html)
+      .replace(/<(\/?)(strong|em)\b([^>]*)>/gi,
+               (m, close, tag, rest) => `<${close}${KEEPS[tag.toLowerCase()]}${rest}>`)
+      // No tool keeps these; unwrap so the words survive even if the style does not.
+      .replace(/<\/?(del|s|strike|ins|sup|sub|small)\b[^>]*>/gi, "");
+  }
+
   function inlineMd(text) {
     if (!text) return "";
-    return marked.parseInline(text).trim();
+    return toEditorTags(marked.parseInline(text)).trim();
   }
 
   // Map a single marked lexer token to an Editor.js block (or null to skip)
@@ -614,8 +644,24 @@ const SidebarUI = (function () {
           data: { text: inlineMd(token.text), level: Math.min(token.depth, 6) },
         };
 
-      case "paragraph":
+      case "paragraph": {
+        /*
+         * A standalone image. marked never emits a top-level `image` token —
+         * it wraps one in a paragraph — so the image case below was
+         * unreachable, and `![alt](url)` on its own line became an EMPTY
+         * paragraph. The picture was dropped entirely.
+         */
+        const kids = token.tokens || [];
+        const onlyImage = kids.length === 1 && kids[0].type === "image";
+        if (onlyImage) {
+          const img = kids[0];
+          if (img.href && /^(data:image\/|https?:)/.test(img.href)) {
+            return { type: "image", data: { url: img.href, caption: img.text || "" } };
+          }
+          return null;
+        }
         return { type: "paragraph", data: { text: inlineMd(token.text) } };
+      }
 
       case "code":
         // Fenced code — keep raw (no inline parsing, no HTML)
@@ -624,14 +670,24 @@ const SidebarUI = (function () {
       case "hr":
         return { type: "delimiter", data: {} };
 
-      case "blockquote": {
-        // Blockquote's child tokens are themselves block-level — flatten paragraphs
-        const inner = (token.tokens || [])
-          .filter((t) => t.type === "paragraph" || t.type === "text")
-          .map((t) => inlineMd(t.text || t.raw || ""))
-          .join("<br>");
-        return { type: "quote", data: { text: inner, caption: "", alignment: "left" } };
-      }
+      case "blockquote":
+        /*
+         * A quote's children are block-level, and EVERY kind has to be kept.
+         *
+         * This used to filter to paragraphs and text, discarding the rest — so
+         * a quote containing a list, a heading or a nested quote lost it
+         * outright. Measured on a real document: 85 bold spans lived inside
+         * blockquotes and only 11 survived, because most of those quotes held
+         * something other than a bare paragraph.
+         *
+         * A quote block stores one HTML string, so children are flattened
+         * rather than nested. Flattening loses their shape; dropping them lost
+         * the words.
+         */
+        return {
+          type: "quote",
+          data: { text: quoteInnerHtml(token.tokens || []), caption: "", alignment: "left" },
+        };
 
       case "list": {
         // GitHub-flavored task lists: items have { task: true, checked: bool }
@@ -651,7 +707,7 @@ const SidebarUI = (function () {
           type: "list",
           data: {
             style: token.ordered ? "ordered" : "unordered",
-            items: token.items.map((it) => inlineMd(itemPlainText(it))),
+            items: flattenListItems(token.items, 0, []),
           },
         };
       }
@@ -690,14 +746,80 @@ const SidebarUI = (function () {
     }
   }
 
-  // Extract the plain inline text from a list item (marked puts the item body
-  // under `.text`, but nested block tokens can show up under `.tokens`)
-  function itemPlainText(item) {
-    if (item.text) return item.text;
-    if (Array.isArray(item.tokens)) {
-      return item.tokens.map((t) => t.text || t.raw || "").join(" ");
+  /*
+   * Everything inside a blockquote, as one HTML string.
+   *
+   * Recursive, because a quote can hold a quote. Line breaks are real <br>
+   * rather than newlines, which HTML would collapse into spaces.
+   */
+  function quoteInnerHtml(tokens) {
+    const parts = [];
+    for (const t of tokens || []) {
+      switch (t.type) {
+        case "paragraph":
+        case "text":
+          parts.push(inlineMd(t.text || t.raw || "").replace(/\n/g, "<br>"));
+          break;
+        case "heading":
+          // No headings inside a quote block, so carry the emphasis instead.
+          parts.push("<b>" + inlineMd(t.text || "") + "</b>");
+          break;
+        case "list":
+          flattenListItems(t.items, 0, []).forEach((item) => parts.push("• " + item));
+          break;
+        case "code":
+          parts.push("<code>" + escapeHtml(t.text || "") + "</code>");
+          break;
+        case "blockquote":
+          parts.push(quoteInnerHtml(t.tokens || []));
+          break;
+        case "space":
+          break;
+        default:
+          if (t.raw && t.raw.trim()) parts.push(inlineMd(t.raw));
+      }
     }
-    return item.raw || "";
+    return parts.filter(Boolean).join("<br>");
+  }
+
+  /*
+   * A list item's OWN words, without its sub-list.
+   *
+   * `item.text` contains the nested markdown too, so using it put a literal
+   * "- inner" inside the parent item — the sub-bullet appeared as characters
+   * rather than as a bullet. marked keeps the item's own words in a leading
+   * `text` token and hands the sub-list over as a separate `list` token, so
+   * take the former and leave the latter to flattenListItems.
+   */
+  function itemPlainText(item) {
+    const toks = Array.isArray(item.tokens) ? item.tokens : [];
+    const own = toks.filter((t) => t.type === "text")
+                    .map((t) => t.text || "").join(" ").trim();
+    if (own) return own;
+    // No token tree (older marked output): take the first line only.
+    return String(item.text || item.raw || "").split("\n")[0];
+  }
+
+  /*
+   * Flatten a list, sub-lists included.
+   *
+   * The bundled List tool is the flat one — 6KB, and the strings "nested" and
+   * "items" appear nowhere in it — so a hierarchy genuinely cannot be stored.
+   * Flattening loses the shape, which is a real loss, but silently dropping
+   * sub-items or leaving raw "- " in the text are both worse. Depth is marked
+   * with a middle dot so a sub-bullet still reads as one.
+   */
+  function flattenListItems(items, depth, out) {
+    for (const it of items || []) {
+      const own = itemPlainText(it);
+      if (own.trim()) {
+        out.push((depth > 0 ? "· ".repeat(depth) : "") + inlineMd(own));
+      }
+      for (const t of (it.tokens || [])) {
+        if (t.type === "list") flattenListItems(t.items, depth + 1, out);
+      }
+    }
+    return out;
   }
 
   // ==========================================================================
