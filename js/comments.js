@@ -44,6 +44,49 @@ const Comments = (function () {
   // PANEL MANAGEMENT — Opening and closing the comments panel
   // ==========================================================================
 
+  /*
+   * ==========================================================================
+   * KEEPING THE TEXT READABLE WHILE THE COMMENTS ARE OPEN
+   * ==========================================================================
+   * The panel is position:fixed, so left alone it sits on top of the article.
+   * At a wide window a floating card is fine — it covers margin. As the window
+   * narrows, that same card covers the words, and it does so exactly when you
+   * most want to read the text and the comment together.
+   *
+   * So below a threshold the panel docks itself and the article gives up the
+   * width it takes, side by side instead of stacked. Above it, whatever
+   * arrangement you dragged the panel into is left alone — a preference you
+   * set deliberately should not be overridden because you resized a window.
+   */
+  const DOCK_BELOW_PX = 1100;
+
+  function enforceLayout() {
+    if (!panel) return;
+    const narrow = window.innerWidth < DOCK_BELOW_PX;
+
+    // Too narrow to float: dock it, but remember that WE did, so the user's
+    // own choice comes back when there is room for it again.
+    if (narrow && panel.classList.contains("open") && !panel.classList.contains("docked")) {
+      panel.classList.add("docked", "auto-docked");
+      panel.style.left = panel.style.top = panel.style.height = "";
+    } else if (!narrow && panel.classList.contains("auto-docked")) {
+      panel.classList.remove("docked", "auto-docked");
+      restoreGeometry();
+    }
+
+    /*
+     * The margin has to match the panel's ACTUAL width, not a guess — the panel
+     * is resizable, and a stale number would either overlap the text or leave a
+     * gap beside it.
+     */
+    const docked = panel.classList.contains("open") && panel.classList.contains("docked");
+    document.body.classList.toggle("comments-docked", docked);
+    if (docked) {
+      const w = Math.round(panel.getBoundingClientRect().width);
+      if (w > 0) document.documentElement.style.setProperty("--comments-width", w + "px");
+    }
+  }
+
   // Open the panel and show all comments for the current document
   function openPanel() {
     // Restore the last-used geometry before showing so the panel doesn't flash
@@ -51,6 +94,7 @@ const Comments = (function () {
     restoreGeometry();
     panel.classList.add("open");
     renderComments();
+    enforceLayout();
   }
 
   // ==========================================================================
@@ -196,6 +240,7 @@ const Comments = (function () {
         panel.style.width = Math.round(r.width) + "px";
       }
       captureAndSaveGeometry();
+      enforceLayout();
     });
   }
 
@@ -245,6 +290,7 @@ const Comments = (function () {
       if (!resizing) return;
       resizing = false;
       captureAndSaveGeometry();
+      enforceLayout();
     });
   }
 
@@ -275,6 +321,7 @@ const Comments = (function () {
 
   // Close the panel
   function closePanel() {
+    document.body.classList.remove("comments-docked");
     panel.classList.remove("open");
     activeHighlightId = null;
     editingCommentId = null;
@@ -1287,6 +1334,17 @@ const Comments = (function () {
   function init() {
     // Close panel button
     document.getElementById("comments-close").addEventListener("click", closePanel);
+
+    /*
+     * Re-decide the arrangement whenever the window changes size. Debounced,
+     * because a drag-resize fires this continuously and re-docking on every
+     * frame would fight the pointer.
+     */
+    let layoutTimer = null;
+    window.addEventListener("resize", function () {
+      clearTimeout(layoutTimer);
+      layoutTimer = setTimeout(enforceLayout, 120);
+    });
 
     // Export annotations button
     const exportBtn = document.getElementById("comments-export");

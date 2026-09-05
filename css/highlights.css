@@ -484,6 +484,80 @@ mark[data-highlight-id]:hover {
   height: 100vh !important;
   border-radius: 12px 0 0 12px;
   border-right: none;
+  width: var(--comments-width, 320px);
+}
+
+/*
+ * ── THE ARTICLE MAKES ROOM FOR THE COMMENTS ──
+ *
+ * The panel is position:fixed, so on its own it sits ON TOP of the text. At a
+ * full-width window that is merely untidy; at half-screen it covers most of
+ * what you are reading, which is exactly when you most want both at once.
+ *
+ * So when the panel is docked, the content column gives up the same width the
+ * panel takes. `#main-content` already animates its left margin for the
+ * sidebar; this is the mirror of that, and reuses the same transition.
+ */
+body.comments-docked #main-content {
+  margin-right: var(--comments-width, 320px);
+}
+#main-content {
+  transition: margin-left 0.3s ease, margin-right 0.3s ease;
+}
+
+/*
+ * Below this width there is not enough room for a floating card AND a readable
+ * column, so the panel docks itself — see enforceLayout() in js/comments.js.
+ * Narrower still and the text would be squeezed to nothing, so the panel gives
+ * some width back rather than taking a fixed 320.
+ */
+@media (max-width: 900px) {
+  body.comments-docked { --comments-width: 280px; }
+}
+
+/*
+ * THREE COLUMNS DO NOT FIT.
+ *
+ * Sidebar, text and comments together need roughly 1100px before the reading
+ * column starts to suffer. Measured at 860px with the sidebar still in place,
+ * the text was squeezed to 272px — narrow enough that side-by-side stopped
+ * being worth having.
+ *
+ * So when the comments are docked and space is tight, the SIDEBAR is what
+ * gives way: it is navigation, and you are not navigating while reading a
+ * comment. It slides off exactly as it already does on a phone, and the
+ * existing toggle brings it back on demand.
+ */
+@media (max-width: 1100px) {
+  body.comments-docked #sidebar {
+    transform: translateX(-260px);
+    z-index: 200;
+    box-shadow: 4px 0 24px var(--shadow);
+  }
+  body.comments-docked #sidebar.mobile-open { transform: translateX(0); }
+  body.comments-docked #main-content { margin-left: 0 !important; }
+  body.comments-docked #sidebar-toggle { display: flex !important; }
+  /* Every pixel counts once two columns share a small window. */
+  body.comments-docked #article-wrap { padding-left: 16px; padding-right: 16px; }
+}
+
+/*
+ * Under ~680px, side by side stops being readable at all: a 280px panel would
+ * leave a column too narrow for prose. The panel becomes a bottom sheet
+ * instead, so the text keeps the full width and the comments are a swipe away
+ * rather than on top of the words.
+ */
+@media (max-width: 680px) {
+  body.comments-docked #main-content { margin-right: 0; }
+  #comments-panel.docked {
+    top: auto;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 55vh !important;
+    border-radius: 12px 12px 0 0;
+    border-right: 1px solid var(--line);
+  }
 }
 /* Corner-drag handle for resizing (bottom-right) */
 #comments-panel .comments-resize-handle {

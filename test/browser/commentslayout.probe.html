@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Comments must not cover the text</title>
+<!--
+  REPORTED: shrink the window and the comments panel sits on top of the
+  article, hiding most of what you are reading — which is exactly when you most
+  want the text and the comment side by side.
+
+  The panel is position:fixed, so nothing made room for it. This measures the
+  actual rectangles at several window widths and asserts they do not overlap.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_layout_1";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Layout Test", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "A reasonably long paragraph so the column has something to lay out and a measurable width." } },
+    { type: "paragraph", data: { text: "A second paragraph, also long enough to matter when the window narrows." } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, JSON.stringify([
+    { id: "cm_1", highlightId: null, isGeneral: true,
+      text: "A note that needs to be readable at the same time as the text.",
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  // Start from no saved geometry, so the default arrangement is what is tested.
+  const st = JSON.parse(localStorage.getItem("folio_settings") || "{}");
+  delete st.commentsGeometry;
+  localStorage.setItem("folio_settings", JSON.stringify(st));
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1400px;height:820px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2200);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__cm = Comments;");
+
+  d.getElementById("comments-btn").click();
+  await wait(600);
+  ok("the panel opens", d.getElementById("comments-panel").classList.contains("open"));
+
+  /* Does the article's text actually clear the panel? */
+  async function measure(px) {
+    f.style.width = px + "px";
+    await wait(700);                     // resize is debounced at 120ms
+    const article = d.getElementById("article") || d.querySelector("#article-wrap");
+    const panel = d.getElementById("comments-panel");
+    const a = article.getBoundingClientRect();
+    const p = panel.getBoundingClientRect();
+    return {
+      width: px,
+      articleRight: Math.round(a.right),
+      panelLeft: Math.round(p.left),
+      panelTop: Math.round(p.top),
+      overlapX: Math.round(a.right - p.left),
+      articleWidth: Math.round(a.width),
+      docked: panel.classList.contains("docked"),
+      bodyDocked: d.body.classList.contains("comments-docked"),
+    };
+  }
+
+  const wide = await measure(1400);
+  say(`NOTE 1400px: article ends ${wide.articleRight}, panel starts ${wide.panelLeft}, docked=${wide.docked}`);
+
+  // ── THE REPORTED CASE: a half-screen window ──
+  const half = await measure(860);
+  say(`NOTE  860px: article ends ${half.articleRight}, panel starts ${half.panelLeft}, ` +
+      `article is ${half.articleWidth}px wide, docked=${half.docked}`);
+  ok("at half screen the panel docks itself", half.docked, JSON.stringify(half));
+  ok("and the layout knows it", half.bodyDocked, String(half.bodyDocked));
+  ok("THE TEXT IS NO LONGER COVERED",
+     half.overlapX <= 1, `article overlaps the panel by ${half.overlapX}px`);
+  ok("and the column is still wide enough to read",
+     half.articleWidth >= 420, `${half.articleWidth}px`);
+
+  const narrow = await measure(1000);
+  ok("at 1000px it is also side by side", narrow.overlapX <= 1,
+     `overlaps by ${narrow.overlapX}px`);
+  ok("with a readable column", narrow.articleWidth >= 480, `${narrow.articleWidth}px`);
+
+  /* Very narrow: side by side stops working, so the panel becomes a sheet at
+     the bottom rather than squeezing the text to nothing. */
+  const tiny = await measure(640);
+  say(`NOTE  640px: panel top=${tiny.panelTop}, article ${tiny.articleWidth}px`);
+  ok("below ~680px the panel drops to the bottom instead",
+     tiny.panelTop > 100, `panel top is ${tiny.panelTop}`);
+  ok("and the text gets the full width back",
+     tiny.articleWidth >= 260, `${tiny.articleWidth}px`);
+
+  /* Widening again must restore the roomy arrangement. */
+  const backWide = await measure(1400);
+  ok("widening the window releases the margin",
+     backWide.overlapX <= 1 || !backWide.bodyDocked,
+     JSON.stringify(backWide));
+
+  d.getElementById("comments-close").click();
+  await wait(500);
+  ok("closing gives the width back to the article",
+     !d.body.classList.contains("comments-docked"));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>
