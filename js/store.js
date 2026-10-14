@@ -560,7 +560,218 @@ const FolioStore = (function () {
   // export file names. Kept here so all three agree.
   function readLabel(read) {
     if (!read) return "Read";
-    return `Read ${read.n}`;
+    /*
+     * A named read keeps its number. "Read 2 · Close reading" rather than just
+     * "Close reading", because the number is the only thing that says which
+     * pass came first — and in a list of five reads that ordering is most of
+     * what you are looking for.
+     */
+    const name = (read.name || "").trim();
+    return name ? `Read ${read.n} \u00b7 ${name}` : `Read ${read.n}`;
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Gives a read a name of your own, or clears it when passed nothing.
+   *
+   * WHY A NAME IS OPTIONAL AND NOT A REPLACEMENT:
+   * The number is assigned, permanent and ordered; the name is yours and can
+   * change. Keeping them in separate fields means renaming can never disturb
+   * the ordering, and an empty name simply falls back to the number rather
+   * than leaving a read with no label at all.
+   */
+  function renameRead(docId, readId, name) {
+    const reads = ensureReads(docId);
+    const read = reads.find((r) => r.id === readId);
+    if (!read) return null;
+
+    const clean = String(name == null ? "" : name).trim().slice(0, 60);
+    if (clean) read.name = clean;
+    else delete read.name;
+
+    saveReads(docId, reads);
+    console.log(`[reads] renamed ${readId} on doc ${docId} to "${clean || "(no name)"}"`);
+    return read;
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Removes a read and hands everything written during it to a neighbouring
+   * read — the one before it, or the one after it when deleting the first.
+   * Returns { ok, movedComments, movedHighlights, into } or { ok: false }.
+   *
+   * WHY IT NEVER DELETES YOUR NOTES:
+   * Deleting a read is a filing decision: you started one by accident, or you
+   * want two passes treated as one. It is not a statement about the writing.
+   * Throwing away comments as a side effect of tidying a label would be an
+   * unrecoverable loss from an action that does not sound like one, and Folio
+   * has no undo for it. So the notes always survive, and the caller is told
+   * how many moved so it can say so plainly before and after.
+   *
+   * WHY THE LAST READ CANNOT GO:
+   * Every comment and highlight points at a read. With no reads left there is
+   * nowhere for them to point, and the migration would not rebuild one because
+   * they already carry a readId — so they would vanish from every per-read
+   * export. A document always keeps at least one read.
+   */
+  function deleteRead(docId, readId) {
+    const reads = ensureReads(docId);
+    if (reads.length <= 1) {
+      console.warn(`[reads] refused to delete the only read on doc ${docId}`);
+      return { ok: false, reason: "last" };
+    }
+
+    const i = reads.findIndex((r) => r.id === readId);
+    if (i === -1) return { ok: false, reason: "missing" };
+
+    // The read before it, or the one after when deleting the first.
+    const into = i > 0 ? reads[i - 1] : reads[1];
+
+    const comments = getComments(docId);
+    let movedComments = 0;
+    comments.forEach((c) => {
+      if (c.readId === readId) { c.readId = into.id; movedComments++; }
+    });
+
+    const highlights = getHighlights(docId);
+    let movedHighlights = 0;
+    highlights.forEach((h) => {
+      if (h.readId === readId) {
+        h.readId = into.id;
+        // The mark on the page is coloured by its read, so it has to follow.
+        h.color = into.color;
+        movedHighlights++;
+      }
+    });
+
+    if (movedComments) saveComments(docId, comments);
+    if (movedHighlights) saveHighlights(docId, highlights);
+
+    reads.splice(i, 1);
+    saveReads(docId, reads);
+
+    console.log(
+      `[reads] deleted ${readId} on doc ${docId} — moved ${movedComments} comments ` +
+      `and ${movedHighlights} highlights into ${readLabel(into)}`
+    );
+    return { ok: true, movedComments, movedHighlights, into };
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Files one comment under a different read. Returns { ok, movedHighlight }.
+   *
+   * WHY THE HIGHLIGHT SOMETIMES COMES WITH IT:
+   * The case this exists for is forgetting to press "New read" and writing a
+   * few comments before noticing. In that case the HIGHLIGHT was made at the
+   * wrong time too, and leaving it behind would leave a Read 2 comment sitting
+   * under a yellow Read 1 mark on the page — correct in the export, which
+   * follows the comment, but visibly wrong on screen.
+   *
+   * So its highlight moves as well, UNLESS some other read also has a comment
+   * about that same passage. That exception is the re-reading case: a passage
+   * marked in March that both March and October have something to say about
+   * belongs to March, and dragging it forward would quietly relabel history.
+   */
+  function setCommentRead(docId, commentId, readId) {
+    const reads = ensureReads(docId);
+    const target = reads.find((r) => r.id === readId);
+    if (!target) return { ok: false, reason: "missing-read" };
+
+    const comments = getComments(docId);
+    const comment = comments.find((c) => c.id === commentId);
+    if (!comment) return { ok: false, reason: "missing-comment" };
+    if (comment.readId === readId) return { ok: true, movedHighlight: false, noop: true };
+
+    comment.readId = readId;
+
+    let movedHighlight = false;
+    if (comment.highlightId) {
+      const sharedWithAnotherRead = comments.some(
+        (c) => c.id !== commentId &&
+               c.highlightId === comment.highlightId &&
+               c.readId !== readId
+      );
+      if (!sharedWithAnotherRead) {
+        const highlights = getHighlights(docId);
+        const hl = highlights.find((h) => h.id === comment.highlightId);
+        if (hl && hl.readId !== readId) {
+          hl.readId = readId;
+          hl.color = target.color;
+          saveHighlights(docId, highlights);
+          movedHighlight = true;
+        }
+      }
+    }
+
+    saveComments(docId, comments);
+    console.log(
+      `[reads] moved comment ${commentId} to ${readLabel(target)} on doc ${docId}` +
+      (movedHighlight ? " (its highlight came too)" : "")
+    );
+    return { ok: true, movedHighlight };
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Puts a SECOND copy of a comment under another read, leaving the original
+   * where it is. Returns { ok, id } with the new comment's id.
+   *
+   * WHY COPY AND NOT ONLY MOVE:
+   * Some thoughts belong to both readings. "Never understood this properly"
+   * written in March is still true in October, and an October export that left
+   * it out would be missing something you still think. Moving it would empty
+   * March of a thought you did have then; copying keeps both honest.
+   *
+   * WHY THE HIGHLIGHT IS NOT TOUCHED, unlike a move:
+   * A move can take the highlight with it because only one comment was holding
+   * it. A copy leaves the original comment behind, still pointing at that same
+   * passage, so the highlight has to stay where it was made. The export is
+   * unaffected: a read's export already includes any highlight its comments
+   * refer to, whichever read marked it.
+   *
+   * WHY createdAt IS NOW AND NOT THE ORIGINAL'S:
+   * The panel and the exports order by createdAt. Keeping the old timestamp
+   * would drop the copy next to its original in the list — two identical rows
+   * side by side with no explanation. The copy was filed today, so it is dated
+   * today, and `copiedFrom` keeps the provenance rather than losing it.
+   */
+  function copyCommentToRead(docId, commentId, readId) {
+    const reads = ensureReads(docId);
+    const target = reads.find((r) => r.id === readId);
+    if (!target) return { ok: false, reason: "missing-read" };
+
+    const comments = getComments(docId);
+    const source = comments.find((c) => c.id === commentId);
+    if (!source) return { ok: false, reason: "missing-comment" };
+    if (source.readId === readId) return { ok: false, reason: "same-read" };
+
+    const now = new Date().toISOString();
+    const copy = {
+      id: generateId("cm"),
+      highlightId: source.highlightId || null,
+      isGeneral: !!source.isGeneral,
+      readId: readId,
+      text: source.text,
+      createdAt: now,
+      updatedAt: now,
+      /*
+       * Where this came from. Kept so the panel can say "copied" rather than
+       * leave you wondering why you appear to have written the same thing
+       * twice, and so a future "find the original" has something to follow.
+       */
+      copiedFrom: { commentId: source.id, readId: source.readId || null },
+    };
+    // A video comment carries the moment it was spoken; the copy is about the
+    // same moment, so it keeps it.
+    if (typeof source.videoTime === "number") copy.videoTime = source.videoTime;
+
+    comments.push(copy);
+    saveComments(docId, comments);
+    console.log(
+      `[reads] copied comment ${commentId} into ${readLabel(target)} on doc ${docId} as ${copy.id}`
+    );
+    return { ok: true, id: copy.id };
   }
 
   // ==========================================================================
@@ -691,6 +902,10 @@ const FolioStore = (function () {
     getCurrentRead,
     startNewRead,
     readLabel,
+    renameRead,
+    deleteRead,
+    setCommentRead,
+    copyCommentToRead,
     READ_COLORS,
     getSettings,
     saveSettings,
