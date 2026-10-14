@@ -19,14 +19,24 @@
 - **The one subtle rule:** a comment written in Read 2 about a highlight made in Read 1
   keeps its quote in the export. Filtering highlights naively by read would strip the
   quote and turn the comment into an orphan.
+- **A read can be named and deleted**, from a manager behind the read name in the bar.
+  Deleting never destroys writing — the comments and highlights move to the neighbouring
+  read, and the dialog says so before you press it.
+- **A comment can be moved or copied between reads.** Move is for the mistake of
+  forgetting to press the button; copy is for a thought that is true in both passes, and
+  leaves the comment in each.
 
 ## Document map
 
 **The data model** says what gets stored and where · **Migration** explains how existing
 documents join the scheme without losing anything · **The inclusion rule** is the one
 piece of logic that is easy to get wrong and worth reading carefully · **The UI** covers
-the bar in the comments panel, the per-comment labels and the colours · **Export**
-covers the chooser and the file shapes · **Files changed** is the map of the work ·
+the bar in the comments panel, the per-comment labels and the colours · **Naming and
+deleting a read** covers the manager behind the bar, and why deleting never destroys
+writing · **Moving and copying a comment** covers the two verbs and when the highlight
+follows · **Export** covers the chooser and the file shapes · **When a read begins**
+answers a question the first design got wrong · **How this was verified** lists the three
+test layers and the two faults they caught · **Files changed** is the map of the work ·
 **What I did not do** is the honest gap list.
 
 ## The data model
@@ -105,6 +115,53 @@ colour. The four swatches in the selection toolbar still set a colour explicitly
 removing a working feature to make room for a new one is not an improvement. `readId`,
 not colour, is what the export trusts.
 
+## Naming and deleting a read
+
+**Clicking the read's name in the bar opens a manager listing every read on the document.**
+
+Each row shows the read, what is in it, a field for a name of your own, and Delete.
+Renaming and deleting apply to any read rather than only the current one, so they need a
+list to hang off; putting them on the bar would both crowd a strip that already has a
+button and leave no way to touch an older read at all.
+
+**A named read keeps its number** — "Read 2 · Close reading" — because the number is the
+only thing that says which pass came first, and in a list of five reads that ordering is
+most of what you are looking for. An empty name simply falls back to the number.
+
+**Deleting a read never deletes what you wrote.** Its comments and highlights move to the
+read before it, or forward to the next one when deleting the first. The confirm dialog
+names the counts and the destination before you press it. Deleting a read is a filing
+decision — you started one by accident, or two passes turned out to be one — and losing
+writing as a side effect of that would be unrecoverable from an action that does not
+sound like one.
+
+**The last read cannot be deleted.** Every comment points at a read, so with none left
+they point at nothing, and the migration would not rebuild one because they already carry
+a `readId` — they would vanish from every per-read export. The button is disabled with
+the reason in its tooltip rather than hidden.
+
+## Moving and copying a comment
+
+**Each comment has a "Reads" action offering both verbs, one per read.**
+
+**Move** is for the mistake: you open something you read months ago, start reading, and
+write three comments before remembering to press "New read". Without this they are stuck
+in the old read for good, and the feature has failed for exactly the session that needed
+it. A move takes the comment's highlight along, because the mark was made at the wrong
+time too — unless another read still has a comment about that same passage, in which case
+the mark stays where it was made rather than quietly relabelling history.
+
+**Copy** is for a thought that is true in both passes. "Never understood this properly"
+written in March is still true in October, and an October export that left it out would
+be missing something you still think. The copy gets its own id, is dated today, and
+records `copiedFrom` so the panel can mark it — otherwise you find what looks like the
+same sentence twice with no way to tell whether you repeated yourself. A copy never moves
+the highlight: the original comment still points at it.
+
+**Two buttons per read rather than a mode switch**, because a mode is a thing you can
+misread — press Copy believing you are in Move and the mistake is silent until an export
+looks wrong.
+
 ## Export
 
 **The existing "which kind of export" question is followed by a "which read" question,
@@ -139,14 +196,30 @@ migration of a pre-reads document runs.
 
 | Layer | What it covers | Result |
 |-------|----------------|--------|
-| `test/reads.selftest.js` | The real store's migration, numbering, colours, deletion and backup; the inclusion rule; all four export shapes | 36 assertions, all passing |
-| Mutation proof | Ten rules broken one at a time to confirm the assertions notice | All 10 caught; suite back to 36/0 after restore |
+| `test/reads.selftest.js` | The real store's migration, numbering, colours, deletion and backup; renaming, deleting, moving and copying; the inclusion rule; all four export shapes | 67 assertions, all passing |
+| Mutation proof | Twenty-two rules broken one at a time to confirm the assertions notice | All 22 caught; suite back to 67/0 after restore |
 | `test/browser/reads.probe.html` | The real app in headless Chrome, seeded with a pre-reads document | 25 assertions, all passing |
+| `test/browser/readsedit.probe.html` | Naming, deleting, moving and copying through the real UI | 30 assertions, all passing |
 | Screenshots | `tools/shoot-reads.sh` renders the panel so it can be looked at | 3 rounds; one real fault found and fixed |
 
 **The mutation proof is the part worth trusting.** Breaking the inclusion rule to the
 naive version — keep only this read's highlights — failed three assertions, which is the
 evidence that those assertions are actually guarding the rule rather than passing by luck.
+
+**The browser probe found a second fault, and it is the kind only a browser can find.**
+Moving a comment restamps its highlight's colour in storage, and the handler called
+`applyHighlights` to repaint the page. That does nothing: `applyHighlights` deliberately
+skips text already inside a mark, so that calling it twice cannot nest marks — which
+means it refuses to touch precisely the marks that need changing. The page kept showing
+the old read's colour while storage said otherwise. `Highlights.syncHighlightColors`
+exists for this, and the probe asserts the colour ON THE PAGE rather than in storage,
+which is the only reason it was caught.
+
+**Two test fixtures were wrong before the code was.** One claimed to test a passage
+shared between two reads but moved both comments into the same read, leaving nothing in
+any other read; the other asserted a hardcoded read id that an earlier case had
+legitimately changed. Both failed, correctly, and the fixtures were what needed fixing —
+noted here because a fixture that is quietly adjusted to match the code proves nothing.
 
 **The designer pass found one real fault.** The read's colour dot used the same
 translucent class as the highlight marks, and at 10px on a cream strip a 40%-alpha fill
@@ -163,7 +236,8 @@ colours are legible in both the light and dark themes.
 | `js/comments.js` | Stamp `readId` on new comments, read bar, read chips, export filtering and chooser |
 | `index.html` | Read bar markup in the comments panel |
 | `index-electron.html` | The same markup, kept in sync |
-| `css/highlights.css` | Read bar and read chip styles |
+| `css/highlights.css` | Read bar, chips, the reads manager and the move/copy picker |
+| `js/highlights.js` | `syncHighlightColors` — repaint marks after a highlight changes read |
 
 ## What I did not do
 
@@ -171,17 +245,22 @@ colours are legible in both the light and dark themes.
 
 - **Nobody has used this on a device.** Every assertion passes and the screenshots look
   right, but the status of this work is BUILT, not DONE. Only using it moves it.
-- **Reads cannot be renamed, deleted or merged.** A read started by accident is there for
-  good. That is a deliberate omission for a first version — it keeps the data model to
-  append-only, which is what makes it impossible to orphan a comment — but it will be the
-  first thing to want.
+- **Reads still cannot be MERGED.** Renaming and deleting now exist, and deleting
+  effectively merges a read into its neighbour, but there is no way to merge two reads
+  that are not next to each other without deleting everything between them.
 - **The colours cycle after four reads**, so Read 5 looks exactly like Read 1 on the page
   and in the panel. The read NUMBER still distinguishes them everywhere, and the export
   filters on `readId` rather than colour, so nothing is actually wrong — it is only the
   visual shorthand that runs out.
-- **I did not add a way to move a comment between reads.** If you forget to press
-  "New read" and write three comments before noticing, they belong to the old read and
-  there is no way to reassign them.
+- **Comments move and copy one at a time.** If you forgot to press "New read" and wrote
+  six comments, that is six trips through the picker. A way to move several at once is
+  the obvious next thing.
+- **Highlights cannot be moved or copied on their own.** A highlight only changes read as
+  a side effect of moving the comment attached to it, so a highlight you made in the wrong
+  read with nothing written about it is stuck there.
+- **A copy and its original drift apart.** Editing one does not change the other, which is
+  probably right — they are in different reads and may want different wording — but
+  nothing says so in the interface.
 - **The Electron panel got the markup but was not run.** `index-electron.html` has the
   same read bar and loads the same JavaScript, so it should behave identically, but I
   tested in the browser only.

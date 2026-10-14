@@ -1,0 +1,239 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Naming, deleting, moving and copying between reads</title>
+<!--
+  The second half of the reads feature, driven through the real UI rather than
+  the store: the reads manager behind the bar's label, and the picker behind a
+  comment's "Reads" button.
+
+  WHY THESE NEED A BROWSER AND NOT ONLY THE JSDOM SUITE:
+  The suite proves the store's rules. It cannot prove that the button exists,
+  that pressing it opens the right thing, that the list redraws after a rename,
+  or — the one most likely to be missed — that a highlight whose read changed
+  gets REPAINTED on the page. A mark keeps its old colour class until something
+  re-renders the article, and the store cannot do that. Every assertion below
+  that mentions a colour on screen is there because nothing else would catch it.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_readsedit_1";
+const MARCH = "2026-03-10T09:00:00.000Z";
+
+async function main() {
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Reads Edit Test", icon: "", parentId: null, order: 0,
+      createdAt: MARCH, updatedAt: MARCH }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "The first paragraph mentions ALPHA clearly." } },
+    { type: "paragraph", data: { text: "The last paragraph mentions OMEGA clearly." } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  localStorage.removeItem("folio_reads_" + DOC);
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1280px;height:860px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__hl = Highlights; window.__cm = Comments; window.__st = FolioStore;");
+
+  function highlightWord(word) {
+    const walker = d.createTreeWalker(d.getElementById("article"), NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const i = node.textContent.indexOf(word);
+      if (i === -1) continue;
+      const r = d.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + word.length);
+      return w.__hl.createHighlightFromRange(r);
+    }
+    return null;
+  }
+  /*
+   * The TOPMOST overlay, not the first in the document.
+   *
+   * Confirming a delete opens a second overlay on top of the reads manager,
+   * which stays behind it. querySelector returns the first match, so an
+   * earlier version of this probe kept inspecting the manager underneath and
+   * reported the confirm dialog as missing when it was sitting right on top
+   * of it. Later in the DOM is higher on screen, so the last one is the one
+   * the user is looking at.
+   */
+  const modal = () => {
+    const all = d.querySelectorAll(".modal-overlay");
+    return all.length ? all[all.length - 1] : null;
+  };
+  const closeModal = () => {
+    d.querySelectorAll(".modal-overlay").forEach((m) => m.remove());
+  };
+
+  /* ── Set the scene: one comment in Read 1, then start Read 2 ── */
+  w.__cm.openPanel();
+  await wait(400);
+  const hlAlpha = highlightWord("ALPHA");
+  w.__cm.addComment(hlAlpha, "Written during the first read.", DOC);
+  await wait(400);
+
+  d.getElementById("comments-new-read").click();
+  await wait(500);
+  const reads = w.__st.getReads(DOC);
+  ok("the scene has two reads", reads.length === 2, JSON.stringify(reads.map((r) => r.n)));
+
+  /* ══ The reads manager ══ */
+  d.getElementById("comments-read-label").click();
+  await wait(400);
+  ok("clicking the read name opens the reads manager",
+     !!modal() && !!modal().querySelector(".reads-manager"));
+
+  const rows = modal().querySelectorAll(".reads-row");
+  ok("it lists every read", rows.length === 2, String(rows.length));
+  ok("the read you are in is marked as current",
+     modal().querySelectorAll(".reads-row.is-current").length === 1,
+     String(modal().querySelectorAll(".reads-row.is-current").length));
+  ok("each read shows what is in it",
+     /1 comment/.test(modal().textContent) && /1 highlight/.test(modal().textContent),
+     modal().textContent.replace(/\s+/g, " ").slice(0, 160));
+
+  /* ── Naming a read ── */
+  // Rows are newest first, so Read 1 is the second row.
+  const read1Row = rows[1];
+  const nameInput = read1Row.querySelector(".reads-row-name");
+  ok("a read has a name field", !!nameInput);
+  nameInput.value = "The skim";
+  nameInput.dispatchEvent(new w.Event("blur"));
+  await wait(400);
+
+  ok("the name is saved on the read",
+     w.__st.getReads(DOC)[0].name === "The skim",
+     JSON.stringify(w.__st.getReads(DOC)[0].name));
+  ok("the label keeps the number alongside the name",
+     w.__st.readLabel(w.__st.getReads(DOC)[0]) === "Read 1 · The skim",
+     w.__st.readLabel(w.__st.getReads(DOC)[0]));
+
+  closeModal();
+  await wait(300);
+  const chip = d.querySelector(".comment-read-chip");
+  ok("the chip on an older comment picks the name up",
+     !!chip && /The skim/.test(chip.textContent), chip && chip.textContent);
+
+  /* ══ Moving a comment ══ */
+  const moveBtn = d.querySelector(".move-comment");
+  ok("a comment offers a way into the reads picker", !!moveBtn, "no Reads button");
+  moveBtn.click();
+  await wait(400);
+  ok("it opens a picker offering both verbs",
+     !!modal() && modal().querySelectorAll(".read-pick-move").length === 1 &&
+     modal().querySelectorAll(".read-pick-copy").length === 1,
+     modal() ? modal().querySelectorAll(".read-pick-row").length + " rows" : "no modal");
+  ok("the read it is already in offers nothing to press",
+     modal().querySelectorAll(".read-pick-row.is-here").length === 1);
+
+  modal().querySelector(".read-pick-move").click();
+  await wait(600);
+
+  const moved = w.__st.getComments(DOC)[0];
+  ok("moving files the comment under the chosen read",
+     moved.readId === w.__st.getReads(DOC)[1].id, String(moved.readId));
+  ok("its highlight came too, since nothing else refers to that passage",
+     w.__st.getHighlights(DOC)[0].readId === w.__st.getReads(DOC)[1].id,
+     w.__st.getHighlights(DOC)[0].readId);
+  ok("...and the mark took the new read's colour in storage",
+     w.__st.getHighlights(DOC)[0].color === "green",
+     w.__st.getHighlights(DOC)[0].color);
+
+  /*
+   * The assertion the store could never make: the mark on the PAGE has to be
+   * repainted, or it keeps the colour class of the read it used to belong to.
+   */
+  const markAfterMove = d.querySelector('mark[data-highlight-id="' + hlAlpha + '"]');
+  ok("...and the mark on the page was repainted green",
+     !!markAfterMove && markAfterMove.className.indexOf("hl-green") !== -1,
+     markAfterMove && markAfterMove.className);
+
+  ok("the comment is no longer chipped, being in the current read now",
+     d.querySelectorAll(".comment-read-chip").length === 0,
+     String(d.querySelectorAll(".comment-read-chip").length));
+
+  /* ══ Copying a comment ══ */
+  const countBefore = w.__st.getComments(DOC).length;
+  const hlReadBefore = w.__st.getHighlights(DOC)[0].readId;
+  d.querySelector(".move-comment").click();
+  await wait(400);
+  modal().querySelector(".read-pick-copy").click();
+  await wait(600);
+
+  const all = w.__st.getComments(DOC);
+  ok("copying ADDS a comment rather than moving one",
+     all.length === countBefore + 1, countBefore + " -> " + all.length);
+  ok("both copies say the same thing",
+     all.filter((c) => /Written during the first read/.test(c.text)).length === 2,
+     String(all.filter((c) => /Written during the first read/.test(c.text)).length));
+  ok("they are in different reads",
+     new Set(all.map((c) => c.readId)).size === 2,
+     JSON.stringify(all.map((c) => c.readId)));
+  ok("copying leaves the highlight exactly where it was",
+     w.__st.getHighlights(DOC)[0].readId === hlReadBefore,
+     hlReadBefore + " -> " + w.__st.getHighlights(DOC)[0].readId);
+
+  await wait(300);
+  ok("the panel shows both, and says one is a copy",
+     d.querySelectorAll(".comment-copy-mark").length === 1,
+     String(d.querySelectorAll(".comment-copy-mark").length) + " copy marks");
+
+  /* ══ Deleting a read ══ */
+  d.getElementById("comments-read-label").click();
+  await wait(400);
+  const toDelete = modal().querySelectorAll(".reads-row")[0];   // newest = Read 2
+  toDelete.querySelector(".reads-row-delete").click();
+  await wait(400);
+
+  ok("deleting asks first", !!modal() && /Delete Read/.test(modal().textContent),
+     modal() ? modal().textContent.slice(0, 60) : "no modal");
+  ok("...and says where the writing goes before you press it",
+     /move into/.test(modal().textContent) && /Nothing you wrote is deleted/.test(modal().textContent),
+     modal().textContent.replace(/\s+/g, " ").slice(0, 200));
+
+  const commentsBeforeDelete = w.__st.getComments(DOC).length;
+  modal().querySelector(".confirm-btn").click();
+  await wait(700);
+
+  ok("the read is gone", w.__st.getReads(DOC).length === 1,
+     String(w.__st.getReads(DOC).length));
+  ok("NOTHING written during it was deleted",
+     w.__st.getComments(DOC).length === commentsBeforeDelete,
+     commentsBeforeDelete + " -> " + w.__st.getComments(DOC).length);
+  ok("everything now belongs to the surviving read",
+     w.__st.getComments(DOC).every((c) => c.readId === w.__st.getReads(DOC)[0].id));
+
+  const markAfterDelete = d.querySelector('mark[data-highlight-id="' + hlAlpha + '"]');
+  ok("the mark was repainted to the surviving read's colour",
+     !!markAfterDelete && markAfterDelete.className.indexOf("hl-yellow") !== -1,
+     markAfterDelete && markAfterDelete.className);
+
+  /* ── The last read cannot go ── */
+  closeModal();
+  await wait(200);
+  d.getElementById("comments-read-label").click();
+  await wait(400);
+  const lastBtn = modal().querySelector(".reads-row-delete");
+  ok("the only read's delete button is disabled", !!lastBtn && lastBtn.disabled,
+     lastBtn ? "enabled" : "no button");
+  ok("...with the reason attached rather than left a mystery",
+     !!lastBtn && /at least one read/.test(lastBtn.title || ""),
+     lastBtn && lastBtn.title);
+
+  closeModal();
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

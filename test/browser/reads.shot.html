@@ -132,6 +132,24 @@ async function main() {
 
   w.__cm.openPanel();
   await wait(600);
+
+  /*
+   * "?show=manager" and "?show=picker" open the two dialogs so they can be
+   * looked at. Named rather than numbered because a shot of "the third modal"
+   * tells a later reader nothing about what they are supposed to be judging.
+   */
+  if (/show=manager/.test(location.search)) {
+    // Give a read a name first, so the shot shows a named and an unnamed one
+    // side by side — the case where the label has to carry both.
+    w.__st.renameRead(DOC, w.__st.getReads(DOC)[0].id, "The first skim");
+    w.__cm.openReadsManager();
+    await wait(600);
+  }
+  if (/show=picker/.test(location.search)) {
+    const older = w.__st.getComments(DOC).find((c) => c.readId === w.__st.getReads(DOC)[0].id);
+    if (older) { w.__cm.openMoveComment(older); await wait(600); }
+  }
+
   document.title = "READY";
 }
 main().catch((e) => { document.title = "ERROR: " + e.message; });

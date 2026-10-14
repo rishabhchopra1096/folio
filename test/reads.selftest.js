@@ -170,6 +170,171 @@ ok("deleting a document removes its reads key",
    localStorage.getItem("folio_reads_" + DOC2) === null);
 
 /* ===========================================================================
+ * PART A2 — naming a read, deleting one, moving and copying a comment
+ * ===========================================================================
+ * Still the real store. A fresh document, because Part A left its one above
+ * with five reads and no notes in most of them.
+ */
+console.log("\nPART A2 — renaming, deleting, moving, copying");
+
+const D2 = "doc_edits";
+localStorage.setItem("folio_documents", JSON.stringify([
+  { id: D2, title: "Edits", parentId: null, order: 0 },
+]));
+localStorage.setItem("folio_highlights_" + D2, JSON.stringify([
+  { id: "hx1", text: "A passage.", color: "yellow", createdAt: "2026-04-01T09:00:00Z" },
+]));
+localStorage.setItem("folio_comments_" + D2, JSON.stringify([
+  { id: "cx1", highlightId: "hx1", text: "First thought.", createdAt: "2026-04-01T09:01:00Z" },
+]));
+localStorage.removeItem("folio_reads_" + D2);
+
+const r1 = Store.ensureReads(D2)[0];
+const r2 = Store.startNewRead(D2);
+
+// ---- naming ----
+Store.renameRead(D2, r1.id, "  The skim  ");
+const named = Store.getReads(D2)[0];
+ok("a read takes a name, trimmed", named.name === "The skim", JSON.stringify(named.name));
+ok("the label keeps the number alongside the name",
+   Store.readLabel(named) === "Read 1 · The skim", Store.readLabel(named));
+Store.renameRead(D2, r1.id, "   ");
+ok("an all-whitespace name clears it rather than storing blanks",
+   Store.getReads(D2)[0].name === undefined,
+   JSON.stringify(Store.getReads(D2)[0].name));
+ok("...and the label falls back to the number",
+   Store.readLabel(Store.getReads(D2)[0]) === "Read 1");
+Store.renameRead(D2, r1.id, "The skim");
+
+// ---- moving a comment ----
+let res = Store.setCommentRead(D2, "cx1", r2.id);
+ok("a comment can be filed under another read", res.ok && !res.noop);
+ok("...and it really moved",
+   Store.getComments(D2).find((c) => c.id === "cx1").readId === r2.id);
+
+/*
+ * The highlight follows a move when nothing else holds it. The case this is
+ * for is forgetting to press "New read": the mark was made at the wrong time
+ * too, and leaving it behind puts a Read 2 comment under a yellow Read 1 mark.
+ */
+ok("its highlight came with it, since no other read refers to that passage",
+   res.movedHighlight === true && Store.getHighlights(D2)[0].readId === r2.id,
+   JSON.stringify({ moved: res.movedHighlight, at: Store.getHighlights(D2)[0].readId }));
+ok("...and the mark was recoloured to the new read",
+   Store.getHighlights(D2)[0].color === r2.color, Store.getHighlights(D2)[0].color);
+
+ok("moving a comment to the read it is already in does nothing",
+   Store.setCommentRead(D2, "cx1", r2.id).noop === true);
+
+/*
+ * The exception: a passage that ANOTHER read still has something to say about
+ * must stay put. Dragging it forward would leave the comment left behind
+ * pointing at a mark now labelled as someone else's reading.
+ *
+ * The fixture has to leave a comment BEHIND for this to be the real case —
+ * an earlier version of this test moved the only two comments that referred
+ * to the passage into the same read, which left nothing in any other read and
+ * so was not the shared case at all. It failed, correctly, and the fixture was
+ * what was wrong.
+ */
+Store.setCommentRead(D2, "cx1", r1.id);   // put it back under Read 1
+const hlsA = Store.getHighlights(D2);
+hlsA[0].readId = r1.id; hlsA[0].color = "yellow";
+Store.saveHighlights(D2, hlsA);
+
+// A SECOND Read 1 comment about the same passage, which will stay behind.
+const cs2 = Store.getComments(D2);
+cs2.push({ id: "cx_stays", highlightId: "hx1", readId: r1.id, text: "Also about this.",
+           createdAt: "2026-04-01T09:02:00Z" });
+Store.saveComments(D2, cs2);
+
+res = Store.setCommentRead(D2, "cx1", r2.id);
+ok("a passage another read still refers to does NOT follow a move",
+   res.ok && res.movedHighlight === false, JSON.stringify(res));
+ok("...so the comment left behind keeps its mark",
+   Store.getHighlights(D2)[0].readId === r1.id,
+   Store.getHighlights(D2)[0].readId);
+
+// ---- copying a comment ----
+Store.setCommentRead(D2, "cx1", r1.id);    // back under Read 1 again
+const before = Store.getComments(D2).length;
+// Captured so the copy can be checked for changing nothing about the mark.
+const highlightReadBeforeCopy = Store.getHighlights(D2)[0].readId;
+const highlightColorBeforeCopy = Store.getHighlights(D2)[0].color;
+const copy = Store.copyCommentToRead(D2, "cx1", r2.id);
+ok("a comment can be copied into another read", copy.ok && !!copy.id, JSON.stringify(copy));
+
+const after = Store.getComments(D2);
+ok("...which ADDS a comment rather than moving one", after.length === before + 1,
+   before + " -> " + after.length);
+ok("the original stays where it was",
+   after.find((c) => c.id === "cx1").readId === r1.id);
+
+const made = after.find((c) => c.id === copy.id);
+ok("the copy is under the read you chose", made.readId === r2.id);
+ok("the copy says the same thing", made.text === "First thought.", made.text);
+ok("the copy points at the same passage", made.highlightId === "hx1");
+ok("the copy records where it came from",
+   !!made.copiedFrom && made.copiedFrom.commentId === "cx1" && made.copiedFrom.readId === r1.id,
+   JSON.stringify(made.copiedFrom));
+ok("the copy has its own id", made.id !== "cx1");
+
+/*
+ * A copy must not drag the highlight anywhere, whatever read it happens to be
+ * in. The original comment is still pointing at that passage, so moving the
+ * mark would break the one left behind.
+ *
+ * Compared against the value captured BEFORE the copy rather than against a
+ * hardcoded read: an earlier version asserted a specific id and failed because
+ * a previous case in this file had legitimately moved it. The rule is "the copy
+ * changed nothing", so that is what is measured.
+ */
+ok("copying leaves the highlight exactly where it was",
+   Store.getHighlights(D2)[0].readId === highlightReadBeforeCopy,
+   highlightReadBeforeCopy + " -> " + Store.getHighlights(D2)[0].readId);
+ok("...and does not recolour it either",
+   Store.getHighlights(D2)[0].color === highlightColorBeforeCopy,
+   highlightColorBeforeCopy + " -> " + Store.getHighlights(D2)[0].color);
+
+ok("copying into the read it is already in is refused",
+   Store.copyCommentToRead(D2, "cx1", r1.id).ok === false);
+
+// ---- deleting a read ----
+const beforeDelete = Store.getComments(D2).length;
+const del = Store.deleteRead(D2, r2.id);
+ok("a read can be deleted", del.ok, JSON.stringify(del));
+ok("it is gone from the list",
+   Store.getReads(D2).length === 1 && Store.getReads(D2)[0].id === r1.id);
+ok("NOTHING written during it was deleted",
+   Store.getComments(D2).length === beforeDelete,
+   beforeDelete + " -> " + Store.getComments(D2).length);
+ok("its comments moved into the neighbouring read",
+   Store.getComments(D2).every((c) => c.readId === r1.id),
+   JSON.stringify(Store.getComments(D2).map((c) => c.readId)));
+ok("the caller is told how many moved, so it can say so",
+   typeof del.movedComments === "number" && del.movedComments > 0,
+   String(del.movedComments));
+
+/*
+ * The last read cannot go. Every comment points at a read; with none left they
+ * point at nothing, and the migration will not rebuild one because they
+ * already carry a readId — so they would vanish from every per-read export.
+ */
+const lastGo = Store.deleteRead(D2, r1.id);
+ok("the only read cannot be deleted", lastGo.ok === false && lastGo.reason === "last",
+   JSON.stringify(lastGo));
+ok("...and it is still there", Store.getReads(D2).length === 1);
+
+// Deleting the FIRST read hands its notes forward instead of backward.
+const r3 = Store.startNewRead(D2);
+const firstGo = Store.deleteRead(D2, r1.id);
+ok("deleting the first read moves its notes FORWARD to the next one",
+   firstGo.ok && firstGo.into.id === r3.id, JSON.stringify(firstGo.into && firstGo.into.id));
+ok("...and nothing was lost doing it",
+   Store.getComments(D2).length === beforeDelete &&
+   Store.getComments(D2).every((c) => c.readId === r3.id));
+
+/* ===========================================================================
  * PART B & C — the inclusion rule, and the export shapes
  * ===========================================================================
  * These run against js/comments.js. The store is stubbed here because what is
