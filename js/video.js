@@ -1470,7 +1470,7 @@ const Video = (function () {
 
       const r = document.createRange();
       r.selectNodeContents(el);
-      const hlId = Highlights.createHighlightFromRange(r, "yellow");
+      const hlId = Highlights.createHighlightFromRange(r);
       if (!hlId) return;
 
       Comments.attachToHighlight(docId, c.id, hlId);

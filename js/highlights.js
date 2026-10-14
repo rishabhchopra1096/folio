@@ -228,7 +228,9 @@ const Highlights = (function () {
    * Create a highlight from the current selection AND immediately open the
    * comments panel focused on it. This is the one-shot "annotate" action —
    * triggered by the comment button in the toolbar or by pressing "c" while
-   * the toolbar is visible. Default color is yellow (matches most reader tools).
+   * the toolbar is visible. The colour is the CURRENT READ's colour, so a
+   * passage you marked on your first pass through a document and one you
+   * marked on your third look different at a glance (see currentReadColor).
    *
    * We snapshot lastCreatedHighlightId BEFORE calling createHighlight so we
    * can detect whether this particular call actually created something. If
@@ -239,9 +241,35 @@ const Highlights = (function () {
   function createHighlightAndComment() {
     if (!pendingRange) return;
     const before = lastCreatedHighlightId;
-    createHighlight("yellow");
+    createHighlight(currentReadColor());
     if (lastCreatedHighlightId && lastCreatedHighlightId !== before && typeof Comments !== "undefined") {
       Comments.openPanelForHighlight(lastCreatedHighlightId);
+    }
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Returns the colour of the read you are currently in — the default colour
+   * for anything you highlight right now.
+   *
+   * WHY IT EXISTS:
+   * Re-reading a document months later should look different from reading it
+   * the first time, so each read owns a colour and new marks take it. The four
+   * swatches in the toolbar still override it, because the point is a sensible
+   * default, not a restriction.
+   *
+   * It falls back to yellow if the store cannot answer, which keeps a highlight
+   * creatable even if the reads list is somehow unreadable. Losing the colour
+   * coding is a cosmetic failure; losing the ability to highlight is not.
+   */
+  function currentReadColor() {
+    try {
+      const docId = Reader.getCurrentDocId();
+      const read = docId ? FolioStore.getCurrentRead(docId) : null;
+      return (read && read.color) || "yellow";
+    } catch (err) {
+      console.warn("[highlights] could not read the current read's colour, using yellow", err);
+      return "yellow";
     }
   }
 
@@ -262,6 +290,14 @@ const Highlights = (function () {
    */
   function createHighlightFromRange(range, color) {
     if (!range) return null;
+
+    /*
+     * An omitted colour means "whatever this read uses". The read-aloud and
+     * video dictation paths both call in here without caring about colour, and
+     * they used to hardcode yellow — which quietly broke the read colour
+     * coding for every highlight made by dictating rather than by selecting.
+     */
+    if (!color) color = currentReadColor();
 
     const docId = Reader.getCurrentDocId();
     if (!docId) return null;
@@ -294,11 +330,19 @@ const Highlights = (function () {
       return null;
     }
 
-    // Save the highlight to the store
+    /*
+     * Save the highlight, stamped with the read it was made during.
+     *
+     * `readId` is what the export groups on — never the colour. Colour is only
+     * the visual hint, and the user can change it with the swatches, so a
+     * filter built on colour would silently reassign a mark to another read.
+     */
     const highlights = FolioStore.getHighlights(docId);
+    const read = FolioStore.getCurrentRead(docId);
     highlights.push({
       id: highlightId,
       color: color,
+      readId: read ? read.id : null,
       ...serialized,
       text: text,
       createdAt: new Date().toISOString(),

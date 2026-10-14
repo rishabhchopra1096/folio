@@ -1039,7 +1039,7 @@ const TTS = (function () {
     const range = dictationTargetRange();
     if (!range) return null;
 
-    const id = Highlights.createHighlightFromRange(range, "yellow");
+    const id = Highlights.createHighlightFromRange(range);
     if (id) {
       // Drop the selection now that it's been turned into a highlight —
       // otherwise the blue selection sits on top of the yellow one, and the
