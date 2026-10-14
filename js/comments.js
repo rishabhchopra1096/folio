@@ -98,6 +98,129 @@ const Comments = (function () {
   }
 
   // ==========================================================================
+  // READS — which pass through the document a note belongs to
+  // ==========================================================================
+  /*
+   * WHAT THIS SECTION IS FOR:
+   * You read something in March and wrote six comments. You come back in
+   * October, read it again, and have four new thoughts. Those are two
+   * different readings and you want them exported apart. A "read" is the
+   * record of one such pass; the store owns them (see FolioStore.getReads),
+   * and this section is everything the comments panel needs to show them,
+   * label them and filter an export by them.
+   *
+   * WHAT IS NOT HERE:
+   * Nothing in this section decides a colour. A read's colour is assigned when
+   * the read is created, in the store, so the panel and the highlight marks
+   * cannot disagree about it.
+   */
+
+  // The id of the read currently in progress, which is what a brand-new
+  // comment gets stamped with. Returns null only if there is no document.
+  function currentReadId(docId) {
+    try {
+      const read = FolioStore.getCurrentRead(docId);
+      return read ? read.id : null;
+    } catch (err) {
+      console.warn("[reads] could not resolve the current read", err);
+      return null;
+    }
+  }
+
+  // A read's month and year, for labels like "Read 2 · October 2026". The month
+  // is enough — the point is "which visit was this", not the exact minute.
+  function readDateLabel(read) {
+    if (!read || !read.startedAt) return "";
+    const d = new Date(read.startedAt);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Given every comment and highlight in a document, returns just the ones
+   * belonging to one read.
+   *
+   * THE RULE FOR COMMENTS is the obvious one: keep those whose readId matches.
+   *
+   * THE RULE FOR HIGHLIGHTS IS NOT OBVIOUS, and getting it wrong breaks the
+   * main thing this feature is for. Re-reading a passage you marked in March
+   * and adding a fresh thought about it today produces a comment belonging to
+   * THIS read attached to a highlight belonging to the OLD one. Filtering
+   * highlights by readId alone would drop that highlight, the comment would
+   * lose the quote it is about, and all three export formats would then file it
+   * under "notes whose highlight was removed" — turning the feature's central
+   * use case into a bug report.
+   *
+   * So a highlight is included when EITHER this read made it, OR one of this
+   * read's comments points at it.
+   */
+  function sliceByRead(readId, highlights, comments) {
+    const mine = comments.filter((c) => c.readId === readId);
+
+    // Highlights this read's comments refer to, whichever read marked them.
+    const referenced = new Set();
+    mine.forEach((c) => { if (c.highlightId) referenced.add(c.highlightId); });
+
+    const hls = highlights.filter(
+      (h) => h.readId === readId || referenced.has(h.id)
+    );
+    return { highlights: hls, comments: mine };
+  }
+
+  /*
+   * Redraw the strip under the panel header that says which read you are in
+   * and offers to start a new one.
+   *
+   * It lives below the header rather than as a fourth header button because it
+   * has to REPORT state as well as offer an action — you need to know you are
+   * in Read 2 before "New read" means anything — and because starting a read
+   * happens once per revisit while the other header buttons are constant.
+   */
+  function renderReadBar() {
+    const bar = document.getElementById("comments-read-bar");
+    if (!bar) return;
+
+    const docId = Reader.getCurrentDocId();
+    if (!docId) { bar.hidden = true; return; }
+
+    const read = FolioStore.getCurrentRead(docId);
+    if (!read) { bar.hidden = true; return; }
+
+    bar.hidden = false;
+
+    const label = document.getElementById("comments-read-label");
+    const dot = document.getElementById("comments-read-dot");
+    if (dot) dot.className = "read-dot hl-" + read.color;
+    if (label) {
+      const when = readDateLabel(read);
+      label.textContent = FolioStore.readLabel(read) + (when ? " \u00b7 " + when : "");
+    }
+  }
+
+  /*
+   * Begin a new read on the open document.
+   *
+   * Deliberately NOT confirmed with a dialog. It creates a record and changes
+   * nothing that existed — every old comment and highlight is untouched and
+   * still on screen — so there is nothing here to warn about. The one thing
+   * worth saying is said afterwards, as a notice naming the read that started.
+   */
+  function startNewRead() {
+    const docId = Reader.getCurrentDocId();
+    if (!docId) {
+      notice("Open a document first \u2014 a read belongs to the page you are reading.");
+      return;
+    }
+    const read = FolioStore.startNewRead(docId);
+    renderReadBar();
+    renderComments();
+    notice(
+      FolioStore.readLabel(read) + " started. Comments from here on are grouped under it."
+    );
+  }
+
+  // ==========================================================================
   // GEOMETRY PERSISTENCE — remember where/how big the panel was last time
   // ==========================================================================
 
@@ -357,6 +480,12 @@ const Comments = (function () {
 
   function renderComments() {
     const docId = Reader.getCurrentDocId();
+
+    // Keep the read strip in step with the list. Done here rather than at each
+    // call site so no future path can redraw the comments and leave the bar
+    // naming a read you have already moved on from.
+    renderReadBar();
+
     if (!docId) {
       commentsList.innerHTML =
         '<div class="comments-empty">Open a document to see comments.</div>';
@@ -378,6 +507,19 @@ const Comments = (function () {
     const sorted = [...comments].sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
     );
+
+    /*
+     * Every read in this document, by id, plus which one is current.
+     *
+     * Only comments from an EARLIER read get a chip. Chipping the current
+     * read's comments too would label every row in the panel with the same
+     * thing, which tells you nothing and crowds out the text you came to read.
+     * The chip answers one question — "is this me now, or me in March?" — and
+     * absence of a chip is the answer "now".
+     */
+    const reads = FolioStore.ensureReads(docId);
+    const readById = new Map(reads.map((r) => [r.id, r]));
+    const currentId = reads.length ? reads[reads.length - 1].id : null;
 
     sorted.forEach((comment) => {
       // Three cases for the "context" label above a comment:
@@ -420,11 +562,24 @@ const Comments = (function () {
         { month: "short", day: "numeric" }
       );
 
+      /*
+       * The read chip. An unstamped comment (one written before reads existed
+       * AND somehow missed by the migration) gets no chip rather than a wrong
+       * one — inventing a read for it would be a lie about when it was written.
+       */
+      const read = comment.readId ? readById.get(comment.readId) : null;
+      const readChip =
+        read && read.id !== currentId
+          ? `<span class="comment-read-chip hl-${read.color}" title="Written during ${
+              escapeHtml(FolioStore.readLabel(read))} ${escapeHtml(readDateLabel(read))
+            }">${escapeHtml(FolioStore.readLabel(read))}</span>`
+          : "";
+
       entry.innerHTML = `
         ${contextHtml}
         <div class="comment-text">${escapeHtml(comment.text)}</div>
         <div class="comment-meta">
-          <span>${dateStr}</span>
+          <span class="comment-meta-left"><span>${dateStr}</span>${readChip}</span>
           <div class="comment-actions">
             <button class="edit-comment" data-id="${comment.id}">Edit</button>
             <button class="delete-comment" data-id="${comment.id}">Delete</button>
@@ -486,6 +641,7 @@ const Comments = (function () {
       comments.push({
         id: FolioStore.generateId("cm"),
         highlightId: activeHighlightId,
+        readId: currentReadId(docId),
         text: text,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -497,6 +653,7 @@ const Comments = (function () {
         id: FolioStore.generateId("cm"),
         highlightId: null,
         isGeneral: true,
+        readId: currentReadId(docId),
         text: text,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -535,6 +692,7 @@ const Comments = (function () {
       id: id,
       highlightId: highlightId || null,
       isGeneral: !highlightId,
+      readId: currentReadId(docId),
       text: text.trim(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -791,7 +949,16 @@ const Comments = (function () {
      * This used to export only the digest, then only the full document. Asking
      * is better than guessing which of those someone meant.
      */
-    chooseExport(isVideo, function (kind) { runExport(kind, docId); });
+    /*
+     * Two questions, in this order: what shape of file, then which read.
+     *
+     * Kind first because it is the question you always have an answer to. The
+     * read question does not even appear on a document you have only read once,
+     * so for most exports this is still a single click.
+     */
+    chooseExport(isVideo, function (kind) {
+      chooseRead(docId, function (readId) { runExport(kind, docId, readId); });
+    });
   }
 
   /*
@@ -799,20 +966,141 @@ const Comments = (function () {
    * reachable directly — by a test that means a particular one, and by anything
    * that already knows which is wanted.
    */
-  function runExport(kind, docId) {
+  function runExport(kind, docId, readId) {
     const id = docId || Reader.getCurrentDocId();
     if (!id) { notice("Open a document first."); return; }
 
     const doc = FolioStore.getDocument(id);
-    const highlights = FolioStore.getHighlights(id);
-    const comments = FolioStore.getComments(id);
+    let highlights = FolioStore.getHighlights(id);
+    let comments = FolioStore.getComments(id);
     const blocks = (doc && doc.content && doc.content.blocks) || [];
 
-    if (kind === "digest") return exportHighlightsDigest(doc, highlights, comments);
-    if (blocks.some((b) => b.type === "video")) {
-      return exportTranscript(doc, blocks, highlights, comments);
+    /*
+     * `readId` null means every read — the consolidated export. Anything else
+     * narrows to one read, using the inclusion rule in sliceByRead (which is
+     * where the subtlety lives; read its comment before changing this).
+     */
+    const reads = FolioStore.ensureReads(id);
+    const scopeRead = readId ? reads.find((r) => r.id === readId) || null : null;
+    if (scopeRead) {
+      const slice = sliceByRead(scopeRead.id, highlights, comments);
+      highlights = slice.highlights;
+      comments = slice.comments;
+      if (!highlights.length && !comments.length) {
+        notice("Nothing written during " + FolioStore.readLabel(scopeRead) + " yet.");
+        return;
+      }
     }
-    return exportTextDocument(doc, blocks, highlights, comments);
+
+    // Everything the export writers need to know about reads, in one object so
+    // adding a field later does not mean changing three signatures.
+    const ctx = {
+      reads: reads,
+      readById: new Map(reads.map((r) => [r.id, r])),
+      scopeRead: scopeRead,
+      // Only worth labelling reads inside a file when there are several and we
+      // did not already narrow to one.
+      labelReads: !scopeRead && reads.length > 1,
+    };
+
+    console.log(
+      `[reads] export kind=${kind} scope=${scopeRead ? FolioStore.readLabel(scopeRead) : "all reads"} ` +
+      `highlights=${highlights.length} comments=${comments.length}`
+    );
+
+    if (kind === "digest") return exportHighlightsDigest(doc, highlights, comments, ctx);
+    if (blocks.some((b) => b.type === "video")) {
+      return exportTranscript(doc, blocks, highlights, comments, ctx);
+    }
+    return exportTextDocument(doc, blocks, highlights, comments, ctx);
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Asks which read to export, and calls done(readId) — or done(null) meaning
+   * every read in one file.
+   *
+   * WHY IT SOMETIMES ASKS NOTHING:
+   * A document you have read once has a single read, so there is no choice to
+   * make. Showing a chooser with one option would be a dialog that exists only
+   * to be dismissed, so it calls done(null) straight away.
+   */
+  function chooseRead(docId, done) {
+    const reads = FolioStore.ensureReads(docId);
+    if (reads.length <= 1) return done(null);
+
+    const comments = FolioStore.getComments(docId);
+    const countFor = (rid) => comments.filter((c) => c.readId === rid).length;
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    // Newest first: re-reading something is the reason this chooser exists, so
+    // the read you have just finished is the one you most likely want.
+    const rows = reads
+      .slice()
+      .reverse()
+      .map((r) => {
+        const n = countFor(r.id);
+        const when = readDateLabel(r);
+        return `
+        <button class="export-option" data-read="${escapeHtml(r.id)}">
+          <span class="export-option-title">
+            <span class="read-dot hl-${r.color}"></span>
+            ${escapeHtml(FolioStore.readLabel(r))}${when ? " \u00b7 " + escapeHtml(when) : ""}
+          </span>
+          <span class="export-option-desc">${n} comment${n === 1 ? "" : "s"} written during this read.</span>
+        </button>`;
+      })
+      .join("");
+
+    overlay.innerHTML = `
+      <div class="modal export-choice">
+        <h3>Which read?</h3>
+        ${rows}
+        <button class="export-option" data-read="__all__">
+          <span class="export-option-title">All reads, in one file</span>
+          <span class="export-option-desc">Everything you have ever written about this
+            document, with each comment labelled by the read it came from.</span>
+        </button>
+        <div class="modal-actions">
+          <button class="modal-btn cancel-btn">Cancel</button>
+        </div>
+      </div>`;
+
+    const close = () => overlay.remove();
+    overlay.querySelector(".cancel-btn").onclick = close;
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    overlay.querySelectorAll(".export-option").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        close();
+        const v = btn.dataset.read;
+        done(v === "__all__" ? null : v);
+      });
+    });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+    });
+
+    document.body.appendChild(overlay);
+  }
+
+  /*
+   * The slug that goes in an export's file name, so two exports of the same
+   * document on the same day do not overwrite each other in the Downloads
+   * folder. "read-2" or "all-reads".
+   */
+  function readFileTag(ctx) {
+    if (ctx && ctx.scopeRead) return `read-${ctx.scopeRead.n}`;
+    if (ctx && ctx.reads && ctx.reads.length > 1) return "all-reads";
+    return "";
+  }
+
+  // Joins the file-name parts that are present, so a single-read document
+  // keeps the old file name exactly as it was.
+  function exportFileName(safeTitle, middle, ctx, today) {
+    const tag = readFileTag(ctx);
+    return [safeTitle, middle, tag, today].filter(Boolean).join("-") + ".md";
   }
 
   /*
@@ -874,29 +1162,117 @@ const Comments = (function () {
    * READ ONLY, like the other exports: it reads and writes a file, and calls
    * nothing that saves.
    */
-  function exportHighlightsDigest(doc, highlights, comments) {
+  function exportHighlightsDigest(doc, highlights, comments, ctx) {
     if (!highlights.length && !comments.length) {
       notice("No highlights or comments to export yet.");
       return;
     }
+
+    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
+    const today = new Date().toISOString().slice(0, 10);
+    const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
+
+    const lines = [];
+    lines.push(`# Highlights & comments — ${title}`);
+    lines.push(`_Exported ${today}_`);
+    if (ctx && ctx.scopeRead) {
+      const when = readDateLabel(ctx.scopeRead);
+      lines.push(`_${FolioStore.readLabel(ctx.scopeRead)}${when ? " · " + when : ""}_`);
+    }
+    lines.push("");
+
+    /*
+     * THE CONSOLIDATED CASE — every read, one section each, oldest first.
+     *
+     * Written this way so the file reads as the history of your thinking about
+     * a document rather than as one undated heap: what you noticed in March
+     * sits under its own heading, what you noticed in October under another.
+     *
+     * Each section is built by digestBody, the same function that builds a
+     * single-read digest. That is deliberate: two copies of this formatting
+     * would be free to drift apart, and the whole value of the per-read export
+     * is that a section looks the same whether it is alone in a file or one of
+     * five.
+     */
+    if (ctx && ctx.labelReads) {
+      let wrote = 0;
+      ctx.reads.forEach((r) => {
+        const slice = sliceByRead(r.id, highlights, comments);
+        if (!slice.highlights.length && !slice.comments.length) return;
+        const when = readDateLabel(r);
+        lines.push(`## ${FolioStore.readLabel(r)}${when ? " · " + when : ""}`);
+        lines.push("");
+        digestBody(lines, slice.highlights, slice.comments, 3);
+        wrote++;
+      });
+
+      /*
+       * A note with no readId belongs to no read, so the loop above skipped it.
+       * That should not happen — the migration stamps everything — but if it
+       * ever does, the note is written out under its own heading rather than
+       * silently dropped. Losing something the user wrote is the one outcome
+       * this whole feature exists to prevent.
+       */
+      const known = new Set(ctx.reads.map((r) => r.id));
+      const strandedComments = comments.filter((c) => !known.has(c.readId));
+      const strandedHighlights = highlights.filter((h) => !known.has(h.readId));
+      if (strandedComments.length || strandedHighlights.length) {
+        console.warn(
+          `[reads] ${strandedComments.length} comments and ${strandedHighlights.length} ` +
+          `highlights belong to no known read — exported under "Not filed under a read"`
+        );
+        lines.push("## Not filed under a read");
+        lines.push("");
+        digestBody(lines, strandedHighlights, strandedComments, 3);
+        wrote++;
+      }
+
+      if (!wrote) { notice("No highlights or comments to export yet."); return; }
+
+      downloadBlob(
+        lines.join("\n"),
+        exportFileName(safeTitle, "highlights", ctx, today),
+        "text/markdown"
+      );
+      return;
+    }
+
+    digestBody(lines, highlights, comments, 2);
+    downloadBlob(
+      lines.join("\n"),
+      exportFileName(safeTitle, "highlights", ctx, today),
+      "text/markdown"
+    );
+  }
+
+  /*
+   * WHAT THIS FUNCTION DOES:
+   * Appends the body of a digest to `lines` — your page-level notes, then each
+   * highlighted passage with its comments indented underneath, then any comment
+   * whose passage has since been deleted.
+   *
+   * WHY IT IS SEPARATE FROM THE FUNCTION ABOVE:
+   * The consolidated export calls it once per read; the single-read export
+   * calls it once. One shared builder is what guarantees a read's section looks
+   * the same in both files.
+   *
+   * WHAT `level` IS FOR:
+   * The markdown heading depth for the sub-headings ("General notes",
+   * "Highlights"). A single-read digest puts them at ##; inside a consolidated
+   * file they sit under a "## Read 2" so they have to drop to ###.
+   */
+  function digestBody(lines, highlights, comments, level) {
+    const h = "#".repeat(Math.max(2, level || 2));
 
     // Creation order, so the export roughly mirrors the order you read in.
     const sortedHighlights = [...highlights].sort(
       (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
     );
 
-    const title = (doc && doc.meta && doc.meta.title) || "Untitled";
-    const today = new Date().toISOString().slice(0, 10);
-
-    const lines = [];
-    lines.push(`# Highlights & comments — ${title}`);
-    lines.push(`_Exported ${today}_`);
-    lines.push("");
-
     // Page-level notes first — they are about the whole thing, not a quote.
     const generalNotes = comments.filter((c) => c.isGeneral || (c.highlightId === null));
     if (generalNotes.length) {
-      lines.push("## General notes");
+      lines.push(`${h} General notes`);
       lines.push("");
       generalNotes
         .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
@@ -908,7 +1284,7 @@ const Comments = (function () {
         });
       lines.push("");
       if (sortedHighlights.length) {
-        lines.push("## Highlights");
+        lines.push(`${h} Highlights`);
         lines.push("");
       }
     }
@@ -933,17 +1309,15 @@ const Comments = (function () {
      */
     const orphans = comments.filter((c) =>
       !c.isGeneral && c.highlightId != null &&
-      !highlights.some((h) => h.id === c.highlightId));
+      !highlights.some((h2) => h2.id === c.highlightId));
     if (orphans.length) {
       lines.push("---");
       lines.push("");
       lines.push("**Notes whose highlight was removed:**");
       lines.push("");
       orphans.forEach((c) => lines.push(`- ${c.text || ""}`));
+      lines.push("");
     }
-
-    const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
-    downloadBlob(lines.join("\n"), `${safeTitle}-highlights-${today}.md`, "text/markdown");
   }
 
   /*
@@ -963,7 +1337,7 @@ const Comments = (function () {
    * It never calls saveComments or saveHighlights, so exporting cannot alter or
    * lose anything you have written.
    */
-  function exportTextDocument(doc, blocks, highlights, comments) {
+  function exportTextDocument(doc, blocks, highlights, comments, ctx) {
     const title = (doc && doc.meta && doc.meta.title) || "Untitled";
     const today = new Date().toISOString().slice(0, 10);
 
@@ -1023,13 +1397,32 @@ const Comments = (function () {
      * passage when one is known so you can tell which part of a long paragraph
      * a note was about.
      */
+    /*
+     * A read prefix is added only when the file holds more than one read.
+     *
+     * The document itself cannot be grouped by read — it is linear, and
+     * printing it once per read would be absurd — so for this export format
+     * "which read" becomes a tag on each comment line instead of a heading.
+     * On a single-read export the prefix is omitted entirely, which keeps the
+     * file byte-identical to what this export produced before reads existed.
+     */
+    const readTag = (c) => {
+      if (!ctx || !ctx.labelReads) return "";
+      const r = c.readId ? ctx.readById.get(c.readId) : null;
+      return r ? `[${FolioStore.readLabel(r)}] ` : "";
+    };
+
     const commentLine = (c, quote) =>
-      quote ? `COMMENT on "${quote}": ${flatten(c.text)}`
-            : `COMMENT: ${flatten(c.text)}`;
+      quote ? `COMMENT ${readTag(c)}on "${quote}": ${flatten(c.text)}`
+            : `COMMENT ${readTag(c)}: ${flatten(c.text)}`;
 
     const out = [];
     out.push(`# ${title}`);
     out.push(`_Exported ${today}_`);
+    if (ctx && ctx.scopeRead) {
+      const when = readDateLabel(ctx.scopeRead);
+      out.push(`_${FolioStore.readLabel(ctx.scopeRead)}${when ? " · " + when : ""} — comments from this read only_`);
+    }
     out.push("");
 
     rendered.forEach((md, i) => {
@@ -1049,7 +1442,11 @@ const Comments = (function () {
     }
 
     const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
-    downloadBlob(out.join("\n"), `${safeTitle}-annotations-${today}.md`, "text/markdown");
+    downloadBlob(
+      out.join("\n"),
+      exportFileName(safeTitle, "annotations", ctx, today),
+      "text/markdown"
+    );
   }
 
   // ==========================================================================
@@ -1163,12 +1560,25 @@ const Comments = (function () {
    * highlights the line it was spoken over, so the highlight's text identifies
    * the line. General notes have no line and are collected at the top.
    */
-  function exportTranscript(doc, blocks, highlights, comments) {
+  function exportTranscript(doc, blocks, highlights, comments, ctx) {
     const title = (doc && doc.meta && doc.meta.title) || "Untitled";
     const today = new Date().toISOString().slice(0, 10);
 
     const videoBlock = blocks.find((b) => b.type === "video");
     const url = (videoBlock && videoBlock.data && videoBlock.data.url) || "";
+
+    /*
+     * A read prefix on each comment, used only when the file holds several
+     * reads. A transcript is linear like a document, so "which read" is a tag
+     * on the comment rather than a heading over a section. On a single-read
+     * export it is empty, leaving the file exactly as it was before reads
+     * existed.
+     */
+    const readTag = (c) => {
+      if (!ctx || !ctx.labelReads) return "";
+      const r = c.readId ? ctx.readById.get(c.readId) : null;
+      return r ? `[${FolioStore.readLabel(r)}] ` : "";
+    };
 
     // highlight id -> its comments
     const byHighlight = new Map();
@@ -1259,6 +1669,10 @@ const Comments = (function () {
     out.push(`# ${title}`);
     if (url) out.push(url);
     out.push(`_Exported ${today}_`);
+    if (ctx && ctx.scopeRead) {
+      const when = readDateLabel(ctx.scopeRead);
+      out.push(`_${FolioStore.readLabel(ctx.scopeRead)}${when ? " · " + when : ""} — comments from this read only_`);
+    }
     out.push("");
 
     if (general.length) {
@@ -1266,7 +1680,7 @@ const Comments = (function () {
       out.push("");
       general
         .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
-        .forEach((c) => out.push(`- ${flatten(c.text)}`));
+        .forEach((c) => out.push(`- ${readTag(c)}${flatten(c.text)}`));
       out.push("");
     }
 
@@ -1288,7 +1702,7 @@ const Comments = (function () {
           const at = typeof c.videoTime === "number" && isFinite(c.videoTime) &&
                      typeof Gemini !== "undefined"
             ? `[${Gemini.formatTime(c.videoTime)}] ` : "";
-          out.push(`  > 💬 ${at}${flatten(c.text)}`);
+          out.push(`  > 💬 ${readTag(c)}${at}${flatten(c.text)}`);
         });
       }
       out.push("");
@@ -1300,7 +1714,11 @@ const Comments = (function () {
     }
 
     const safe = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "video";
-    downloadBlob(out.join("\n"), `${safe}-transcript-${today}.md`, "text/markdown");
+    downloadBlob(
+      out.join("\n"),
+      exportFileName(safe, "transcript", ctx, today),
+      "text/markdown"
+    );
   }
 
   // Strip the inline HTML the reader stores in block text.
@@ -1353,6 +1771,11 @@ const Comments = (function () {
     // "New note" button — creates a page-level comment (no highlight)
     const newNoteBtn = document.getElementById("comments-new-note");
     if (newNoteBtn) newNoteBtn.addEventListener("click", openPanelForNewNote);
+
+    // "New read" button — starts a fresh pass, so comments from here on group
+    // separately. See the READS section at the top of this file.
+    const newReadBtn = document.getElementById("comments-new-read");
+    if (newReadBtn) newReadBtn.addEventListener("click", startNewRead);
 
     // Submit comment
     commentSubmit.addEventListener("click", saveComment);
@@ -1418,11 +1841,19 @@ const Comments = (function () {
     attachToHighlight,
     unanchor,
     revealCommentsFor,
+    // Start a new read on the open document, so comments made from now on
+    // group under it. Same thing the "+ New read" button does.
+    startNewRead,
     /*
-     * The two exports, individually. exportAnnotations() asks which one;
-     * these do one without asking.
+     * The two exports, individually. exportAnnotations() asks which one and
+     * which read; these do one without asking.
+     *
+     * The omitted third argument means "every read", which is the right
+     * default here: a caller that did not ask about reads wants everything,
+     * not an arbitrary one. Pass a read id as the second argument's successor
+     * when a specific read is meant.
      */
-    exportFull: (docId) => runExport("full", docId),
-    exportDigest: (docId) => runExport("digest", docId),
+    exportFull: (docId, readId) => runExport("full", docId, readId),
+    exportDigest: (docId, readId) => runExport("digest", docId, readId),
   };
 })();

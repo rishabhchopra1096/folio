@@ -370,6 +370,15 @@
           <button class="comments-close" id="comments-close" title="Close">&times;</button>
         </div>
       </div>
+      <!-- Which pass through the document you are on. Shows the current read
+           and starts a new one, so comments made from now on are grouped
+           separately for export. Hidden until a document is open. -->
+      <div class="comments-read-bar" id="comments-read-bar" hidden>
+        <span class="read-dot hl-yellow" id="comments-read-dot"></span>
+        <span class="comments-read-label" id="comments-read-label">Read 1</span>
+        <button class="comments-new-read" id="comments-new-read"
+                title="Start a new read — comments you make from now on are grouped under it and can be exported on their own">+ New read</button>
+      </div>
       <div class="comments-list" id="comments-list">
         <div class="comments-empty">No comments yet.</div>
       </div>

@@ -664,6 +664,92 @@ body.comments-docked #main-content {
   font-style: normal;
 }
 
+/* ── READ BAR — which pass through the document you are on ──
+   Sits between the panel header and the comment list. It both REPORTS the
+   current read and offers to start a new one, which is why it is a strip
+   rather than a fourth header button: "New read" means nothing until you can
+   see that you are currently in Read 1. */
+.comments-read-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.comments-read-bar[hidden] { display: none; }
+
+.comments-read-label {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-soft);
+  /* Takes the slack so the button is pushed to the right edge. */
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The colour of the read, as a small filled circle. Uses the same .hl-* class
+   as the highlight marks, so the dot and the marks a read makes can never show
+   different colours — there is one definition of each colour, above. */
+.read-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+  /* A faint ring so the dot keeps an edge against any theme's strip colour. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+/* The dot's colours are the OPAQUE siblings of the highlight washes above.
+   The washes are deliberately translucent — they sit behind text and must not
+   drown it — and at 10px on a cream strip that alpha renders as a grey smudge,
+   which is useless as a colour key. Rendered at full strength the dot reads as
+   the colour it names. The hues are the same; only the alpha differs, so these
+   must be changed together with the .hl-* rules at the top of this file. */
+.read-dot.hl-yellow { background: #ffd83b; }
+.read-dot.hl-green  { background: #6ebb74; }
+.read-dot.hl-blue   { background: #5aa9ef; }
+.read-dot.hl-pink   { background: #ef5f8c; }
+
+.comments-new-read {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+}
+.comments-new-read:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Press feedback, so starting a read feels like it registered. */
+.comments-new-read:active { transform: scale(0.96); }
+
+/* The read a comment was written during. Only shown on comments from an
+   EARLIER read — labelling the current read's comments would put the same chip
+   on every row, which says nothing and crowds the text. */
+.comment-read-chip {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .comments-list {
   flex: 1;
   overflow-y: auto;
@@ -713,6 +799,17 @@ body.comments-docked #main-content {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 6px;
+}
+/* The date and the read chip travel together on the left, so the row keeps the
+   two-child shape that space-between expects. Adding the chip as a third child
+   would have parked it in the middle of the row, between the date and the
+   buttons, reading as neither. */
+.comment-meta-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 .comment-actions {
   display: flex;
