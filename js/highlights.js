@@ -434,6 +434,48 @@ const Highlights = (function () {
     }
   }
 
+  /*
+   * WHAT THIS FUNCTION DOES:
+   * Walks every highlight in the document and makes the <mark> elements on the
+   * page show the colour currently stored against them.
+   *
+   * WHY applyHighlights CANNOT DO THIS:
+   * applyHighlights draws highlights that are not on the page yet, and it
+   * deliberately SKIPS any text already sitting inside a mark — otherwise
+   * calling it twice would nest marks inside marks. That skip is exactly what
+   * makes it useless for recolouring: the marks it would need to change are
+   * the ones it refuses to touch. Calling it after a colour change looks like
+   * it should work, does nothing at all, and leaves the page showing the
+   * colour of a read the highlight no longer belongs to.
+   *
+   * WHEN IT IS NEEDED:
+   * Whenever a highlight changes read — moving a comment takes its highlight
+   * along, and deleting a read hands its highlights to a neighbour. Both
+   * restamp the colour in storage, and both need the page to agree.
+   */
+  function syncHighlightColors(docId) {
+    const id = docId || Reader.getCurrentDocId();
+    if (!id) return 0;
+
+    const article = document.getElementById("article");
+    if (!article) return 0;
+
+    let changed = 0;
+    FolioStore.getHighlights(id).forEach((hl) => {
+      const want = `hl-${hl.color}`;
+      article
+        .querySelectorAll(`mark[data-highlight-id="${hl.id}"]`)
+        .forEach((mark) => {
+          if (mark.className === want) return;
+          mark.className = want;
+          changed++;
+        });
+    });
+
+    if (changed) console.log(`[highlights] recoloured ${changed} marks on doc ${id}`);
+    return changed;
+  }
+
   /* Is this text node inside a highlight that has already been drawn? */
   function insideExistingMark(node) {
     let p = node.parentNode;
@@ -769,6 +811,9 @@ const Highlights = (function () {
   return {
     init,
     applyHighlights,
+    // Repaint existing marks to the colour now stored against them. Needed
+    // after a highlight changes read; applyHighlights cannot do it.
+    syncHighlightColors,
     removeHighlight,
     createHighlightFromRange,
     hideToolbar,
