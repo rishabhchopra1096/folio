@@ -184,6 +184,26 @@ const Reader = (function () {
     settings.lastOpenDocId = docId;
     FolioStore.saveSettings(settings);
 
+    /*
+     * Make sure this document has a read before anything can be written into
+     * it. A "read" is the record of one pass through a document, and comments
+     * and highlights are stamped with the one they were made during.
+     *
+     * WHY IT HAPPENS HERE, at the moment the document opens, rather than
+     * lazily when the comments panel first renders: a document that has been
+     * opened has been read, so this is the honest moment for the record to
+     * exist. Leaving it to the panel meant the answer to "which read am I in"
+     * depended on whether you had happened to open the sidebar — and, for a
+     * document carried over from before reads existed, meant its old notes
+     * stayed unadopted until something else went looking for them.
+     *
+     * It is also where the one-time migration of a pre-reads document runs.
+     * See FolioStore.ensureReads.
+     */
+    if (typeof FolioStore.ensureReads === "function") {
+      FolioStore.ensureReads(docId);
+    }
+
     // Apply highlights if any
     if (typeof Highlights !== "undefined") {
       Highlights.applyHighlights(docId);

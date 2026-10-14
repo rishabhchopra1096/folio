@@ -291,10 +291,11 @@ const FolioStore = (function () {
     docs = docs.filter((d) => d.id !== id);
     writeJSON("folio_documents", docs);
 
-    // Remove the content, highlights, and comments keys
+    // Remove the content, highlights, comments and reads keys
     localStorage.removeItem(`folio_doc_${id}`);
     localStorage.removeItem(`folio_highlights_${id}`);
     localStorage.removeItem(`folio_comments_${id}`);
+    localStorage.removeItem(`folio_reads_${id}`);
   }
 
   // Count words across all Editor.js blocks
@@ -418,6 +419,151 @@ const FolioStore = (function () {
   }
 
   // ==========================================================================
+  // READS — one record per pass through a document
+  // ==========================================================================
+  /*
+   * WHAT A READ IS:
+   * A "read" is one occasion on which you went through a document. You read
+   * something in March, you come back to it in October, and the thoughts you
+   * have the second time are not the thoughts you had the first time. A read
+   * groups them so they can be exported apart.
+   *
+   * WHY IT IS STORED AS AN ARRAY AND NOT A FLAG:
+   * The reads for a document live in `folio_reads_{docId}` in the order they
+   * happened, and the CURRENT read is simply the last one. There is no
+   * "isActive" field anywhere, because two sources of truth for "which read am
+   * I in" is exactly the kind of thing that drifts apart and then has to be
+   * repaired. Appending is the only way a read is ever created.
+   *
+   * WHAT POINTS AT WHAT:
+   * Comments and highlights each carry a `readId`. They point at the read;
+   * the read knows nothing about them. So deleting a comment can never leave
+   * the reads list wrong, and counting a read's comments is a filter.
+   */
+
+  // The palette a read's colour is drawn from, in the order reads are given
+  // them. These are the same four colours the highlight toolbar offers, so a
+  // read's colour is always one the stylesheet already knows how to paint.
+  const READ_COLORS = ["yellow", "green", "blue", "pink"];
+
+  // Read the raw reads array. Returns [] when a document has never been read
+  // under this scheme — callers that need a real read should use ensureReads.
+  function getReads(docId) {
+    return readJSON(`folio_reads_${docId}`, []);
+  }
+
+  function saveReads(docId, reads) {
+    writeJSON(`folio_reads_${docId}`, reads);
+  }
+
+  /*
+   * WHAT THIS FUNCTION DOES:
+   * Guarantees that a document has at least one read, and that every comment
+   * and highlight in it belongs to one. Returns the full reads array.
+   *
+   * WHY WE NEED IT:
+   * Every document that existed before this feature has comments and
+   * highlights with no `readId` at all. The export filters on `readId`, so
+   * without a backfill every note written before today would match no read and
+   * disappear from exports — losing exactly the history this feature is meant
+   * to preserve. So the first time a document is touched, its existing notes
+   * are adopted into a Read 1.
+   *
+   * HOW IT WORKS:
+   * 1. If the document already has reads, there is nothing to do.
+   * 2. Otherwise we date Read 1 from the OLDEST note in the document, because
+   *    that is when the reading actually happened — not now, which is merely
+   *    when the code first ran.
+   * 3. We stamp every unstamped comment and highlight with that read's id.
+   * 4. We save all three keys, so the next call takes the early exit.
+   */
+  function ensureReads(docId) {
+    if (!docId) return [];
+
+    const existing = getReads(docId);
+    if (existing.length) return existing;
+
+    const comments = getComments(docId);
+    const highlights = getHighlights(docId);
+
+    // The earliest timestamp among everything already written, which is the
+    // honest start date for the reading that produced it.
+    let earliest = null;
+    comments.concat(highlights).forEach((item) => {
+      const t = item && item.createdAt;
+      if (!t) return;
+      if (earliest === null || t < earliest) earliest = t;
+    });
+
+    const read = {
+      id: generateId("rd"),
+      n: 1,
+      color: READ_COLORS[0],
+      startedAt: earliest || new Date().toISOString(),
+    };
+
+    // Adopt the existing notes. Anything that somehow already has a readId is
+    // left alone rather than overwritten.
+    let touchedComments = false;
+    comments.forEach((c) => {
+      if (!c.readId) { c.readId = read.id; touchedComments = true; }
+    });
+    let touchedHighlights = false;
+    highlights.forEach((h) => {
+      if (!h.readId) { h.readId = read.id; touchedHighlights = true; }
+    });
+
+    if (touchedComments) saveComments(docId, comments);
+    if (touchedHighlights) saveHighlights(docId, highlights);
+
+    const reads = [read];
+    saveReads(docId, reads);
+    console.log(
+      `[reads] migrated doc ${docId} into Read 1 — ` +
+      `${comments.length} comments, ${highlights.length} highlights, started ${read.startedAt}`
+    );
+    return reads;
+  }
+
+  // The read you are currently in: the most recent one. Runs the migration
+  // first, so this never returns null for a document that exists.
+  function getCurrentRead(docId) {
+    const reads = ensureReads(docId);
+    return reads.length ? reads[reads.length - 1] : null;
+  }
+
+  /*
+   * Begin a new read. Appends a record numbered one past the last, taking the
+   * next colour in the palette so consecutive reads never look alike. The
+   * palette cycles, so a fifth read reuses yellow — four passes is already far
+   * more than the colours can usefully distinguish.
+   */
+  function startNewRead(docId) {
+    const reads = ensureReads(docId);
+    const last = reads[reads.length - 1];
+    const n = last ? last.n + 1 : 1;
+
+    const read = {
+      id: generateId("rd"),
+      n: n,
+      color: READ_COLORS[(n - 1) % READ_COLORS.length],
+      startedAt: new Date().toISOString(),
+    };
+
+    reads.push(read);
+    saveReads(docId, reads);
+    console.log(`[reads] started Read ${n} on doc ${docId} (${read.color})`);
+    return read;
+  }
+
+  // Human label for a read, used in the panel, the export headings and the
+  // export file names. Kept here so all three agree.
+  function readLabel(read) {
+    if (!read) return "Read";
+    return `Read ${read.n}`;
+  }
+
+  // ==========================================================================
   // SETTINGS — Global app preferences
   // ==========================================================================
 
@@ -481,7 +627,7 @@ const FolioStore = (function () {
       return { added: Object.keys(data).length, skipped: 0 };
     }
 
-    // Merge: union of doc metadata by id, then copy content/highlights/comments
+    // Merge: union of doc metadata by id, then copy content/highlights/comments/reads
     // only for docs that weren't already present locally.
     const existingDocs = readJSON("folio_documents", []);
     const existingIds = new Set(existingDocs.map((d) => d.id));
@@ -498,8 +644,11 @@ const FolioStore = (function () {
       }
       mergedDocs.push(doc);
       added++;
-      // Pull along the doc's content/highlights/comments if present in backup
-      ["folio_doc_", "folio_highlights_", "folio_comments_"].forEach((prefix) => {
+      // Pull along the doc's content/highlights/comments/reads if present in backup.
+      // folio_reads_ must be here: a restored document whose reads were left
+      // behind would have notes pointing at reads that no longer exist, and the
+      // migration would not rebuild them because the notes already carry a readId.
+      ["folio_doc_", "folio_highlights_", "folio_comments_", "folio_reads_"].forEach((prefix) => {
         const key = prefix + doc.id;
         if (data[key] !== undefined) writeValue(key, data[key]);
       });
@@ -536,6 +685,13 @@ const FolioStore = (function () {
     saveHighlights,
     getComments,
     saveComments,
+    getReads,
+    saveReads,
+    ensureReads,
+    getCurrentRead,
+    startNewRead,
+    readLabel,
+    READ_COLORS,
     getSettings,
     saveSettings,
     exportAll,
