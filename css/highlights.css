@@ -680,6 +680,10 @@ body.comments-docked #main-content {
 }
 .comments-read-bar[hidden] { display: none; }
 
+/* The label is a button because clicking it opens the reads manager. Styled
+   flat rather than as a control: it is the bar's text first and a way in
+   second, and a second visible button beside "+ New read" would read as two
+   equally weighted actions when one of them is just a name. */
 .comments-read-label {
   font-family: var(--font-ui);
   font-size: 12px;
@@ -690,6 +694,134 @@ body.comments-docked #main-content {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Reset the button chrome so it sits in the strip as text. */
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.comments-read-label:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+
+/* ── READS MANAGER — rename and delete, one row per read ── */
+.reads-manager { min-width: 420px; max-width: 520px; }
+.reads-rows { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 8px; }
+
+.reads-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+/* The read you are in gets the accent edge, so "where am I" is answered
+   without reading any of the rows. */
+.reads-row.is-current { border-color: var(--accent); }
+
+.reads-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+.reads-row-title { font-weight: 500; }
+.reads-row-current {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+/* Pushed to the right so the counts line up down the list and can be compared
+   at a glance, which is how you spot the read you meant to delete. */
+.reads-row-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.reads-row-actions { display: flex; align-items: center; gap: 8px; }
+.reads-row-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.reads-row-name:focus { outline: none; border-color: var(--accent); }
+.reads-row-delete { flex-shrink: 0; font-size: 12px; padding: 6px 10px; }
+.reads-row-delete:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── MOVE / COPY PICKER — one row per read, a verb on each button ── */
+.read-pick-rows { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+
+.read-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink);
+}
+/* The read the comment is already in is listed but offers nothing, so it is
+   dimmed. Listing it keeps the ordering intact and answers "where is it now"
+   without a separate line of text. */
+.read-pick-row.is-here { opacity: 0.6; }
+
+.read-pick-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.read-pick-here {
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+.read-pick-move, .read-pick-copy {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+/* Says a comment arrived here from another read, so two near-identical rows
+   read as deliberate rather than as a mistake. Deliberately quiet — it is an
+   explanation, not a label you should notice before the comment itself. */
+.comment-copy-mark {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-style: italic;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* The sentence in a confirm dialog that says where the writing goes. */
+.modal-body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  margin: 0 0 4px;
 }
 
 /* The colour of the read, as a small filled circle. Uses the same .hl-* class
@@ -747,7 +879,14 @@ body.comments-docked #main-content {
   color: var(--ink-soft);
   box-shadow: inset 0 0 0 1px var(--line);
   white-space: nowrap;
-  flex-shrink: 0;
+  /* A named read makes this longer than "Read 2", and the meta row also holds
+     the date and three actions. Capped and clipped so a long name shortens the
+     chip rather than pushing Edit and Delete off the end of the row; the full
+     label is on the title attribute. */
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
 }
 
 .comments-list {

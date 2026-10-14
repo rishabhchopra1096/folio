@@ -193,9 +193,310 @@ const Comments = (function () {
     const dot = document.getElementById("comments-read-dot");
     if (dot) dot.className = "read-dot hl-" + read.color;
     if (label) {
+      /*
+       * A named read shows its name and drops the month; an unnamed one shows
+       * the month, which is the only thing that tells the reads apart. The
+       * full label goes in the tooltip either way, so nothing is lost to the
+       * strip being one line wide.
+       */
       const when = readDateLabel(read);
-      label.textContent = FolioStore.readLabel(read) + (when ? " \u00b7 " + when : "");
+      const named = !!(read.name && read.name.trim());
+      label.textContent = FolioStore.readLabel(read) + (named || !when ? "" : " \u00b7 " + when);
+      label.title = FolioStore.readLabel(read) + (when ? " \u00b7 " + when : "") +
+                    " \u2014 click to rename or delete a read";
     }
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Opens the reads manager — one panel listing every read on this document,
+   * where each can be given a name or deleted.
+   *
+   * WHY IT IS A PANEL AND NOT MORE BUTTONS ON THE BAR:
+   * Renaming and deleting apply to ANY read, not just the one you are in, so
+   * the controls need a list to hang off. Putting them on the bar would both
+   * crowd a strip that already has a button and leave no way to touch an older
+   * read at all.
+   *
+   * WHY RENAMING IS AN INPUT RATHER THAN A SECOND DIALOG:
+   * Naming reads is something you do to several at once, after the fact —
+   * "that was the skim, that was the close read". A dialog per read would make
+   * that four dialogs.
+   */
+  function openReadsManager() {
+    const docId = Reader.getCurrentDocId();
+    if (!docId) {
+      notice("Open a document first \u2014 reads belong to the page you are reading.");
+      return;
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal reads-manager">
+        <h3>Reads</h3>
+        <div class="reads-rows"></div>
+        <div class="modal-actions">
+          <button class="modal-btn cancel-btn">Done</button>
+        </div>
+      </div>`;
+
+    const rows = overlay.querySelector(".reads-rows");
+
+    // Redrawn in place after a rename or a delete, so the list and the counts
+    // never show a state that has already changed underneath them.
+    function draw() {
+      const reads = FolioStore.ensureReads(docId);
+      const comments = FolioStore.getComments(docId);
+      const highlights = FolioStore.getHighlights(docId);
+      const currentId = reads.length ? reads[reads.length - 1].id : null;
+
+      rows.innerHTML = "";
+      // Newest first, matching the comment list and the export chooser.
+      reads.slice().reverse().forEach((r) => {
+        const nComments = comments.filter((c) => c.readId === r.id).length;
+        const nHighlights = highlights.filter((h) => h.readId === r.id).length;
+        const when = readDateLabel(r);
+
+        const row = document.createElement("div");
+        row.className = "reads-row" + (r.id === currentId ? " is-current" : "");
+        row.innerHTML = `
+          <div class="reads-row-head">
+            <span class="read-dot hl-${r.color}"></span>
+            <span class="reads-row-title">Read ${r.n}${when ? " \u00b7 " + escapeHtml(when) : ""}</span>
+            ${r.id === currentId ? '<span class="reads-row-current">current</span>' : ""}
+            <span class="reads-row-count">${nComments} comment${nComments === 1 ? "" : "s"}, ${
+              nHighlights} highlight${nHighlights === 1 ? "" : "s"}</span>
+          </div>
+          <div class="reads-row-actions">
+            <input class="reads-row-name" type="text" maxlength="60"
+                   placeholder="Give this read a name"
+                   value="${escapeHtml(r.name || "")}" />
+            <button class="modal-btn reads-row-delete">Delete</button>
+          </div>`;
+
+        const input = row.querySelector(".reads-row-name");
+        const commit = () => {
+          const before = (r.name || "").trim();
+          const after = input.value.trim();
+          if (before === after) return;
+          FolioStore.renameRead(docId, r.id, after);
+          renderReadBar();
+          renderComments();
+          draw();
+        };
+        input.addEventListener("blur", commit);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+          if (e.key === "Escape") { input.value = r.name || ""; input.blur(); }
+        });
+
+        const del = row.querySelector(".reads-row-delete");
+        if (reads.length <= 1) {
+          /*
+           * The only read cannot go. Every comment points at a read, so with
+           * none left they would point at nothing — and the migration will not
+           * rebuild one, because they already carry a readId. Disabled with
+           * the reason attached rather than hidden, so the absence is
+           * explained rather than mysterious.
+           */
+          del.disabled = true;
+          del.title = "A document always keeps at least one read";
+        } else {
+          del.addEventListener("click", () => confirmDeleteRead(docId, r, draw));
+        }
+
+        rows.appendChild(row);
+      });
+    }
+
+    draw();
+
+    const close = () => overlay.remove();
+    overlay.querySelector(".cancel-btn").onclick = close;
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+    });
+
+    document.body.appendChild(overlay);
+  }
+
+  /*
+   * Confirm deleting a read, saying up front exactly where the writing goes.
+   *
+   * The sentence matters more than the dialog does. "Delete" sounds like
+   * losing something, and here nothing is lost — the comments and highlights
+   * move to the neighbouring read — so the dialog's job is to say so before
+   * the press rather than reassure afterwards.
+   */
+  function confirmDeleteRead(docId, read, after) {
+    const reads = FolioStore.ensureReads(docId);
+    const i = reads.findIndex((r) => r.id === read.id);
+    const into = i > 0 ? reads[i - 1] : reads[1];
+
+    const comments = FolioStore.getComments(docId).filter((c) => c.readId === read.id).length;
+    const highlights = FolioStore.getHighlights(docId).filter((h) => h.readId === read.id).length;
+
+    const moving = comments || highlights
+      ? `Its ${comments} comment${comments === 1 ? "" : "s"} and ${highlights} highlight${
+          highlights === 1 ? "" : "s"} move into ${escapeHtml(FolioStore.readLabel(into))}.
+         Nothing you wrote is deleted.`
+      : "It has nothing written in it.";
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal">
+        <h3>Delete ${escapeHtml(FolioStore.readLabel(read))}?</h3>
+        <p class="modal-body">${moving}</p>
+        <div class="modal-actions">
+          <button class="modal-btn cancel-btn">Cancel</button>
+          <button class="modal-btn primary confirm-btn">Delete read</button>
+        </div>
+      </div>`;
+
+    const close = () => overlay.remove();
+    overlay.querySelector(".cancel-btn").onclick = close;
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector(".confirm-btn").onclick = () => {
+      const res = FolioStore.deleteRead(docId, read.id);
+      close();
+      if (!res.ok) {
+        notice(res.reason === "last"
+          ? "A document always keeps at least one read."
+          : "That read is no longer there.");
+        return;
+      }
+      /*
+       * The marks on the page are coloured by their read, and deleteRead
+       * restamps the ones it moved — so the page has to be repainted or it
+       * keeps showing the colour of a read that no longer exists.
+       *
+       * syncHighlightColors, NOT applyHighlights: the latter skips any text
+       * already inside a mark (so that calling it twice cannot nest marks),
+       * which means it silently refuses to touch the very marks that need
+       * changing. That looked like it worked and did nothing.
+       */
+      if (typeof Highlights !== "undefined" && Highlights.syncHighlightColors) {
+        Highlights.syncHighlightColors(docId);
+      }
+      renderReadBar();
+      renderComments();
+      if (typeof after === "function") after();
+      notice(
+        res.movedComments || res.movedHighlights
+          ? `Deleted. ${res.movedComments} comment${res.movedComments === 1 ? "" : "s"} moved into ` +
+            FolioStore.readLabel(res.into) + "."
+          : "Deleted."
+      );
+    };
+
+    document.body.appendChild(overlay);
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Asks which read a comment should be filed under, and whether to MOVE it
+   * there or leave a copy in both.
+   *
+   * WHY BOTH VERBS, AND WHY THEY SIT ON THE SAME ROW:
+   * Moving is for the mistake — you forgot to press "New read" and wrote three
+   * comments before remembering, and they are in the wrong pass. Copying is
+   * for the thought that is true in both passes: "never understood this
+   * properly" is as true in October as it was in March, and an October export
+   * that dropped it would be missing something you still think.
+   *
+   * Two buttons on each read's row rather than a mode switch at the top,
+   * because a mode is a thing you can misread — press Copy believing you are
+   * in Move and the mistake is silent until an export looks wrong. Naming the
+   * verb on the button you actually press leaves nothing to misread.
+   */
+  function openMoveComment(comment) {
+    const docId = Reader.getCurrentDocId();
+    if (!docId) return;
+
+    const reads = FolioStore.ensureReads(docId);
+    if (reads.length <= 1) {
+      notice("There is only one read on this page, so there is nowhere to move it.");
+      return;
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    const rows = reads.slice().reverse().map((r) => {
+      const when = readDateLabel(r);
+      const here = r.id === comment.readId;
+      return `
+        <div class="read-pick-row${here ? " is-here" : ""}">
+          <span class="read-pick-name">
+            <span class="read-dot hl-${r.color}"></span>
+            ${escapeHtml(FolioStore.readLabel(r))}${when ? " \u00b7 " + escapeHtml(when) : ""}
+          </span>
+          ${here
+            ? '<span class="read-pick-here">it is here now</span>'
+            : `<button class="modal-btn read-pick-move" data-read="${escapeHtml(r.id)}"
+                       title="File it under this read instead">Move</button>
+               <button class="modal-btn read-pick-copy" data-read="${escapeHtml(r.id)}"
+                       title="Leave it where it is and put a copy under this read">Copy</button>`}
+        </div>`;
+    }).join("");
+
+    overlay.innerHTML = `
+      <div class="modal reads-manager">
+        <h3>Move or copy this comment</h3>
+        <p class="modal-body">Move files it under another read. Copy leaves it where it is
+          and puts a second copy there, so it counts in both.</p>
+        <div class="read-pick-rows">${rows}</div>
+        <div class="modal-actions">
+          <button class="modal-btn cancel-btn">Cancel</button>
+        </div>
+      </div>`;
+
+    const close = () => overlay.remove();
+    overlay.querySelector(".cancel-btn").onclick = close;
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); }
+    });
+
+    const labelFor = (readId) => {
+      const r = FolioStore.getReads(docId).find((x) => x.id === readId);
+      return FolioStore.readLabel(r);
+    };
+
+    overlay.querySelectorAll(".read-pick-move").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const res = FolioStore.setCommentRead(docId, comment.id, btn.dataset.read);
+        close();
+        if (!res.ok) { notice("Could not move that comment."); return; }
+        /*
+         * A move can recolour the highlight, because the mark on the page is
+         * painted in its read's colour. Repaint, or the article keeps showing
+         * the old one.
+         */
+        if (res.movedHighlight && typeof Highlights !== "undefined" && Highlights.syncHighlightColors) {
+          Highlights.syncHighlightColors(docId);
+        }
+        renderComments();
+        notice("Moved to " + labelFor(btn.dataset.read) +
+               (res.movedHighlight ? ", with its highlight." : "."));
+      });
+    });
+
+    overlay.querySelectorAll(".read-pick-copy").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const res = FolioStore.copyCommentToRead(docId, comment.id, btn.dataset.read);
+        close();
+        if (!res.ok) { notice("Could not copy that comment."); return; }
+        // Nothing moved and no colour changed, so the article is untouched.
+        renderComments();
+        notice("Copied into " + labelFor(btn.dataset.read) + ". The original stays where it was.");
+      });
+    });
+
+    document.body.appendChild(overlay);
   }
 
   /*
@@ -575,12 +876,27 @@ const Comments = (function () {
             }">${escapeHtml(FolioStore.readLabel(read))}</span>`
           : "";
 
+      /*
+       * A comment that was copied here from another read says so. Without it
+       * you find what looks like the same sentence written twice and have no
+       * way to tell whether you repeated yourself or filed it deliberately.
+       */
+      const from = comment.copiedFrom && comment.copiedFrom.readId
+        ? readById.get(comment.copiedFrom.readId) : null;
+      const copyMark = comment.copiedFrom
+        ? `<span class="comment-copy-mark" title="Copied from ${
+            from ? escapeHtml(FolioStore.readLabel(from)) : "another read"}">copied</span>`
+        : "";
+
       entry.innerHTML = `
         ${contextHtml}
         <div class="comment-text">${escapeHtml(comment.text)}</div>
         <div class="comment-meta">
-          <span class="comment-meta-left"><span>${dateStr}</span>${readChip}</span>
+          <span class="comment-meta-left"><span>${dateStr}</span>${readChip}${copyMark}</span>
           <div class="comment-actions">
+            ${reads.length > 1
+              ? `<button class="move-comment" data-id="${comment.id}" title="Move or copy this comment to another read">Reads</button>`
+              : ""}
             <button class="edit-comment" data-id="${comment.id}">Edit</button>
             <button class="delete-comment" data-id="${comment.id}">Delete</button>
           </div>
@@ -609,6 +925,18 @@ const Comments = (function () {
           e.stopPropagation();
           deleteComment(comment.id);
         });
+
+      /*
+       * Move button — only rendered when there is more than one read, since
+       * with one read there is nowhere to move anything to.
+       */
+      const moveBtn = entry.querySelector(".move-comment");
+      if (moveBtn) {
+        moveBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openMoveComment(comment);
+        });
+      }
 
       commentsList.appendChild(entry);
     });
@@ -1777,6 +2105,10 @@ const Comments = (function () {
     const newReadBtn = document.getElementById("comments-new-read");
     if (newReadBtn) newReadBtn.addEventListener("click", startNewRead);
 
+    // The read's name in the bar opens the reads manager — rename, delete.
+    const readLabelBtn = document.getElementById("comments-read-label");
+    if (readLabelBtn) readLabelBtn.addEventListener("click", openReadsManager);
+
     // Submit comment
     commentSubmit.addEventListener("click", saveComment);
 
@@ -1844,6 +2176,9 @@ const Comments = (function () {
     // Start a new read on the open document, so comments made from now on
     // group under it. Same thing the "+ New read" button does.
     startNewRead,
+    // Rename or delete a read; move one comment to a different read.
+    openReadsManager,
+    openMoveComment,
     /*
      * The two exports, individually. exportAnnotations() asks which one and
      * which read; these do one without asking.
