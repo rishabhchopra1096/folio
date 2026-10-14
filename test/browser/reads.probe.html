@@ -1,0 +1,204 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Re-reading a document groups the new comments separately</title>
+<!--
+  You read something in March and wrote comments on it. Months later you read it
+  again and your thoughts are different. Pressing "+ New read" once should mean
+  every comment from then on belongs to a second read, so an export can give you
+  this time's thinking without the old notes mixed in.
+
+  THIS PROBE EXISTS BECAUSE THE JSDOM SUITE CANNOT SEE THE MIGRATION LAND.
+  The suite proves the store's migration in isolation and proves the export
+  filter against a fixture. Neither proves the thing that actually matters: that
+  a document already sitting in localStorage WITH NO readId ANYWHERE gets
+  adopted into Read 1 when the real app opens it, and that a highlight made
+  afterwards really takes the new read's colour on screen. A fixture can never
+  show that, because a fixture has the field by construction — which is exactly
+  how a feature ships having never once worked.
+
+  So this probe seeds the OLD shape on purpose: comments and highlights with no
+  readId, dated March, as the app would have left them before reads existed.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_reads_1";
+const MARCH = "2026-03-10T09:00:00.000Z";
+
+async function main() {
+  // ── Seed the document exactly as a pre-reads version of Folio left it ──
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Re-read Test", icon: "", parentId: null, order: 0,
+      createdAt: MARCH, updatedAt: MARCH }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "The first paragraph mentions ALPHA clearly." } },
+    { type: "paragraph", data: { text: "Filler so the list has somewhere to scroll." } },
+    { type: "paragraph", data: { text: "The last paragraph mentions OMEGA clearly." } },
+  ]}));
+  // A comment from the first read, with NO readId. This is the whole point.
+  localStorage.setItem("folio_comments_" + DOC, JSON.stringify([
+    { id: "cm_march", highlightId: null, isGeneral: true,
+      text: "What I thought the first time I read this.",
+      createdAt: MARCH, updatedAt: MARCH }]));
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  // No saved reads at all — the app has to build Read 1 itself.
+  localStorage.removeItem("folio_reads_" + DOC);
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__hl = Highlights; window.__cm = Comments; window.__st = FolioStore;");
+
+  // ── The migration must have run, on real stored data ──
+  const reads = w.__st.getReads(DOC);
+  ok("opening the document created Read 1", reads.length === 1 && reads[0].n === 1,
+     JSON.stringify(reads));
+  ok("Read 1 is dated from the March comment, not from today",
+     reads[0] && reads[0].startedAt === MARCH, reads[0] && reads[0].startedAt);
+
+  const marchComment = w.__st.getComments(DOC).find((c) => c.id === "cm_march");
+  ok("the March comment was adopted into Read 1",
+     !!marchComment && marchComment.readId === reads[0].id,
+     marchComment && String(marchComment.readId));
+
+  // ── The read bar must say where you are ──
+  w.__cm.openPanel();
+  await wait(500);
+  const bar = d.getElementById("comments-read-bar");
+  const label = d.getElementById("comments-read-label");
+  ok("the read bar is visible once a document is open", !!bar && !bar.hidden,
+     bar && String(bar.hidden));
+  ok("it names the read you are in", !!label && /Read 1/.test(label.textContent),
+     label && label.textContent);
+  ok("it says when that read happened", !!label && /March 2026/.test(label.textContent),
+     label && label.textContent);
+
+  const dot = d.getElementById("comments-read-dot");
+  ok("the colour dot carries Read 1's colour",
+     !!dot && dot.className.indexOf("hl-yellow") !== -1, dot && dot.className);
+
+  // A comment from the read you are IN should not be chipped — labelling every
+  // row with the same read tells you nothing and crowds the text.
+  await wait(200);
+  ok("a comment from the current read carries no read chip",
+     d.querySelectorAll(".comment-read-chip").length === 0,
+     String(d.querySelectorAll(".comment-read-chip").length) + " chips");
+
+  // ── Start a new read ──
+  const btn = d.getElementById("comments-new-read");
+  ok("the New read button is there to press", !!btn);
+  btn.click();
+  await wait(600);
+
+  const reads2 = w.__st.getReads(DOC);
+  ok("pressing it starts a second read", reads2.length === 2 && reads2[1].n === 2,
+     JSON.stringify(reads2.map((r) => r.n)));
+  ok("the bar now names Read 2", /Read 2/.test(label.textContent), label.textContent);
+  ok("and the dot changed colour", dot.className.indexOf("hl-green") !== -1, dot.className);
+
+  // The March comment is still on screen — re-reading your old thoughts is the
+  // point — but now it is labelled, because it is no longer from this read.
+  const chips = d.querySelectorAll(".comment-read-chip");
+  ok("the earlier comment is still listed",
+     /What I thought the first time/.test(d.getElementById("comments-list").textContent));
+  ok("and is now chipped with the read it came from",
+     chips.length === 1 && /Read 1/.test(chips[0].textContent),
+     chips.length + " chips: " + (chips[0] ? chips[0].textContent : ""));
+  ok("the chip carries Read 1's colour, not Read 2's",
+     chips.length === 1 && chips[0].className.indexOf("hl-yellow") !== -1,
+     chips[0] && chips[0].className);
+
+  // ── A highlight made now must take the new read's colour and id ──
+  function highlightWord(word) {
+    const walker = d.createTreeWalker(d.getElementById("article"), NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const i = node.textContent.indexOf(word);
+      if (i === -1) continue;
+      const r = d.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + word.length);
+      // No colour argument on purpose: the read should decide it.
+      return w.__hl.createHighlightFromRange(r);
+    }
+    return null;
+  }
+
+  const hlId = highlightWord("ALPHA");
+  ok("a highlight was created during Read 2", !!hlId, String(hlId));
+  await wait(300);
+
+  const stored = w.__st.getHighlights(DOC).find((h) => h.id === hlId);
+  ok("it is stamped with Read 2", !!stored && stored.readId === reads2[1].id,
+     stored && String(stored.readId));
+  ok("it took Read 2's colour rather than a hardcoded yellow",
+     !!stored && stored.color === "green", stored && stored.color);
+
+  const mark = d.querySelector('mark[data-highlight-id="' + hlId + '"]');
+  ok("and it is PAINTED in that colour on the page",
+     !!mark && mark.className.indexOf("hl-green") !== -1, mark && mark.className);
+
+  // ── A comment written now about that highlight belongs to Read 2 ──
+  w.__cm.addComment(hlId, "What I think the second time round.", DOC);
+  await wait(400);
+  const fresh = w.__st.getComments(DOC).find((c) => /second time round/.test(c.text));
+  ok("a comment written now belongs to Read 2",
+     !!fresh && fresh.readId === reads2[1].id, fresh && String(fresh.readId));
+
+  /*
+   * THE CASE THE WHOLE FEATURE IS FOR, end to end in the real app: a comment
+   * written during Read 2 about a passage highlighted during Read 1. Its quote
+   * must survive into the export. Filtering highlights by read alone would drop
+   * the highlight and orphan the comment.
+   */
+  const oldHl = highlightWord("OMEGA");
+  await wait(200);
+  // Force that highlight back to Read 1, the way a months-old one would be.
+  const hls = w.__st.getHighlights(DOC);
+  const target = hls.find((h) => h.id === oldHl);
+  if (target) { target.readId = reads2[0].id; target.color = "yellow"; }
+  w.__st.saveHighlights(DOC, hls);
+  w.__cm.addComment(oldHl, "A fresh thought about an old highlight.", DOC);
+  await wait(400);
+
+  // Capture what the export writes rather than downloading it.
+  w.eval(`
+    window.__captured = "";
+    window.__name = "";
+    const RealBlob = window.Blob;
+    window.Blob = class { constructor(parts, o) { window.__captured = parts[0]; return new RealBlob(parts, o); } };
+    const realCreate = document.createElement.bind(document);
+    document.createElement = (tag) => {
+      const el = realCreate(tag);
+      if (tag === "a") { el.click = () => {}; }
+      return el;
+    };
+  `);
+  w.__cm.exportDigest(DOC, w.__st.getReads(DOC)[1].id);
+  await wait(500);
+  const out = String(w.__captured || "");
+
+  ok("the Read 2 export was produced", out.length > 0, "empty export");
+  ok("a Read 2 comment about a Read 1 highlight keeps its quote",
+     /OMEGA/.test(out), "the quote is gone — the old highlight was filtered out");
+  ok("...and is not filed as a note whose highlight was removed",
+     !/highlight was removed/.test(out), "the comment was orphaned");
+  ok("the Read 2 export leaves the March comment out",
+     !/What I thought the first time/.test(out),
+     "an old comment leaked into a single-read export");
+  ok("the Read 2 export holds this read's comments",
+     /second time round/.test(out) && /fresh thought about an old highlight/.test(out));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + e.message); say("DONE"); });
+</script>

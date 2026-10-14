@@ -12,6 +12,7 @@
  */
 const { JSDOM } = require("jsdom");
 const fs = require("fs");
+const { readsStub } = require("./fixtures/reads-stub.js");
 const path = require("path");
 const REPO = "/Users/rishabhchopra/Documents/GitHub/folio";
 
@@ -33,6 +34,9 @@ global.speechSynthesis = undefined;
 
 const store = { docs: {}, hl: {}, cm: {}, settings: {} };
 global.FolioStore = {
+  // Reads: highlights and comments now record which pass they were made
+  // during, so both modules ask the store about them.
+  ...readsStub(),
   getSettings: () => JSON.parse(JSON.stringify(store.settings)),
   saveSettings: (s) => { store.settings = JSON.parse(JSON.stringify(s)); },
   generateId: (p) => p + "_" + Math.random().toString(36).slice(2, 8),

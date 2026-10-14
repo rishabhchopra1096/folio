@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Read bar — screenshot scene</title>
+<!--
+  NOT A TEST. This page exists so the read bar and the read chips can be LOOKED
+  AT, rather than only asserted on.
+
+  It sets up the scene the feature is actually for: a document read in March,
+  commented on, and now being read again in October, with the panel open and a
+  second read in progress. Chrome renders it headless and we screenshot the
+  result, so a layout fault — a chip colliding with the buttons, a bar that
+  reads as a heading, a washed-out colour dot — gets seen here rather than by
+  the user.
+
+  Driven by tools/shoot-reads.sh.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  iframe { display: block; border: 0; }
+</style>
+<div id="host"></div>
+<script>
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const DOC = "doc_reads_shot";
+const MARCH = "2026-03-10T09:00:00.000Z";
+
+async function main() {
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "The Pragmatic Programmer", icon: "", parentId: null, order: 0,
+      createdAt: MARCH, updatedAt: MARCH }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "header", data: { text: "Chapter 2 — A Pragmatic Approach", level: 2 } },
+    { type: "paragraph", data: { text: "Every piece of knowledge must have a single, unambiguous, authoritative representation within a system. This is the principle the authors call DRY, and most of the chapter is spent on what it costs to ignore it." } },
+    { type: "paragraph", data: { text: "Orthogonality is the second idea. Two things are orthogonal when changing one does not change the other, and the practical test is whether you can rewrite a component without touching anything that uses it." } },
+    { type: "paragraph", data: { text: "Tracer bullets are how the book suggests you find out whether an architecture works: build the thinnest possible path through every layer and fire it at the target before committing to anything." } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  localStorage.removeItem("folio_reads_" + DOC);
+  /*
+   * A tall panel on purpose. The default floating panel is short enough that
+   * the list shows one and a half comments, which is fine in use (you scroll)
+   * but useless for a screenshot: the read CHIPS sit on the older comments at
+   * the bottom, so a short panel hides the very thing being looked at.
+   */
+  const st = JSON.parse(localStorage.getItem("folio_settings") || "{}");
+  st.commentsGeometry = { mode: "floating", x: 900, y: 40, width: 360, height: 780 };
+  /*
+   * "?theme=dark" (or night, or paper) shoots the bar in that theme. The bar,
+   * the dot and the chips are all built from theme tokens, which is a reason to
+   * EXPECT them to adapt and no reason at all to believe it — a translucent
+   * chip tint that reads fine on cream can vanish on near-black.
+   */
+  const themeMatch = /theme=(\w+)/.exec(location.search);
+  if (themeMatch) st.theme = themeMatch[1];
+  localStorage.setItem("folio_settings", JSON.stringify(st));
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1280px;height:860px";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2200);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__hl = Highlights; window.__cm = Comments; window.__st = FolioStore;");
+
+  function highlightWord(word) {
+    const walker = d.createTreeWalker(d.getElementById("article"), NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const i = node.textContent.indexOf(word);
+      if (i === -1) continue;
+      const r = d.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + word.length);
+      return w.__hl.createHighlightFromRange(r);
+    }
+    return null;
+  }
+
+  /* ── The March read: two marks and two comments, back-dated ── */
+  const h1 = highlightWord("single, unambiguous, authoritative representation");
+  const h2 = highlightWord("Orthogonality is the second idea");
+  w.__cm.addComment(h1, "This is the whole chapter in one sentence.", DOC);
+  w.__cm.addComment(h2, "Never understood this properly. Come back to it.", DOC);
+  await wait(300);
+
+  // Back-date the first read's work so the bar and chips show a real gap.
+  const cs = w.__st.getComments(DOC);
+  cs.forEach((c) => { c.createdAt = MARCH; c.updatedAt = MARCH; });
+  w.__st.saveComments(DOC, cs);
+  const hs = w.__st.getHighlights(DOC);
+  hs.forEach((h) => { h.createdAt = MARCH; });
+  w.__st.saveHighlights(DOC, hs);
+
+  /* ── Now re-read it ── */
+  w.__cm.openPanel();
+  await wait(300);
+  d.getElementById("comments-new-read").click();
+  await wait(400);
+
+  // October's thinking: a brand-new mark, and a second thought about a mark
+  // made back in March — the case the read scoping exists for.
+  const h3 = highlightWord("thinnest possible path through every layer");
+  w.__cm.addComment(h3, "This is the bit I actually use. Ship the skeleton first.", DOC);
+  w.__cm.addComment(h2, "Second time round: it just means keep the seams clean.", DOC);
+  await wait(400);
+
+  /*
+   * "?reads=4" drives the palette case: enough reads that every colour appears
+   * at once. Worth a shot of its own because three of the four chip and dot
+   * colours are otherwise never looked at, and "the yellow one is legible" says
+   * nothing about the pink one on the same cream panel.
+   */
+  if (/reads=4/.test(location.search)) {
+    const more = [
+      "Third time: the DRY argument is really about ownership.",
+      "Fourth time: I keep coming back to the tracer bullet idea.",
+    ];
+    for (const text of more) {
+      d.getElementById("comments-new-read").click();
+      await wait(350);
+      w.__cm.addComment(h1, text, DOC);
+      await wait(350);
+    }
+    // One more read with nothing in it, so the bar shows the fourth colour.
+    d.getElementById("comments-new-read").click();
+    await wait(350);
+  }
+
+  w.__cm.openPanel();
+  await wait(600);
+  document.title = "READY";
+}
+main().catch((e) => { document.title = "ERROR: " + e.message; });
+</script>

@@ -9,10 +9,19 @@ http.createServer((req, res) => {
     fs.appendFileSync(__dirname + "/out.log", decodeURIComponent(req.url.slice(3)).replace(/&_=.*$/, "") + "\n");
     res.end("ok"); return;
   }
-  /* Probes live beside this file; everything else is the real app tree. */
-  const file = u.endsWith(".probe.html") ? path.join(__dirname, path.basename(u))
-             : u === "/probe.html"       ? path.join(__dirname, "import.probe.html")
-                                         : path.join(ROOT, u === "/" ? "/index.html" : u);
+  /*
+   * Probes live beside this file; everything else is the real app tree.
+   *
+   * ".shot.html" pages are served from here too. They are not probes — they
+   * assert nothing. They stage a scene so it can be SCREENSHOTTED and looked
+   * at, which is the only way to catch a layout fault that every assertion
+   * happily passes. Kept to a separate suffix so the test runner never mistakes
+   * one for a suite that produced no tally.
+   */
+  const local = u.endsWith(".probe.html") || u.endsWith(".shot.html");
+  const file = local                      ? path.join(__dirname, path.basename(u))
+             : u === "/probe.html"        ? path.join(__dirname, "import.probe.html")
+                                          : path.join(ROOT, u === "/" ? "/index.html" : u);
   if (!file.startsWith(ROOT) && !file.startsWith(__dirname)) { res.statusCode = 403; return res.end(); }
   fs.readFile(file, (err, buf) => {
     if (err) { res.statusCode = 404; return res.end("nf"); }

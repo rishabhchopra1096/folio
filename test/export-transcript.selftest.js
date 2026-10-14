@@ -2,6 +2,7 @@
    belong to, and general notes at the top. */
 const { JSDOM } = require("jsdom");
 const fs = require("fs");
+const { readsStub } = require("./fixtures/reads-stub.js");
 const REPO = "/Users/rishabhchopra/Documents/GitHub/folio";
 
 const PANEL = `<div id="comments-panel"><div class="comments-header"></div>
@@ -34,6 +35,9 @@ const comments = [
 ];
 
 global.FolioStore = {
+  // Reads: comments now record which pass through the document they were
+  // written during, so the comments module asks the store about them.
+  ...readsStub(),
   getSettings:()=>({}), saveSettings:()=>{},
   getDocument:()=>({ meta:{title:"Pokémon Red 100%"}, content:{blocks} }),
   getHighlights:()=>highlights, getComments:()=>comments,
