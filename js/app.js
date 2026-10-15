@@ -248,6 +248,12 @@ const App = (function () {
     SidebarUI.init();
     Highlights.init();
     Comments.init();
+    /*
+     * The feedback box at the bottom left. Guarded like the other optional
+     * modules: a page that does not include the markup simply has no box,
+     * rather than a broken startup.
+     */
+    if (typeof Feedback !== "undefined") Feedback.init();
     if (typeof TTS !== "undefined") TTS.init();
     /*
      * Reading a selection from another application. Electron only — the web
