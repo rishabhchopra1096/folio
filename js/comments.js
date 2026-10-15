@@ -1220,6 +1220,74 @@ const Comments = (function () {
     return div.innerHTML;
   }
 
+  /* ==========================================================================
+   * DATING A THOUGHT — the label every export puts in front of a comment
+   * ==========================================================================
+   * Every export used to introduce a comment with a bare arrow:
+   *
+   *     - "quoted highlight text"
+   *       → the thing I thought
+   *
+   * which says nothing about WHEN the thought was had. That is the one fact
+   * these exports exist to carry: the whole point of re-reading a document is
+   * to see what a passage did to you in March and what it does to you now, and
+   * two undated lines under one quote cannot tell you which is which — or even
+   * which came first.
+   *
+   *     - "quoted highlight text"
+   *       **MY THOUGHT ON MAR 2, 2026:** the thing I thought then
+   *       **MY THOUGHT ON SEP 5, 2026:** what I think about it now
+   *
+   * THE YEAR IS ALWAYS THERE, and that is a deliberate departure from the
+   * panel, which shows a bare "Sep 5". The panel is about now; an export is
+   * kept, and a file holding one read from 2024 and another from 2026 with
+   * both labelled "SEP 5" would be worse than useless. An export is read at an
+   * unknown distance from the day it was written.
+   */
+
+  /*
+   * The date a thought was actually HAD, which is not always the date on the
+   * record.
+   *
+   * A comment copied into another read is a NEW record, created today, holding
+   * a thought you had months ago. Dating the copy today would put a sentence
+   * you wrote in March into September's column — which corrupts the exact
+   * comparison this label exists to support. So a copy is dated by its
+   * original whenever that date was kept.
+   */
+  function thoughtDate(c) {
+    if (!c) return null;
+    if (c.copiedFrom && c.originalCreatedAt) return c.originalCreatedAt;
+    return c.createdAt || null;
+  }
+
+  function thoughtLabel(c) {
+    const when = thoughtDate(c);
+    const d = when ? new Date(when) : null;
+    /*
+     * An undated comment gets "MY THOUGHT" with no date rather than an invented
+     * one. Every comment Folio has ever written carries a createdAt, so this
+     * only fires for a hand-edited or half-imported record — and in that case
+     * a missing date is the honest thing to show.
+     */
+    if (!d || isNaN(d.getTime())) return "MY THOUGHT";
+    const stamp = d.toLocaleDateString("en-US", {
+      month: "short", day: "numeric", year: "numeric",
+    }).toUpperCase();
+    /*
+     * "(copied)" earns its place: without it, the same sentence appearing
+     * under two reads with the SAME date reads as a bug in the export rather
+     * than as something you deliberately carried forward.
+     */
+    return "MY THOUGHT ON " + stamp + (c.copiedFrom ? " (copied)" : "");
+  }
+
+  /* Oldest first. Dating the thoughts is only half of showing how they
+   * changed; they also have to come out in the order you had them. */
+  function byThoughtDate(a, b) {
+    return new Date(thoughtDate(a) || 0) - new Date(thoughtDate(b) || 0);
+  }
+
   // ==========================================================================
   // EXPORT — dump highlights + comments as a markdown bulleted list
   // ==========================================================================
@@ -1230,13 +1298,16 @@ const Comments = (function () {
    *   _Exported <date>_
    *
    *   - "quoted highlight text"
-   *     → my thought: comment text
+   *     **MY THOUGHT ON MAR 2, 2026:** what I thought the first time
+   *     **MY THOUGHT ON SEP 5, 2026:** what I think now
    *
    *   - "another highlight, no comment"
    *
    * Design decisions (per plan):
    *   • Include highlights WITHOUT comments (option A) — they're breadcrumbs too
    *   • Order by highlight creation time so the export reads chronologically
+   *   • Several thoughts on one passage come out OLDEST FIRST, so the column
+   *     under a quote reads as a progression rather than as storage order
    *   • Multi-line comments preserved via a blockquote-style indent
    *   • Markdown only (JSON round-trip is handled by the general backup feature)
    */
@@ -1603,11 +1674,13 @@ const Comments = (function () {
       lines.push(`${h} General notes`);
       lines.push("");
       generalNotes
-        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+        .sort(byThoughtDate)
         .forEach((c) => {
           const noteLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
           if (!noteLines.length) return;
-          lines.push(`- ${noteLines[0]}`);
+          // Dated like every other thought: a note about the whole page is
+          // still something you thought on a particular day.
+          lines.push(`- **${thoughtLabel(c)}:** ${noteLines[0]}`);
           noteLines.slice(1).forEach((l) => lines.push(`  ${l}`));
         });
       lines.push("");
@@ -1621,11 +1694,16 @@ const Comments = (function () {
       // Collapse internal whitespace so a multi-line highlight reads as one quote.
       const quoteText = (hl.text || "").replace(/\s+/g, " ").trim();
       lines.push(`- "${quoteText}"`);
-      comments.filter((c) => c.highlightId === hl.id).forEach((c) => {
+      /*
+       * Oldest thought first. When a passage has been commented on across
+       * several reads, this column IS the record of how your mind changed —
+       * and in storage order it was just a pile.
+       */
+      comments.filter((c) => c.highlightId === hl.id).sort(byThoughtDate).forEach((c) => {
         // Indented so a comment visually attaches to its quote.
         const commentLines = (c.text || "").split("\n").map((l) => l.trim()).filter(Boolean);
         commentLines.forEach((cl, i) => {
-          lines.push(`${i === 0 ? "  → " : "    "}${cl}`);
+          lines.push(i === 0 ? `  **${thoughtLabel(c)}:** ${cl}` : `    ${cl}`);
         });
       });
       lines.push("");
@@ -1643,7 +1721,8 @@ const Comments = (function () {
       lines.push("");
       lines.push("**Notes whose highlight was removed:**");
       lines.push("");
-      orphans.forEach((c) => lines.push(`- ${c.text || ""}`));
+      orphans.sort(byThoughtDate)
+             .forEach((c) => lines.push(`- **${thoughtLabel(c)}:** ${flatten(c.text)}`));
       lines.push("");
     }
   }
@@ -1694,7 +1773,7 @@ const Comments = (function () {
      * order they were written rather than in whatever order storage held them.
      */
     [...comments]
-      .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
+      .sort(byThoughtDate)
       .forEach((c) => {
         const hl = c.highlightId != null ? hlById.get(c.highlightId) : null;
         const quote = hl ? norm(hl.text) : "";
@@ -1721,9 +1800,14 @@ const Comments = (function () {
       });
 
     /*
-     * Every line starts with COMMENT so the file stays greppable, and names the
-     * passage when one is known so you can tell which part of a long paragraph
-     * a note was about.
+     * Every line starts with MY THOUGHT ON <date> — the same label the digest
+     * uses, so one habit reads both files — and names the passage when one is
+     * known, so you can tell which part of a long paragraph a note was about.
+     *
+     * This replaced a bare "COMMENT". That was greppable, which was the point,
+     * and "MY THOUGHT" greps just as well while also saying when. In a
+     * document with notes from three different readings, the date is the only
+     * thing that tells them apart as you scroll.
      */
     /*
      * A read prefix is added only when the file holds more than one read.
@@ -1740,9 +1824,11 @@ const Comments = (function () {
       return r ? `[${FolioStore.readLabel(r)}] ` : "";
     };
 
-    const commentLine = (c, quote) =>
-      quote ? `COMMENT ${readTag(c)}on "${quote}": ${flatten(c.text)}`
-            : `COMMENT ${readTag(c)}: ${flatten(c.text)}`;
+    const commentLine = (c, quote) => {
+      const head = `**${thoughtLabel(c)}**${readTag(c) ? " " + readTag(c).trim() : ""}`;
+      return quote ? `${head} on "${quote}": ${flatten(c.text)}`
+                   : `${head}: ${flatten(c.text)}`;
+    };
 
     const out = [];
     out.push(`# ${title}`);
@@ -2007,8 +2093,8 @@ const Comments = (function () {
       out.push("## Notes");
       out.push("");
       general
-        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
-        .forEach((c) => out.push(`- ${readTag(c)}${flatten(c.text)}`));
+        .sort(byThoughtDate)
+        .forEach((c) => out.push(`- **${thoughtLabel(c)}:** ${readTag(c)}${flatten(c.text)}`));
       out.push("");
     }
 
@@ -2030,7 +2116,13 @@ const Comments = (function () {
           const at = typeof c.videoTime === "number" && isFinite(c.videoTime) &&
                      typeof Gemini !== "undefined"
             ? `[${Gemini.formatTime(c.videoTime)}] ` : "";
-          out.push(`  > 💬 ${readTag(c)}${at}${flatten(c.text)}`);
+          /*
+           * Two different times sit on this line and they mean different
+           * things: the date is WHEN YOU THOUGHT IT, the [12:34] is where in
+           * the video you were. A note made on a second watch is the whole
+           * reason both are worth printing.
+           */
+          out.push(`  > 💬 **${thoughtLabel(c)}:** ${readTag(c)}${at}${flatten(c.text)}`);
         });
       }
       out.push("");
