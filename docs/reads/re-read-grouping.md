@@ -14,6 +14,10 @@
   manual override.
 - **Export asks which read**, and one of the choices is every read in a single file with
   a heading per read. Nothing is ever silently dropped from an export.
+- **Every exported comment says when you thought it** — `**MY THOUGHT ON MAR 2, 2026:**`
+  — and they come out oldest first, so a passage you have commented on twice reads as a
+  progression. A comment copied into a later read keeps the date of the original thought,
+  not the day it was copied.
 - **Old documents are migrated, not stranded.** Anything you wrote before this feature
   existed becomes "Read 1" automatically, dated from your earliest note.
 - **The one subtle rule:** a comment written in Read 2 about a highlight made in Read 1
@@ -34,7 +38,8 @@ piece of logic that is easy to get wrong and worth reading carefully · **The UI
 the bar in the comments panel, the per-comment labels and the colours · **Naming and
 deleting a read** covers the manager behind the bar, and why deleting never destroys
 writing · **Moving and copying a comment** covers the two verbs and when the highlight
-follows · **Export** covers the chooser and the file shapes · **When a read begins**
+follows · **Export** covers the chooser and the file shapes · **Every exported thought says when
+you had it** is the dated label, added after he read a real export · **When a read begins**
 answers a question the first design got wrong · **How this was verified** lists the three
 test layers and the two faults they caught · **Files changed** is the map of the work ·
 **What I did not do** is the honest gap list.
@@ -178,6 +183,64 @@ File names carry the read so two exports of the same document do not collide:
 `Title-highlights-read-2-2026-10-14.md`. The consolidated export uses `all-reads`.
 
 Inside a consolidated file, each read becomes a `## Read N · October 2026` section.
+
+## Every exported thought says when you had it
+
+**Added 2026-10-15, after Rishabh read an export and found it unreadable.** His words:
+
+> *"the comments are very weird, they just use an arrow after 'quoted highlight'.. I want
+> them to say something like: MY THOUGHT ON SEP 5 (or whatever date the comment was
+> recorded on), so that when i export whether multiple reads, or single reads, we know how
+> my thoughts changed over time."*
+
+**He was right, and the fault was worse than cosmetic.** The export put a bare arrow in
+front of every comment:
+
+```
+- "Clarity about what matters"
+  → Seemed obvious when I first read it.
+  → Six months on I think it is really about saying no.
+```
+
+Two sentences, no dates, in whatever order storage happened to hold them. The entire
+purpose of keeping reads apart is to see what a passage did to you then and what it does
+to you now — and this file could not tell you which was which, or even which came first.
+The reads feature was working and its output was throwing the answer away.
+
+It now reads:
+
+```
+- "Clarity about what matters"
+  **MY THOUGHT ON MAR 2, 2026:** Seemed obvious when I first read it.
+  **MY THOUGHT ON SEP 5, 2026:** Six months on I think it is really about saying no.
+```
+
+**Three decisions inside that change are worth stating, because none was in what he
+asked for.**
+
+**The year is always there**, although he wrote "SEP 5". The comments panel shows a bare
+"Sep 5" and should — the panel is about now. An export is kept and read at an unknown
+distance, and a file holding one read from 2024 and another from 2026 with both labelled
+"SEP 5" would be worse than no date at all.
+
+**The thoughts are sorted oldest first.** Dating them is only half of showing how they
+changed; in storage order the column under a quote is a pile rather than a progression.
+This is the half of his request that was not in his sentence.
+
+**A copied comment is dated by the ORIGINAL thought, not by the day it was copied.** A
+copy is a new record holding an old sentence, so dating it `createdAt` would file
+something written in March under September — corrupting the exact comparison the label
+exists to support. Copies now carry an `originalCreatedAt`, and the label marks them
+`(copied)` so two identical dated lines under different reads read as deliberate rather
+than as a bug. **This is the subtle one**: the naive implementation looks completely
+correct and is wrong only in the case the feature is for.
+
+**All three export shapes changed, not just the one he was looking at.** The digest, the
+whole-document export and the video transcript all used different labels — an arrow, a
+bare `COMMENT`, and a bare `💬`. They now share one label, so one reading habit works on
+any of them. In the transcript the date sits beside the video position, because *when you
+thought it* and *where in the video you were* are two different facts and a note made on
+a second watch is the reason to print both.
 
 ## When a read begins
 
