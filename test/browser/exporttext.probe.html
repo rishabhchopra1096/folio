@@ -3,7 +3,8 @@
 <title>Text documents export in full, with comments inline</title>
 <!--
   REQUESTED: for a page with no video, export the whole article with each
-  comment inline where it was made, labelled COMMENT — the way video documents
+  comment inline where it was made, labelled with the date it was written — the
+  way video documents
   already export their transcript. The old export produced only a digest of
   quoted highlights, so the document itself never made it into the file.
 
@@ -120,10 +121,24 @@ async function main() {
      md.slice(0, 400));
   ok("list blocks survive too", /- First item/.test(md) && /- Second item/.test(md));
 
-  // ── Comments inline, under the passage they belong to ──
-  ok("comments are labelled COMMENT", /^COMMENT/m.test(md), md.slice(0, 500));
   const lines = md.split("\n");
   const idxOf = (needle) => lines.findIndex((l) => l.includes(needle));
+
+  // ── Comments inline, under the passage they belong to ──
+  /*
+   * THE LABEL CHANGED ON 2026-10-15. It used to be a bare "COMMENT", which
+   * said nothing about WHEN the note was written — and a document carrying
+   * notes from three different readings needs exactly that to be readable.
+   * The date is computed here the same way the module computes it, rather than
+   * hardcoded, so this does not start failing tomorrow.
+   */
+  const TODAY_STAMP = new Date().toLocaleDateString("en-US",
+    { month: "short", day: "numeric", year: "numeric" }).toUpperCase();
+  ok("comments are labelled with the day they were written",
+     new RegExp("^\\*\\*MY THOUGHT ON " + TODAY_STAMP + "\\*\\*", "m").test(md),
+     lines.filter((l) => /MY THOUGHT/.test(l)).join(" | ").slice(0, 300) || md.slice(0, 300));
+  ok("...and the old bare COMMENT prefix is gone", !/^COMMENT /m.test(md),
+     lines.filter((l) => l.startsWith("COMMENT")).join(" | "));
 
   const pOne = idxOf(P_ONE), cOne = idxOf("this is the decided bit");
   ok("the first comment follows its own paragraph",
@@ -137,7 +152,9 @@ async function main() {
   ok("and it is not filed under an earlier paragraph", cThree > idxOf(P_TWO));
 
   ok("the quoted passage is named so you know what it refers to",
-     md.includes(`COMMENT on "${HL_ONE}"`), lines.filter((l) => l.startsWith("COMMENT")).join(" | "));
+     new RegExp('\\*\\*MY THOUGHT ON [A-Z]{3} \\d+, \\d{4}\\*\\* on "' +
+                HL_ONE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"').test(md),
+     lines.filter((l) => /MY THOUGHT/.test(l)).join(" | ").slice(0, 300));
 
   // ── Nothing is silently dropped ──
   ok("the page level note is kept", md.includes("a page level note"));

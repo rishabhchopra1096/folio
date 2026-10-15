@@ -491,8 +491,14 @@ ok("C8 a single-read full export does NOT tag comments",
    "a one-read file labels every line with the only read it contains");
 ok("C9 ...and leaves the earlier read's comments out",
    !full2.includes("Obvious in hindsight."));
+/*
+ * The prefix here used to be a bare "COMMENT". It is now "MY THOUGHT ON
+ * <DATE>" — see the note in js/comments.js above thoughtLabel. What this
+ * assertion is actually about is unchanged: a single-read export must keep
+ * the QUOTE from an earlier read when this read's comment refers to it.
+ */
 ok("C10 ...while keeping the quote its comment refers to",
-   full2.includes('COMMENT on "Don\'t repeat yourself."'),
+   /\*\*MY THOUGHT ON [A-Z]{3} \d+, \d{4}\*\* on "Don't repeat yourself\."/.test(full2),
    "the Read 1 highlight was dropped, so the Read 2 comment lost its context");
 
 console.log(`\n${pass} passed, ${fail} failed`);

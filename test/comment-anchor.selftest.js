@@ -110,8 +110,22 @@ ok("the 20:14 note is before the 25:32 line", iMech < i2532, `${iMech} -> ${i253
 ok("the 25:32 note is after the 25:32 line", iGrind > i2532, `${i2532} -> ${iGrind}`);
 
 console.log("\n=== each note carries its own timestamp ===");
-ok("the 20:14 note is stamped", /> 💬 \[20:14\] There are different game mechanics/.test(out));
-ok("the 25:32 note is stamped", /> 💬 \[25:32\] Another game mechanic/.test(out));
+/*
+ * THE EXPECTED SHAPE CHANGED ON 2026-10-15, deliberately.
+ *
+ * Every export used to introduce a comment with a bare arrow or a bare
+ * "COMMENT", neither of which said WHEN the thought was had — which is the
+ * one thing an export of a re-read document has to carry. The label is now
+ * "MY THOUGHT ON <DATE>", and these assertions pin the date as well as the
+ * text, so a regression that dropped the label could not pass by matching
+ * the sentence alone.
+ */
+ok("the 20:14 note is stamped, and dated",
+   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* \[20:14\] There are different game mechanics/.test(out),
+   (out.split("\n").find((l) => /20:14\] There are different/.test(l)) || "line not found"));
+ok("the 25:32 note is stamped, and dated",
+   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* \[25:32\] Another game mechanic/.test(out),
+   (out.split("\n").find((l) => /25:32\] Another game/.test(l)) || "line not found"));
 
 console.log("\n=== a note taken before the transcript existed still lands ===");
 const iPend = at("Dictated while the transcript was still streaming");

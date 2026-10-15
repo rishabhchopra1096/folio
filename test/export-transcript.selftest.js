@@ -77,7 +77,19 @@ console.log("\n=== header ===");
 ok("document title",   /^# Pokémon Red 100%/m.test(out));
 ok("video URL",        /youtube\.com\/watch\?v=AP8nlJcjw4I/.test(out));
 ok("Notes section",    /## Notes/.test(out));
-ok("general note",     /- Ok, that's cool\./.test(out));
+/*
+ * THE EXPECTED SHAPE CHANGED ON 2026-10-15, deliberately.
+ *
+ * Every export used to introduce a comment with a bare arrow or a bare
+ * "COMMENT", neither of which said WHEN the thought was had — which is the
+ * one thing an export of a re-read document has to carry. The label is now
+ * "MY THOUGHT ON <DATE>", and these assertions pin the date as well as the
+ * text, so a regression that dropped the label could not pass by matching
+ * the sentence alone.
+ */
+ok("general note, dated",
+   /- \*\*MY THOUGHT ON AUG 19, 2026:\*\* Ok, that's cool\./.test(out),
+   (out.split("\n").find((l) => /Ok, that's cool/.test(l)) || "line not found"));
 ok("Transcript section", /## Transcript/.test(out));
 
 console.log("\n=== the WHOLE transcript is present, not just commented lines ===");
@@ -89,8 +101,12 @@ console.log("\n=== comments sit under their own line ===");
 const iL=out.indexOf("[1:05]"), iC=out.indexOf("Counter starts at zero"), iN=out.indexOf("[2:10]");
 ok("after its line",  iC>iL, `${iL} -> ${iC}`);
 ok("before the next", iC<iN, `${iC} -> ${iN}`);
-ok("marked as a comment", /> 💬 Counter starts at zero/.test(out));
-ok("second comment on its own line", /> 💬 This is the real decision point\./.test(out));
+ok("marked as a comment, and dated",
+   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* Counter starts at zero/.test(out),
+   (out.split("\n").find((l) => /Counter starts at zero/.test(l)) || "line not found"));
+ok("second comment on its own line, and dated",
+   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* This is the real decision point\./.test(out),
+   (out.split("\n").find((l) => /real decision point/.test(l)) || "line not found"));
 
 console.log("\n=== robustness ===");
 ok("multi-line comment flattened", !/decision\n/.test(out));

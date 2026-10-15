@@ -1,7 +1,7 @@
 PASS the button exists
 PASS it is near the bottom of the window
-PASS the card is NOT on screen until something opens it
 PASS it is on the LEFT half
+PASS the card is NOT on screen until something opens it
 PASS ...and neither is the thumbnail strip
 PASS it does NOT sit on top of the sidebar's own buttons
 PASS ...measured against the Settings button specifically, no overlap
@@ -28,10 +28,10 @@ PASS ...with the words as typed
 PASS ...numbered FB-1
 PASS ...and knowing which document and which read it came from
 PASS the picture's bytes are NOT left in the browser
-PASS a bundle really was written
 PASS ...and the bundle carries the picture's bytes
-PASS ...and says what it is, so the tool can refuse a stranger
 PASS the card closed itself after saving
+PASS ...and says what it is, so the tool can refuse a stranger
+PASS a bundle really was written
 PASS the button now carries a count of 1
 PASS the note appears in the list
 PASS ...showing the id you can quote back
