@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="css/components.css" />
     <link rel="stylesheet" href="css/editor.css" />
     <link rel="stylesheet" href="css/highlights.css" />
+    <link rel="stylesheet" href="css/feedback.css" />
   </head>
   <body>
 
@@ -293,6 +294,68 @@
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- FEEDBACK BOX — bottom left: write a bug or an idea about Folio      -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--
+      Sits at the bottom left of the READING area rather than of the window,
+      because the window's bottom left is already the sidebar's Import / Video /
+      Settings row. It slides to the edge when the sidebar is collapsed.
+
+      Pressing save writes a JSON bundle into Downloads AND keeps the note here,
+      in that order — see the header of js/feedback.js for why the order matters.
+    -->
+    <div id="feedback-box">
+      <button id="feedback-launcher" title="Write feedback or a feature request (Cmd+Shift+F)">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="10" y1="10" x2="14" y2="10"/>
+        </svg>
+        <span id="feedback-count" hidden>0</span>
+      </button>
+
+      <div id="feedback-card" hidden>
+        <div class="fb-head">
+          <div class="fb-kind">
+            <button type="button" class="fb-kind-btn active" data-kind="bug" title="Something is broken">Bug</button>
+            <button type="button" class="fb-kind-btn" data-kind="idea" title="Something Folio should do">Idea</button>
+          </div>
+          <button type="button" class="fb-close" id="feedback-close" title="Close (Esc)">&times;</button>
+        </div>
+
+        <textarea id="feedback-text" rows="4"
+                  placeholder="What went wrong, and what did you expect instead?"></textarea>
+
+        <!-- Thumbnails of anything pasted, dropped or chosen. Hidden when empty. -->
+        <div class="fb-shots" id="feedback-shots" hidden></div>
+
+        <div class="fb-foot">
+          <button type="button" class="fb-attach" id="feedback-attach" title="Attach a picture from disk">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+            Picture
+          </button>
+          <input type="file" id="feedback-file" accept="image/*" multiple hidden />
+          <span class="fb-hint">or paste a screenshot</span>
+          <button type="button" class="modal-btn primary" id="feedback-send"
+                  title="Saves it here and writes a file into Downloads (Cmd+Enter)">Save &amp; send</button>
+        </div>
+
+        <div class="fb-list-wrap">
+          <div class="fb-list-head">
+            <span id="feedback-list-label">Nothing asked for yet</span>
+            <button type="button" class="fb-resend" id="feedback-resend"
+                    title="Write every note into Downloads again — for when that folder has been cleared">Send all again</button>
+          </div>
+          <div class="fb-list" id="feedback-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
     <!-- PROGRESS RING — Floating circle (bottom-right) for reader mode    -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="progress-ring-wrap">
@@ -440,6 +503,7 @@
     <script src="js/video.js"></script>
     <script src="js/speechify.js"></script>
     <script src="js/tts.js"></script>
+    <script src="js/feedback.js"></script>
     <script src="js/app.js"></script>
   </body>
 </html>

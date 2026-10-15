@@ -1,0 +1,481 @@
+/*
+ * =============================================================================
+ * FEEDBACK.CSS — The box at the bottom left for reporting bugs and ideas
+ * =============================================================================
+ * Folio is a reading app, so the hardest requirement here is that the button
+ * can be ignored. It is a 34px circle in the paper colour with a soft border,
+ * which reads as part of the furniture until you look for it. The count badge
+ * is the only saturated pixel, and only appears when notes are waiting.
+ *
+ * WHERE IT SITS, AND WHY THAT TAKES THREE RULES:
+ * "Bottom left" cannot mean the bottom left of the WINDOW, because that is
+ * where the sidebar's Import / Video / Settings buttons already live. So the
+ * box is anchored past the sidebar's 260px, and:
+ *   - slides to the edge when the sidebar is collapsed, via :has()
+ *   - goes to the edge below 768px, where the sidebar becomes an overlay —
+ *     which includes the 400px Electron panel
+ * =============================================================================
+ */
+
+#feedback-box {
+  position: fixed;
+  bottom: 24px;
+  /* 260px of sidebar, then a margin matching the progress ring's 28px. */
+  left: 288px;
+  z-index: 95;
+  font-family: var(--font-ui);
+  transition: left 0.3s ease, bottom 0.28s cubic-bezier(0.05, 0.7, 0.1, 1);
+}
+
+/*
+ * THE READ-ALOUD BAR SHARES THIS CORNER, and the first render showed it drawn
+ * straight through the open card. It is fixed at bottom:24px — the same line —
+ * is centred, so it grows towards this button as the window narrows, and sits
+ * at z-index 170. Two rules settle it:
+ *
+ *   - while the player is up, the button lifts clear of it. It is 46px tall on
+ *     a 24px margin, so 84px clears it with a little air.
+ *   - an OPEN card outranks the player. A card you just opened being drawn
+ *     underneath something is the kind of thing that reads as a broken app;
+ *     the closed button stays below, so a mere button never hides a control
+ *     you are actively using.
+ */
+body:has(#tts-bar.visible) #feedback-box { bottom: 84px; }
+#feedback-box.open { z-index: 180; }
+
+/* Sidebar collapsed — the reading area starts at the window edge, so follow it. */
+body:has(#sidebar.collapsed) #feedback-box { left: 24px; }
+
+/* Below this the sidebar is an overlay, so the reading area is already at the
+   edge. This is also the Electron panel, which is 400px wide. */
+@media (max-width: 768px) {
+  #feedback-box,
+  body:has(#sidebar.collapsed) #feedback-box { left: 16px; bottom: 16px; }
+}
+
+/* ── THE BUTTON ── */
+
+#feedback-launcher {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px var(--shadow);
+  transition: color 0.2s, border-color 0.2s, transform 0.12s ease;
+}
+#feedback-launcher:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Pressing it should feel like pressing something. */
+#feedback-launcher:active { transform: scale(0.94); }
+
+/* Open: the button becomes the card's anchor, so it stops competing for
+   attention and just marks the spot. */
+#feedback-box.open #feedback-launcher {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* How many notes are still open. The one saturated thing in the widget, so an
+   unanswered note is visible without opening anything. */
+#feedback-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 15px;
+  text-align: center;
+  /* A ring in the page colour so the badge keeps its edge over the button. */
+  box-shadow: 0 0 0 1.5px var(--paper);
+}
+
+/* ── THE CARD ── */
+
+/*
+ * THIS RULE IS LOAD-BEARING AND WAS MISSING, which cost a render to find.
+ *
+ * The browser hides [hidden] with `display: none` from its own stylesheet, and
+ * an id selector beats that — so `display: flex` below quietly overrode it and
+ * the card was on screen permanently, from the moment the page loaded. The
+ * probe did not catch it, because it asked whether the `hidden` PROPERTY was
+ * true, and it was: the element was marked hidden and drawn anyway. Only
+ * looking at a picture found it.
+ *
+ * The same trap applies to every rule here that sets `display` on something
+ * toggled with `hidden` — hence the second selector.
+ */
+#feedback-card[hidden],
+.fb-shots[hidden] { display: none; }
+
+#feedback-card {
+  position: absolute;
+  bottom: 44px;
+  left: 0;
+  /* Fits the 400px Electron panel without touching either edge. */
+  width: min(360px, calc(100vw - 32px));
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px var(--shadow);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /*
+   * On a short window the list can push the card off the top of the screen,
+   * taking the kind buttons and the close button with it. Capping it means the
+   * card scrolls instead of escaping. 120px leaves room for the button below
+   * it and a margin above.
+   */
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+
+/* Dropping a picture on the card. The whole card lights up, because the drop
+   target IS the whole card — a smaller hint would be a lie about where to aim. */
+#feedback-box.fb-drag #feedback-card {
+  border-color: var(--accent);
+  box-shadow: 0 16px 48px var(--shadow), inset 0 0 0 1px var(--accent);
+}
+
+.fb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Bug or idea. Two words, because the two get read differently: one is a thing
+   to diagnose, the other a thing to decide about. */
+.fb-kind { display: flex; gap: 4px; }
+.fb-kind-btn {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.fb-kind-btn:hover { color: var(--ink-soft); }
+.fb-kind-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.fb-close {
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.fb-close:hover { color: var(--ink); }
+
+#feedback-text {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  padding: 9px 11px;
+  border: 1.5px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.2s;
+}
+#feedback-text:focus { border-color: var(--accent); }
+#feedback-text::placeholder { color: var(--ink-faint); }
+
+/* ── THE THUMBNAIL STRIP ── */
+
+.fb-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.fb-shot {
+  position: relative;
+  width: 72px;
+  height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.fb-shot img {
+  width: 100%;
+  height: 100%;
+  /* Cover, not contain: a thumbnail is for recognising which screenshot this
+     is, and a letterboxed 58px strip of a wide grab shows almost nothing. */
+  object-fit: cover;
+  display: block;
+}
+/* A picture whose bytes were dropped after it was sent. Saying "sent" is the
+   honest version of an empty box. */
+.fb-shot-sent {
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+.fb-shot-remove {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  line-height: 15px;
+  padding: 0;
+  cursor: pointer;
+}
+.fb-shot-remove:hover { background: rgba(0, 0, 0, 0.8); }
+
+/* ── THE FOOTER ROW ── */
+
+.fb-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fb-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fb-attach:hover { background: var(--line); }
+.fb-hint {
+  font-size: 11px;
+  /*
+   * --ink-soft, not --ink-faint. This line is the only thing that tells you
+   * pasting works at all, which is the whole feature; on the dark theme faint
+   * ink put it near 3:1 against the card, which is under the readable floor
+   * for text this size. An instruction nobody can read is not an instruction.
+   */
+  color: var(--ink-soft);
+  flex: 1;
+  /* Never let the hint push the save button off the card. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#feedback-send { flex-shrink: 0; font-size: 12px; padding: 6px 13px; }
+
+/* ── THE LIST OF NOTES ALREADY WRITTEN ── */
+
+.fb-list-wrap {
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+.fb-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+#feedback-list-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+}
+.fb-resend {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  padding: 0;
+  flex-shrink: 0;
+}
+.fb-resend:hover { color: var(--accent); }
+
+.fb-list {
+  max-height: 188px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /*
+   * The first render cut a row through the middle of its sentence with no
+   * scrollbar in sight, which reads as a layout fault rather than as "there is
+   * more below". The mask fades the last few pixels out instead, so the clip
+   * is obviously deliberate. It is only applied when the list actually
+   * overflows — a short list ending in a fade would be its own small lie —
+   * which is why the rule hangs off .is-scrollable, set in renderList.
+   */
+  padding-bottom: 1px;
+}
+/*
+ * ROUND 2 OF THE DESIGNER PASS CHANGED THIS, and the reason is worth keeping.
+ *
+ * The first attempt faded the bottom 18px of the list out. It did say "there
+ * is more below" — but the fade landed across a row's Done and Delete buttons
+ * and made them look DISABLED, which is a worse lie than the one it fixed.
+ *
+ * It was also partly solving a problem that does not exist: the list has a
+ * real scrollbar, and the only reason the first screenshot had none is that
+ * the shot script passes --hide-scrollbars. So the signal is a soft line at
+ * the bottom edge, which overlaps nothing and reads as an edge rather than as
+ * a broken control, and the scrollbar is left to do the rest.
+ */
+.fb-list.is-scrollable {
+  box-shadow: inset 0 -7px 7px -7px var(--shadow);
+}
+/* Visible rather than hairline: this scrollbar is the main thing telling you
+   the list continues, so it has to be seen. */
+.fb-list::-webkit-scrollbar { width: 6px; }
+.fb-list::-webkit-scrollbar-thumb {
+  background: var(--ink-faint);
+  border-radius: 3px;
+  opacity: 0.6;
+}
+.fb-list::-webkit-scrollbar-track { background: transparent; }
+
+.fb-empty {
+  font-size: 11px;
+  line-height: 1.5;
+  /* Also an instruction — it is where the id convention is explained. */
+  color: var(--ink-soft);
+  padding: 2px 0 4px;
+}
+
+.fb-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: var(--bg);
+}
+/* Done notes stay in the list — the record of what was asked for is the point —
+   but recede, so the open ones are what the eye lands on. */
+.fb-row.is-done { opacity: 0.5; }
+
+.fb-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+/* The id you quote. Monospaced so FB-11 and FB-14 are not interchangeable at a
+   glance, which matters when the whole point is naming one note exactly. */
+.fb-id {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+.fb-kind-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.03em;
+  /*
+   * Tinted from --accent rather than from red and green: a red chip on every
+   * bug would make the list read as an emergency, and this is a notepad.
+   *
+   * But the first render had bug and idea as two tints of the same brown, a
+   * few percent apart, and they were indistinguishable at 9px — which defeats
+   * having two kinds at all. So they differ in SHAPE rather than in hue: a bug
+   * is filled, an idea is outlined. That survives any theme, and it survives
+   * being colour-blind, which a second tint of the same hue does not.
+   */
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid transparent;
+  color: var(--ink-soft);
+}
+.fb-kind-tag.fb-kind-idea {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--ink-faint);
+}
+.fb-shot-count, .fb-unsent {
+  font-size: 9px;
+  color: var(--ink-faint);
+  margin-left: auto;
+}
+/* A note that never reached a file is the one failure worth a warm colour,
+   because it is the one that would otherwise be silently lost. */
+.fb-unsent {
+  color: #c0392b;
+  margin-left: 0;
+}
+
+.fb-row-text {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  /* Three lines, then clipped. The full text is in the bundle; this list is
+     for recognising a note, not for reading it again. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fb-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+}
+.fb-row-btn {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.fb-row-btn:hover { background: var(--line); }
+.fb-row-del:hover {
+  background: #c0392b;
+  border-color: #c0392b;
+  color: #fff;
+}
