@@ -1,19 +1,53 @@
-PASS the video document renders
-PASS it starts with the wrong transcript
-PASS the import button is in the bar
-PASS the dialog opens with a paste box
-PASS it counts the lines before importing
-PASS there is an Import button
-PASS it warns the transcript will be replaced
-PASS and says the note is kept
-PASS there is a confirm button
-PASS the new transcript replaced the old
-PASS timestamps are exactly the pasted ones
-PASS the old wrong lines are gone
-PASS the note was NOT deleted
+PASS the button exists
+PASS it is near the bottom of the window
+PASS the card is NOT on screen until something opens it
+PASS it is on the LEFT half
+PASS ...and neither is the thumbnail strip
+PASS it does NOT sit on top of the sidebar's own buttons
+PASS ...measured against the Settings button specifically, no overlap
+PASS no count badge when nothing has been asked for
+PASS clicking it opens the card
+PASS ...and the textarea has the caret, so you can just type
+PASS the card is fully inside the window
+PASS ...and sits above the button rather than over it
+PASS choosing Idea marks it chosen
+PASS ...and the prompt changes to match
+PASS the close button really takes it off the screen
+PASS the probe built a real 2400px PNG to paste
+PASS pasting a screenshot with the card SHUT opens the card
+PASS ...with the picture already attached
+PASS the 2400px picture was shrunk to 1800 on its long side
+PASS ...and it is a real data URL with bytes in it
+PASS a thumbnail of it appears in the card
+PASS ...and the strip is no longer hidden
+PASS pasting into the open card attaches a second picture
+PASS a small picture is left at its own size, not enlarged
+PASS a thumbnail can be removed
+PASS saving stores the note
+PASS ...with the words as typed
+PASS ...numbered FB-1
+PASS ...and knowing which document and which read it came from
+PASS the picture's bytes are NOT left in the browser
+PASS a bundle really was written
+PASS ...and the bundle carries the picture's bytes
+PASS ...and says what it is, so the tool can refuse a stranger
+PASS the card closed itself after saving
+PASS the button now carries a count of 1
+PASS the note appears in the list
+PASS ...showing the id you can quote back
+PASS ...and that it had a picture
+PASS ...and no 'not sent' warning, because it was sent
+PASS the header counts what is open
+PASS marking it done greys the row
+PASS ...and clears the count on the button
+PASS reopening brings the count back
+PASS the comments panel is open
+PASS the card is open over it
+PASS Escape closes the card
+PASS ...and leaves the comments panel alone
+PASS clicking away shuts the card
+PASS pasting plain text does not open the feedback card
+PASS ...and was not swallowed
+PASS collapsing the sidebar moves the box to the window edge
+PASS ...and it is still fully on screen
 DONE
-PASS it kept its moment
-PASS its text is intact
-PASS the text came through
-PASS storage holds the timed blocks
-PASS the video block survived

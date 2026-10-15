@@ -1,0 +1,133 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The feedback box, staged for a look</title>
+<!--
+  Stages the feedback box so it can be PHOTOGRAPHED and looked at. It asserts
+  nothing — the probe does that. This exists because no assertion will say
+  whether the button is too loud for a reading app, whether the card's rows are
+  cramped, or whether the thumbnails read as pictures or as grey blocks.
+
+  Query options, so one script can produce every state worth judging:
+    ?state=closed   just the button in the reading view (the default)
+    ?state=empty    the card open with nothing written yet
+    ?state=full     two screenshots attached, three notes already in the list
+    &theme=dark     the warm dark theme
+    &narrow=1       400px wide, the Electron panel
+-->
+<div id="host"></div>
+<script>
+const Q = new URLSearchParams(location.search);
+const STATE = Q.get("state") || "closed";
+const THEME = Q.get("theme") || "";
+const NARROW = Q.get("narrow") === "1";
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/*
+ * Say what was staged, into the server's log. A screenshot cannot tell you
+ * which state it is OF, so a shot that came out wrong is otherwise diagnosed by
+ * guessing — which cost a round of exactly that.
+ */
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+
+const DOC = "doc_shot_fb";
+
+async function main() {
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "The Art of Re-reading", icon: "", parentId: null, order: 0,
+      createdAt: "2026-03-01T09:00:00.000Z", updatedAt: "2026-10-14T09:00:00.000Z" }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "header", data: { text: "The Art of Re-reading", level: 1 } },
+    { type: "paragraph", data: { text: "A book read twice is two books. The first " +
+      "reading is for the story; the second is for the sentences, and for the person " +
+      "you have since become. What struck you then rarely strikes you now." } },
+    { type: "paragraph", data: { text: "So the margin fills up in layers. The pencil " +
+      "of one decade argues with the pencil of the next, and the argument is the most " +
+      "interesting thing on the page." } },
+    { type: "paragraph", data: { text: "Which is why a note needs a date more than it " +
+      "needs a tidy hand. Without one it is merely an opinion; with one it is evidence." } },
+  ]}));
+  localStorage.removeItem("folio_feedback");
+  localStorage.removeItem("folio_feedback_seq");
+
+  // Notes already written, so the list is photographed with something in it —
+  // an empty list hides every problem the list could have.
+  if (STATE === "full") {
+    const mk = (n, kind, text, status, shots) => ({
+      id: "fb_shot_" + n, n: n, kind: kind, text: text,
+      shots: shots || [], context: { mode: "read", docTitle: "The Art of Re-reading" },
+      createdAt: "2026-10-1" + n + "T10:00:00.000Z",
+      sentAt: "2026-10-1" + n + "T10:00:00.000Z", status: status,
+    });
+    localStorage.setItem("folio_feedback", JSON.stringify([
+      mk(1, "bug", "Pressing M in edit mode does nothing at all — I expected the " +
+                   "dictation to start the way it does when I am reading.", "open",
+         [{ name: "s", type: "image/png", w: 1800, h: 1125, bytes: null, sent: true }]),
+      mk(2, "idea", "Let me merge two reads into one. I started a new read by accident " +
+                    "and now the thoughts are split across two groups.", "open"),
+      mk(3, "bug", "The export filename has the read number in it twice.", "done"),
+    ]));
+    localStorage.setItem("folio_feedback_seq", "3");
+  }
+
+  if (THEME) {
+    const s = JSON.parse(localStorage.getItem("folio_settings") || "{}");
+    s.theme = THEME;
+    localStorage.setItem("folio_settings", JSON.stringify(s));
+  }
+
+  const f = document.createElement("iframe");
+  const width = NARROW ? 400 : 1180;
+  f.style.cssText = "width:" + width + "px;height:" + (NARROW ? 740 : 780) + "px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2200);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  say("staging state=" + STATE + " theme=" + (THEME || "default") +
+      " narrow=" + NARROW + " search=" + JSON.stringify(location.search));
+
+  if (STATE !== "closed") {
+    d.getElementById("feedback-launcher").click();
+    await wait(400);
+  }
+
+  if (STATE === "full") {
+    // Two real pictures, drawn here rather than faked, so the thumbnails show
+    // what a genuine screenshot looks like cropped into a 58px box.
+    const files = await w.eval('(async () => {' +
+      'const out = [];' +
+      'for (const c0 of [["#8b4513", "Settings"], ["#2c2416", "Reader"]]) {' +
+        'const c = document.createElement("canvas");' +
+        'c.width = 1400; c.height = 900;' +
+        'const x = c.getContext("2d");' +
+        'x.fillStyle = c0[0]; x.fillRect(0, 0, 1400, 900);' +
+        'x.fillStyle = "#f5f0e8"; x.fillRect(80, 80, 1240, 180);' +
+        'x.fillStyle = c0[0]; x.font = "70px serif"; x.fillText(c0[1], 120, 195);' +
+        'x.fillStyle = "rgba(245,240,232,0.75)";' +
+        'for (let i = 0; i < 6; i++) x.fillRect(80, 340 + i * 80, 1100 - i * 90, 28);' +
+        'const blob = await new Promise((r) => c.toBlob(r, "image/png"));' +
+        'out.push(new File([blob], "grab.png", { type: "image/png" }));' +
+      '}' +
+      'return out;' +
+    '})()');
+
+    const dt = new w.DataTransfer();
+    files.forEach((x) => dt.items.add(x));
+    d.getElementById("feedback-card").dispatchEvent(
+      new w.ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    await wait(1200);
+
+    const area = d.getElementById("feedback-text");
+    area.value = "The read bar sits too close to the Comments heading — it reads " +
+                 "like a second title rather than part of the panel.";
+    area.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await wait(300);
+  }
+
+  say("staged; card hidden=" + d.getElementById("feedback-card").hidden);
+  document.title = "ready";
+}
+main();
+</script>

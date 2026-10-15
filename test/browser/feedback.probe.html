@@ -1,0 +1,370 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The feedback box, driven through the real UI</title>
+<!--
+  The box at the bottom left, exercised in real Chrome against the real page.
+
+  WHY THESE NEED A BROWSER AND NOT ONLY THE JSDOM SUITE:
+  The suite proves the rules — the numbering, the order of send and store, the
+  pruning. It cannot prove any of the following, and each one is a way the
+  feature could be completely broken while every assertion stayed green:
+
+    - the button is actually on screen, and not underneath the sidebar's own
+      footer buttons, which is where the window's bottom left already is
+    - a PASTED screenshot is really shrunk. jsdom has no canvas, so the whole
+      of pictureFromBlob goes untested there — and it is the one function that
+      touches a real image
+    - pasting with the card shut really opens it, with the picture attached
+    - Escape closes the card WITHOUT also closing the comments panel behind it
+    - the card fits inside the window rather than hanging off an edge
+    - the box follows the sidebar when it collapses, which is one CSS :has()
+      rule and therefore invisible to anything that does not lay the page out
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/*
+ * IS IT ACTUALLY DRAWN, rather than merely marked hidden.
+ *
+ * Asking `card.hidden` asks what the property says. The browser hides [hidden]
+ * from its own stylesheet, and ANY id-level `display` rule silently beats it —
+ * which is exactly what happened here: the card carried hidden="true" and was
+ * painted on screen from the moment the page loaded, through a full round of
+ * probe runs, because every assertion asked the property. offsetParent is null
+ * for anything with display:none, so this asks the layout instead.
+ */
+const shown = (el) => !!el && el.offsetParent !== null;
+
+const DOC = "doc_feedback_1";
+
+async function main() {
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Feedback Test Page", icon: "", parentId: null, order: 0,
+      createdAt: "2026-03-01T09:00:00.000Z", updatedAt: "2026-03-01T09:00:00.000Z" }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "paragraph", data: { text: "A paragraph to read while finding a bug." } },
+  ]}));
+  localStorage.removeItem("folio_feedback");
+  localStorage.removeItem("folio_feedback_seq");
+  localStorage.removeItem("folio_settings");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1280px;height:860px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__fb = Feedback; window.__st = FolioStore; window.__cm = Comments;");
+
+  /*
+   * Record what every download WOULD have contained, while still running the
+   * real sendBundle. Wrapping rather than replacing matters: a stub would only
+   * prove the probe's own stand-in works, not that the module's blob, anchor
+   * and click run without throwing in a real browser.
+   */
+  /*
+   * Let the real sendBundle run, but stop the browser actually saving the file.
+   *
+   * Everything up to and including the anchor's click is the module's real code
+   * and is exercised; the only thing skipped is Chrome's own handling of a blob
+   * download, which is not Folio's behaviour to test. Without this the probe
+   * drops a file into the real Downloads folder on EVERY run — fourteen of them
+   * accumulated there before this was added, which is how it was noticed.
+   */
+  w.eval([
+    'document.addEventListener("click", function (e) {',
+    '  const a = e.target && e.target.closest && e.target.closest("a[download]");',
+    '  if (a) e.preventDefault();',
+    '}, true);'
+  ].join("\n"));
+
+  w.eval([
+    'window.__sent = [];',
+    'const realCreate = window.URL.createObjectURL.bind(window.URL);',
+    'window.URL.createObjectURL = function (blob) {',
+    '  if (blob && blob.type === "application/json") {',
+    '    const r = new FileReader();',
+    '    r.onload = function () { try { window.__sent.push(JSON.parse(r.result)); } catch (e) {} };',
+    '    r.readAsText(blob);',
+    '  }',
+    '  return realCreate(blob);',
+    '};'
+  ].join("\n"));
+
+  /* ══ Is it there, and is it where it should be? ══ */
+  const launcher = d.getElementById("feedback-launcher");
+  ok("the button exists", !!launcher);
+
+  const lb = launcher.getBoundingClientRect();
+  const sidebar = d.getElementById("sidebar").getBoundingClientRect();
+  ok("it is near the bottom of the window",
+     lb.bottom > w.innerHeight - 90 && lb.bottom <= w.innerHeight,
+     "bottom " + Math.round(lb.bottom) + " of " + w.innerHeight);
+  ok("it is on the LEFT half", lb.left < w.innerWidth / 2, "left " + Math.round(lb.left));
+  /*
+   * The whole reason for the offset. The window's bottom-left corner is the
+   * sidebar's Import / Video / Settings row, so a box anchored there would sit
+   * on top of three working buttons.
+   */
+  ok("it does NOT sit on top of the sidebar's own buttons",
+     lb.left >= sidebar.right, "button left " + Math.round(lb.left) +
+     " vs sidebar right " + Math.round(sidebar.right));
+
+  const footBtn = d.getElementById("settings-toggle-btn").getBoundingClientRect();
+  const overlaps = !(lb.right < footBtn.left || lb.left > footBtn.right ||
+                     lb.bottom < footBtn.top || lb.top > footBtn.bottom);
+  ok("...measured against the Settings button specifically, no overlap", !overlaps,
+     "launcher left " + Math.round(lb.left) + " settings right " + Math.round(footBtn.right));
+
+  ok("no count badge when nothing has been asked for",
+     d.getElementById("feedback-count").hidden);
+
+  /*
+   * THE ASSERTION THAT WAS MISSING, and its absence let the card sit on screen
+   * permanently through a whole round of green runs. Nothing had ever checked
+   * the resting state.
+   */
+  ok("the card is NOT on screen until something opens it",
+     !shown(d.getElementById("feedback-card")),
+     "card rect: " + JSON.stringify(d.getElementById("feedback-card").getBoundingClientRect()));
+  ok("...and neither is the thumbnail strip",
+     !shown(d.getElementById("feedback-shots")));
+
+  /* ══ Opening and closing ══ */
+  launcher.click();
+  await wait(300);
+  ok("clicking it opens the card", shown(d.getElementById("feedback-card")));
+  ok("...and the textarea has the caret, so you can just type",
+     d.activeElement === d.getElementById("feedback-text"),
+     d.activeElement && d.activeElement.id);
+
+  const card = d.getElementById("feedback-card").getBoundingClientRect();
+  ok("the card is fully inside the window",
+     card.left >= 0 && card.right <= w.innerWidth && card.top >= 0 &&
+     card.bottom <= w.innerHeight,
+     JSON.stringify({ l: Math.round(card.left), r: Math.round(card.right),
+                      t: Math.round(card.top), b: Math.round(card.bottom),
+                      vw: w.innerWidth, vh: w.innerHeight }));
+  ok("...and sits above the button rather than over it",
+     card.bottom <= lb.top + 1, "card bottom " + Math.round(card.bottom) +
+     " vs button top " + Math.round(lb.top));
+
+  /* Bug or idea, and the prompt follows the choice. */
+  const ideaBtn = d.querySelector('.fb-kind-btn[data-kind="idea"]');
+  ideaBtn.click();
+  await wait(150);
+  ok("choosing Idea marks it chosen", ideaBtn.classList.contains("active"));
+  ok("...and the prompt changes to match",
+     /should Folio do/.test(d.getElementById("feedback-text").placeholder),
+     d.getElementById("feedback-text").placeholder);
+  d.querySelector('.fb-kind-btn[data-kind="bug"]').click();
+  await wait(100);
+
+  d.getElementById("feedback-close").click();
+  await wait(200);
+  ok("the close button really takes it off the screen",
+     !shown(d.getElementById("feedback-card")));
+
+  /* ══ A REAL pasted screenshot ══ */
+  /*
+   * Built as an actual PNG at 2400x1500 inside the page's own realm, so the
+   * File, the ClipboardEvent and the shrink are all genuine.
+   */
+  const file = await w.eval('(async () => {' +
+    'const c = document.createElement("canvas");' +
+    'c.width = 2400; c.height = 1500;' +
+    'const x = c.getContext("2d");' +
+    'x.fillStyle = "#8b4513"; x.fillRect(0, 0, 2400, 1500);' +
+    'x.fillStyle = "#fff"; x.font = "120px sans-serif";' +
+    'x.fillText("SCREENSHOT", 300, 800);' +
+    'const blob = await new Promise((r) => c.toBlob(r, "image/png"));' +
+    'return new File([blob], "grab.png", { type: "image/png" });' +
+  '})()');
+  ok("the probe built a real 2400px PNG to paste",
+     file && file.type === "image/png" && file.size > 1000,
+     file && file.type + " " + file.size);
+
+  const dt = new w.DataTransfer();
+  dt.items.add(file);
+  d.getElementById("article").dispatchEvent(
+    new w.ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  await wait(1000);
+
+  ok("pasting a screenshot with the card SHUT opens the card",
+     shown(d.getElementById("feedback-card")));
+  const shots = w.__fb._draft().shots;
+  ok("...with the picture already attached", shots.length === 1, String(shots.length));
+  /*
+   * The assertion jsdom could never make, because it has no canvas. A grab off
+   * a Retina screen is bigger than Claude Code will accept, so a box that
+   * stored it unchanged would produce screenshots that cannot be looked at.
+   */
+  ok("the 2400px picture was shrunk to 1800 on its long side",
+     shots[0].w === 1800 && shots[0].h === 1125,
+     shots[0].w + "x" + shots[0].h);
+  ok("...and it is a real data URL with bytes in it",
+     /^data:image\/(png|jpeg);base64,.{500,}/.test(shots[0].bytes),
+     String(shots[0].bytes).slice(0, 40) + " len " + String(shots[0].bytes).length);
+
+  const thumb = d.querySelector("#feedback-shots .fb-shot img");
+  ok("a thumbnail of it appears in the card", !!thumb && thumb.src === shots[0].bytes);
+  ok("...and the strip is no longer hidden", shown(d.getElementById("feedback-shots")));
+
+  /* A small picture must NOT be blown up. */
+  const small = await w.eval('(async () => {' +
+    'const c = document.createElement("canvas");' +
+    'c.width = 300; c.height = 200;' +
+    'c.getContext("2d").fillRect(0, 0, 300, 200);' +
+    'const blob = await new Promise((r) => c.toBlob(r, "image/png"));' +
+    'return new File([blob], "small.png", { type: "image/png" });' +
+  '})()');
+  const dt2 = new w.DataTransfer();
+  dt2.items.add(small);
+  d.getElementById("feedback-card").dispatchEvent(
+    new w.ClipboardEvent("paste", { clipboardData: dt2, bubbles: true, cancelable: true }));
+  await wait(800);
+  const twoShots = w.__fb._draft().shots;
+  ok("pasting into the open card attaches a second picture",
+     twoShots.length === 2, String(twoShots.length));
+  ok("a small picture is left at its own size, not enlarged",
+     twoShots[1].w === 300 && twoShots[1].h === 200,
+     twoShots[1].w + "x" + twoShots[1].h);
+
+  /* Remove one again. */
+  d.querySelectorAll("#feedback-shots .fb-shot-remove")[1].click();
+  await wait(200);
+  ok("a thumbnail can be removed", w.__fb._draft().shots.length === 1,
+     String(w.__fb._draft().shots.length));
+
+  /* ══ Saving ══ */
+  const area = d.getElementById("feedback-text");
+  area.value = "The mic button does nothing in edit mode.";
+  area.dispatchEvent(new w.Event("input", { bubbles: true }));
+  await wait(150);
+  d.getElementById("feedback-send").click();
+  await wait(900);
+
+  const notes = w.__st.getFeedback();
+  ok("saving stores the note", notes.length === 1, String(notes.length));
+  ok("...with the words as typed",
+     notes[0].text === "The mic button does nothing in edit mode.", notes[0].text);
+  ok("...numbered FB-1", notes[0].n === 1, String(notes[0].n));
+  ok("...and knowing which document and which read it came from",
+     notes[0].context.docId === DOC && /Read 1/.test(notes[0].context.readLabel || ""),
+     JSON.stringify(notes[0].context));
+  ok("the picture's bytes are NOT left in the browser",
+     notes[0].shots[0].bytes === null, String(notes[0].shots[0].bytes).slice(0, 30));
+
+  /*
+   * And the other half of that: the bytes DID go out. This is the pair of
+   * assertions that proves the pruning happens after the send and not before —
+   * get it backwards and a screenshot never reaches anybody.
+   */
+  ok("a bundle really was written", (w.__sent || []).length >= 1,
+     String((w.__sent || []).length));
+  const sent = w.__sent[w.__sent.length - 1];
+  ok("...and the bundle carries the picture's bytes",
+     /^data:image\/(png|jpeg);base64,.{500,}/.test(sent.items[0].shots[0].bytes || ""),
+     String(sent.items[0].shots[0].bytes).slice(0, 40));
+  ok("...and says what it is, so the tool can refuse a stranger",
+     sent.kind === "folio-feedback" && sent.version === 1);
+
+  ok("the card closed itself after saving", !shown(d.getElementById("feedback-card")));
+  await wait(100);
+  const badge = d.getElementById("feedback-count");
+  ok("the button now carries a count of 1",
+     !badge.hidden && badge.textContent === "1", badge.hidden + " " + badge.textContent);
+
+  /* ══ The list ══ */
+  launcher.click();
+  await wait(300);
+  const row = d.querySelector("#feedback-list .fb-row");
+  ok("the note appears in the list", !!row);
+  ok("...showing the id you can quote back",
+     !!row && row.querySelector(".fb-id").textContent === "FB-1",
+     row && row.querySelector(".fb-id").textContent);
+  ok("...and that it had a picture",
+     !!row && /1 pic/.test(row.textContent), row && row.textContent.slice(0, 80));
+  ok("...and no 'not sent' warning, because it was sent",
+     !row.querySelector(".fb-unsent"));
+  ok("the header counts what is open",
+     /1 open of 1/.test(d.getElementById("feedback-list-label").textContent),
+     d.getElementById("feedback-list-label").textContent);
+
+  row.querySelector(".fb-row-btn").click();     // Done
+  await wait(250);
+  ok("marking it done greys the row",
+     d.querySelector("#feedback-list .fb-row").classList.contains("is-done"));
+  ok("...and clears the count on the button",
+     d.getElementById("feedback-count").hidden);
+  d.querySelector("#feedback-list .fb-row-btn").click();   // Reopen
+  await wait(250);
+  ok("reopening brings the count back",
+     !d.getElementById("feedback-count").hidden);
+
+  /* ══ Escape must not take the comments panel with it ══ */
+  w.__cm.openPanel();
+  await wait(400);
+  ok("the comments panel is open", d.getElementById("comments-panel").classList.contains("open"));
+  d.getElementById("feedback-launcher").click();
+  await wait(300);
+  ok("the card is open over it", shown(d.getElementById("feedback-card")));
+  d.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(300);
+  ok("Escape closes the card", !shown(d.getElementById("feedback-card")));
+  /*
+   * The point of this pair: Folio's global Escape handler closes the comments
+   * panel. One Escape meant for the card must not also throw away the panel
+   * you had open behind it.
+   */
+  ok("...and leaves the comments panel alone",
+     d.getElementById("comments-panel").classList.contains("open"),
+     "panel classes: " + d.getElementById("comments-panel").className);
+  w.__cm.closePanel();
+  await wait(200);
+
+  /* ══ Clicking away ══ */
+  d.getElementById("feedback-launcher").click();
+  await wait(300);
+  d.getElementById("article").click();
+  await wait(300);
+  ok("clicking away shuts the card", !shown(d.getElementById("feedback-card")));
+
+  /* ══ A text paste must still be a text paste ══ */
+  /*
+   * Folio already treats a pasted YouTube link as an import. Nothing about the
+   * feedback box may interfere with a paste that carries no picture.
+   */
+  const dt3 = new w.DataTransfer();
+  dt3.setData("text/plain", "just some words");
+  const ev = new w.ClipboardEvent("paste", { clipboardData: dt3, bubbles: true, cancelable: true });
+  d.getElementById("article").dispatchEvent(ev);
+  await wait(300);
+  ok("pasting plain text does not open the feedback card",
+     !shown(d.getElementById("feedback-card")));
+  ok("...and was not swallowed", !ev.defaultPrevented);
+
+  /* ══ The box follows the sidebar ══ */
+  /*
+   * One CSS rule — body:has(#sidebar.collapsed) — and nothing but a laid-out
+   * page can tell whether it fired.
+   */
+  const before = d.getElementById("feedback-box").getBoundingClientRect().left;
+  d.getElementById("sidebar-collapse").click();
+  await wait(600);
+  const after = d.getElementById("feedback-box").getBoundingClientRect().left;
+  ok("collapsing the sidebar moves the box to the window edge",
+     after < before - 200 && after < 40,
+     "left " + Math.round(before) + " -> " + Math.round(after));
+  ok("...and it is still fully on screen", after >= 0, String(Math.round(after)));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL harness threw -> " + (e && e.message)); say("DONE"); });
+</script>
