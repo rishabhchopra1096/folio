@@ -761,6 +761,18 @@ const FolioStore = (function () {
        * twice, and so a future "find the original" has something to follow.
        */
       copiedFrom: { commentId: source.id, readId: source.readId || null },
+      /*
+       * WHEN THE THOUGHT WAS ACTUALLY HAD, which is not `createdAt` above.
+       *
+       * This record is new; the sentence in it is not. Exports label every
+       * comment "MY THOUGHT ON <date>", and dating a copy by the day it was
+       * copied would file something written in March under September — which
+       * corrupts the one comparison the whole re-reading feature exists to
+       * support. Kept on the copy rather than looked up at export time
+       * because a single-read export never sees the other read's comments,
+       * and because deleting the original must not silently re-date this.
+       */
+      originalCreatedAt: source.originalCreatedAt || source.createdAt || null,
     };
     // A video comment carries the moment it was spoken; the copy is about the
     // same moment, so it keeps it.
