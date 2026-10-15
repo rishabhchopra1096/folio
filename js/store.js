@@ -774,6 +774,74 @@ const FolioStore = (function () {
     return { ok: true, id: copy.id };
   }
 
+  /* ==========================================================================
+   * FEEDBACK — notes you write about Folio itself, not about a document
+   * ==========================================================================
+   * Everything above this line is about the thing being READ. This is about
+   * the thing doing the reading: a bug you ran into, or something you wish
+   * Folio did. The reason it lives in the store at all, rather than only in
+   * the widget, is that it has to survive a reload and be swept up by the
+   * backup export like everything else beginning with `folio_`.
+   *
+   * ONE KEY, `folio_feedback`, holding an array of notes newest LAST, each:
+   *
+   *   { id: "fb_<ts>_<rand>"   internal, never shown to anybody
+   *     n: 3                   the number in the id you DO see, "FB-3"
+   *     kind: "bug" | "idea"
+   *     text: "..."            your words, kept exactly as typed
+   *     shots: [ { name, type, w, h, bytes, sent } ]
+   *     context: { ... }       which page, which mode, which read, which theme
+   *     createdAt, sentAt, status: "open" | "done" }
+   *
+   * WHY THE NUMBER IS STORED RATHER THAN COUNTED:
+   * "FB-3" has to mean the same note for ever, so that saying "FB-3 is still
+   * broken" is unambiguous months later. If the number were the row's position
+   * in the array, deleting a note would silently renumber every note after it
+   * and every id either of us had written down would now point at the wrong
+   * thing. So a counter that only ever goes up lives in its own key.
+   */
+
+  function getFeedback() {
+    return readJSON("folio_feedback", []);
+  }
+
+  function saveFeedback(notes) {
+    writeJSON("folio_feedback", notes);
+  }
+
+  /*
+   * The next number to hand out, and the counter moves immediately.
+   *
+   * It is seeded from the highest number already in use, so a browser that has
+   * notes but somehow lost the counter cannot hand out a number twice.
+   */
+  function nextFeedbackNumber() {
+    const stored = parseInt(localStorage.getItem("folio_feedback_seq") || "0", 10);
+    const highest = getFeedback().reduce((m, f) => Math.max(m, f.n || 0), 0);
+    const n = Math.max(isNaN(stored) ? 0 : stored, highest) + 1;
+    try { localStorage.setItem("folio_feedback_seq", String(n)); }
+    catch { /* the note matters more than the counter; the seed above covers it */ }
+    return n;
+  }
+
+  /*
+   * Forget the picture bytes, keeping everything that says a picture was there.
+   *
+   * Called once a note has been sent. A screenshot is by far the biggest thing
+   * Folio ever stores — a Retina grab is megabytes, and localStorage holds
+   * about five in TOTAL, shared with every document you have. The bundle that
+   * went to Downloads carries the picture, so a second copy in the browser
+   * buys nothing and would eventually refuse to save a document.
+   *
+   * `sent: true` is what the thumbnail strip reads to draw a placeholder, so
+   * the absence shows as deliberate rather than as a broken image.
+   */
+  function pruneFeedbackBytes(note) {
+    if (!note || !Array.isArray(note.shots)) return note;
+    note.shots = note.shots.map((s) => ({ ...s, bytes: null, sent: true }));
+    return note;
+  }
+
   // ==========================================================================
   // SETTINGS — Global app preferences
   // ==========================================================================
@@ -896,6 +964,10 @@ const FolioStore = (function () {
     saveHighlights,
     getComments,
     saveComments,
+    getFeedback,
+    saveFeedback,
+    nextFeedbackNumber,
+    pruneFeedbackBytes,
     getReads,
     saveReads,
     ensureReads,
