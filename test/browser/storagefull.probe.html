@@ -1,0 +1,312 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A page that cannot be saved must not be replaced by a blank one</title>
+<!--
+  THE REPORT (17 October 2026), with two screenshots: "still same problem,
+  content vanishes when i press view button". The first screenshot showed the
+  editor full of his writing with the words "Save failed" in grey in the
+  corner of the topbar. The second showed the reader: an empty card.
+
+  The reader was not lying. localStorage was full, nothing had been written,
+  and the reader drew what was actually stored — nothing. The writing existed
+  only inside the live Editor.js instance, and hide() destroyed that instance
+  on the way out. So the text really was one tab-close from gone, and the only
+  warning was twelve grey pixels he had no reason to look at.
+
+  This probe fills localStorage for real rather than stubbing setItem, because
+  a stub proves the handler and not the condition: the interesting part is what
+  a genuine QuotaExceededError does to the save, the teardown and the router,
+  all of which are real code paths with real timing.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_full";
+const WRITING = "THE PARAGRAPH THAT MUST NOT DISAPPEAR WHEN I PRESS VIEW";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "BrighterDay Playbook", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({
+    time: Date.now(),
+    blocks: [{ type: "paragraph", data: { text: "One document. What you are doing every week." } }],
+  }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC + "/edit";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__ed = Editor");
+  ok("the editor is open", !!d.querySelector("#view-editor.active"), "no editor");
+
+  /*
+   * FILL THE DISK FIRST, THEN WRITE. The order matters and the first version
+   * of this probe had it backwards: it inserted the paragraph and then spent
+   * several seconds writing ballast, which is longer than the one-second
+   * auto-save debounce. So the paragraph was saved successfully while there
+   * was still room, and every assertion below passed or failed for reasons
+   * that had nothing to do with a full disk. The probe reported "switched to
+   * the reader" as a failure when the reader was simply showing text that had
+   * genuinely been saved.
+   *
+   * Filling first means the only write attempted after the disk is full is
+   * the one being tested.
+   *
+   * FILLED FOR REAL rather than by stubbing setItem, because a stub proves
+   * the handler and not the condition: the interesting part is what a genuine
+   * QuotaExceededError does to the save, the teardown and the router. The
+   * ballast is removed at the end so later probes are not poisoned.
+   */
+  const filled = w.eval(`(function(){
+    /*
+     * Fill with big chunks, then with ever smaller ones. Stopping at the first
+     * refusal of a large chunk leaves most of that chunk's size still free —
+     * the first version of this used 512KB blocks and left up to half a
+     * megabyte, which is far more than a document needs, so the write under
+     * test SUCCEEDED and the probe was measuring a disk that was not full.
+     * Stepping down to 16 bytes exhausts it properly.
+     */
+    var n = 0, lastError = "never threw";
+    var sizes = [512 * 1024, 64 * 1024, 8 * 1024, 1024, 128, 16];
+    for (var s = 0; s < sizes.length; s++) {
+      var chunk = "x".repeat(sizes[s]);
+      for (var guard = 0; guard < 400; guard++) {
+        try { localStorage.setItem("__ballast_" + (n++), chunk); }
+        catch (e) { lastError = e.name; n--; break; }
+      }
+    }
+    /* Confirm there is genuinely no room left for even a tiny value. */
+    var headroom = "none";
+    try { localStorage.setItem("__ballast_probe", "y"); localStorage.removeItem("__ballast_probe"); headroom = "STILL HAS ROOM"; }
+    catch (e) { headroom = "none (" + e.name + ")"; }
+    return { chunks: n, name: lastError, headroom: headroom };
+  })()`);
+  say("ballast: wrote " + filled.chunks + " chunks, last error " + filled.name +
+      ", headroom now: " + filled.headroom);
+  /*
+   * THE REAL CEILING, measured rather than assumed.
+   *
+   * This started as a check that the warning threshold sat below the
+   * browser's wall, on the theory that a 6MB trigger could never fire in a
+   * 5MB browser. The measurement said otherwise — this Chrome refuses at
+   * 10MB, so 6MB was perfectly reachable and that theory was wrong.
+   *
+   * The actual reason no warning appeared is elsewhere and worse: the check
+   * was called from the image-paste handler and nowhere else, so pasting TEXT
+   * never ran it at all. It now runs after every successful save. The
+   * measurement is kept because it is the thing that disproved the first
+   * explanation, and because it documents that the limit is not 5MB
+   * everywhere and should never be hardcoded.
+   */
+  const ceilingMb = w.eval(`(function(){
+    var t = 0;
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      t += (k.length + (localStorage.getItem(k) || "").length) * 2;
+    }
+    return t / 1048576;
+  })()`);
+  say("the browser refused further writes at " + ceilingMb.toFixed(2) + " MB");
+  ok("the warning threshold (4MB) is below this browser's wall",
+     ceilingMb > 4,
+     "the wall is at " + ceilingMb.toFixed(2) + "MB, at or below the 4MB " +
+     "warning point, so the size trigger is unreachable here — the headroom " +
+     "test is what has to catch it");
+
+  ok("localStorage really is full now, down to the last bytes",
+     filled.name !== "never threw" && filled.headroom.indexOf("STILL HAS ROOM") === -1,
+     "headroom=" + filled.headroom + " — nothing below is testing a full disk");
+
+  /* NOW write, with no room left, and go straight for the view button — well
+   * inside the one-second auto-save debounce, exactly as a person does. */
+  const inst = w.__ed.getInstance();
+  await inst.blocks.insert("paragraph", { text: WRITING });
+
+  // ── Press the view button, which is what he actually did ──
+  const before = d.body.textContent.includes(WRITING);
+  ok("the writing is on screen before pressing view", before, "it was never there");
+
+  d.getElementById("mode-toggle").click();
+  await wait(1800);
+
+  // ── THE ASSERTIONS THAT MATTER ──
+  const afterText = d.body.textContent;
+  const stillThere = afterText.includes(WRITING);
+  const onReader = !!d.querySelector("#view-reader.active");
+  const bannerEl = d.getElementById("save-failed-banner");
+  say("DIAGNOSIS: writing-still-visible=" + stillThere +
+      " switched-to-reader=" + onReader + " banner=" + !!bannerEl);
+
+  ok("THE WRITING IS STILL ON SCREEN after pressing view", stillThere,
+     "IT VANISHED — this is the reported bug: " +
+     afterText.replace(/\s+/g, " ").slice(0, 200));
+  ok("...because the switch to the empty reader was refused", !onReader,
+     "it switched to the reader and drew a page that storage cannot fill");
+  ok("there is a banner saying what happened", !!bannerEl, "no banner at all");
+  ok("...and it is not a quiet corner label but a band across the top",
+     !!bannerEl && bannerEl.getBoundingClientRect().width > 600,
+     bannerEl ? "only " + Math.round(bannerEl.getBoundingClientRect().width) + "px wide" : "none");
+  ok("...it says the writing is safe, so the reaction is not panic",
+     !!bannerEl && /still/i.test(bannerEl.textContent) && /safe/i.test(bannerEl.textContent),
+     bannerEl ? bannerEl.textContent.slice(0, 200) : "none");
+  ok("...it says what to actually do about it",
+     !!bannerEl && /Export all/i.test(bannerEl.textContent),
+     bannerEl ? bannerEl.textContent.slice(0, 200) : "none");
+  ok("...and it names how full the storage is, not just that it is full",
+     !!bannerEl && /\d+(\.\d+)?MB/.test(bannerEl.textContent),
+     bannerEl ? bannerEl.textContent.slice(0, 200) : "none");
+  ok("the URL agrees with the screen, so a reload does not surprise anyone",
+     /\/edit$/.test(w.location.hash), w.location.hash);
+
+  /*
+   * THE TEARDOWN. A destroyed instance is how the text actually got lost, so
+   * the instance surviving is the thing worth asserting directly rather than
+   * inferring from what is painted.
+   */
+  ok("the editor instance was NOT destroyed", !!w.__ed.getInstance(),
+     "the instance is gone, so the words are gone with it");
+
+  // ── Going home must refuse too, for the same reason ──
+  /*
+   * ASSERTED ON WHICH VIEW IS ACTIVE, not on whether the text is somewhere in
+   * the DOM. showView() only toggles an "active" class and never empties a
+   * view, so the writing stays in body.textContent either way — the first
+   * version of this check could not fail, and a mutation that ignored the
+   * failed flush on the way home sailed straight past it.
+   */
+  w.location.hash = "#/";
+  await wait(1200);
+  ok("going home is refused as well",
+     !!d.querySelector("#view-editor.active") && !d.querySelector("#view-welcome.active"),
+     "the welcome screen took over and hid the unsaved writing just as " +
+     "completely as the empty reader would have");
+  ok("...and the editor still holds the words after that attempt",
+     !!w.__ed.getInstance() && d.body.textContent.includes(WRITING),
+     "the instance went on the way home");
+
+  // ── And once there IS room, it all works normally again ──
+  w.eval('(function(){ for (var i = 0; i < 3000; i++) localStorage.removeItem("__ballast_" + i); })()');
+  /* Crash-proof: if the instance was destroyed the assertions above already
+   * said so, and the ones below should still get to report rather than the
+   * whole probe dying on a null. */
+  const inst2 = w.__ed.getInstance();
+  if (inst2) await inst2.blocks.insert("paragraph", { text: "ADDED AFTER MAKING ROOM" });
+  else say("(no editor instance left, so the recovery case cannot be set up)");
+  await wait(1500);
+  w.location.hash = "#/doc/" + DOC;
+  await wait(1500);
+
+  const readerText = (d.getElementById("reader-content") ||
+                      d.querySelector("#view-reader") || {}).textContent || "";
+  ok("with room again, the view switch works and shows everything",
+     readerText.includes(WRITING) && readerText.includes("ADDED AFTER MAKING ROOM"),
+     readerText.replace(/\s+/g, " ").slice(0, 200));
+  ok("...and the writing from before the disk filled was not lost on the way",
+     (w.localStorage.getItem("folio_doc_" + DOC) || "").includes(WRITING),
+     "the text never reached storage even after room was made");
+
+  // ────────────────────────────────────────────────────────────────────────
+  // THE WARNING THAT NEVER CAME.
+  //
+  // Everything above is about surviving a full disk. This is about being told
+  // BEFORE it is full — which is the part that failed him completely, and not
+  // for the reason first assumed. The check was wired to the image-paste
+  // handler and nowhere else, so filling the storage by typing and pasting
+  // TEXT never ran it once. It now runs after every successful save.
+  //
+  // Storage is left nearly full here, with just enough room to save, so the
+  // headroom test is the trigger rather than the size threshold — the same
+  // state a person is in just before the wall.
+  // ────────────────────────────────────────────────────────────────────────
+  const warnings = [];
+  w.eval("window.__warn = [];" +
+         "var rw = console.warn; console.warn = function(){ " +
+         "  window.__warn.push(Array.prototype.join.call(arguments, ' ')); " +
+         "  rw.apply(console, arguments); };" +
+         "if (typeof TTS !== 'undefined' && TTS.toast) {" +
+         "  var rt = TTS.toast; TTS.toast = function(m, d){ window.__warn.push(String(m)); return rt(m, d); };" +
+         "}");
+
+  /* Nearly full: fill completely, then free one modest block. */
+  w.eval(`(function(){
+    var n = 0, sizes = [512 * 1024, 64 * 1024, 8 * 1024, 1024, 128, 16];
+    for (var s = 0; s < sizes.length; s++) {
+      var chunk = "x".repeat(sizes[s]);
+      for (var g = 0; g < 400; g++) {
+        try { localStorage.setItem("__ball2_" + (n++), chunk); } catch (e) { n--; break; }
+      }
+    }
+    /*
+     * LEAVE A SMALL, MEASURED AMOUNT OF ROOM: enough to save a page, not
+     * enough for the 256KB headroom probe. The headroom test is then what
+     * trips the warning rather than the size threshold, which on a 10MB
+     * browser would fire anyway and mask it.
+     *
+     * The order matters and the first attempt got it wrong. It tried to write
+     * the small blocks while storage was ALREADY full, so every write threw,
+     * the catch swallowed it, and removing those never-written keys freed
+     * nothing — leaving no room even to save, so the save failed and the
+     * warning (which only runs after a SUCCESSFUL save) never ran. Space has
+     * to be freed BEFORE the small blocks can be written.
+     */
+    localStorage.removeItem("__ball2_0");              // 512KB back
+    var small = "x".repeat(4 * 1024);                   // 8KB each in UTF-16
+    var w = 0;
+    try { for (; w < 200; w++) localStorage.setItem("__ball2_s_" + w, small); }
+    catch (e) { /* full again, now to within 8KB */ }
+    for (var r = 0; r < 6 && r < w; r++) localStorage.removeItem("__ball2_s_" + r);  // ~48KB
+  })()`);
+
+  w.location.hash = "#/doc/" + DOC + "/edit";
+  await wait(2500);
+  const instW = w.__ed.getInstance();
+  ok("the editor reopened for the warning test", !!instW, "no instance");
+  if (instW) {
+    /* An ordinary TEXT edit — no image anywhere near it. */
+    await instW.blocks.insert("paragraph", { text: "ORDINARY TYPING, NO IMAGE INVOLVED" });
+    await wait(2200);                      // past the 1s debounce, so a save ran
+  }
+  const warned = w.eval("window.__warn.slice()") || [];
+  const storageWarning = warned.filter((m) => /Storage is/i.test(m));
+  say("warnings seen: " + JSON.stringify(storageWarning).slice(0, 260));
+
+  ok("TYPING near a full disk warns, with no image pasted anywhere",
+     storageWarning.length > 0,
+     "nothing warned — the check is still only reachable from the image path. " +
+     "all console output: " + JSON.stringify(warned).slice(0, 200));
+  ok("...and the warning says what to do about it",
+     storageWarning.some((m) => /Export all/i.test(m)),
+     JSON.stringify(storageWarning).slice(0, 200));
+  /*
+   * WHICH TRIGGER FIRED. There is room to save here but not room for another
+   * page, so the headroom probe is what should have caught it — and the
+   * wording differs between the two triggers precisely so this is checkable.
+   * Without it, a mutation that stops measuring headroom and relies on the
+   * size threshold passes unnoticed on any browser with a 10MB quota.
+   */
+  ok("...and it is the headroom test that caught it, not the size threshold",
+     storageWarning.some((m) => /no longer room for another page/i.test(m)),
+     "the message came from the size threshold instead: " +
+     JSON.stringify(storageWarning).slice(0, 220));
+  ok("...and it does not leave its own test value behind eating the space",
+     w.localStorage.getItem("__folio_headroom__") === null,
+     "the headroom probe left its 256KB value in storage");
+
+  w.eval('(function(){ for (var i = 0; i < 3000; i++) { localStorage.removeItem("__ball2_" + i); localStorage.removeItem("__ball2_s_" + i); } })()');
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL probe crashed -> " + (e && e.message)); say("DONE"); });
+</script>

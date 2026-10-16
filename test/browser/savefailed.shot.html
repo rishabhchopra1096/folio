@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>staging</title>
+<!--
+  Stages the save-failed banner so it can be PHOTOGRAPHED and judged. It
+  asserts nothing — test/browser/storagefull.probe.html does that against a
+  genuinely exhausted disk. This exists because no assertion can say whether
+  the banner reads as serious without being frightening, whether it is legible
+  on the dark theme, or whether it covers something the user needs.
+
+  It earned its keep immediately: the first render showed the banner sitting on
+  top of the topbar, hiding the view, comments and theme buttons for as long as
+  it was up, and quoting "Storage holds 0.0MB" for a failure that had nothing
+  to do with space. Both were fixed before anyone saw them.
+
+    ?theme=dark   the warm dark theme, which is the one actually in use
+
+  TWO THINGS THIS PAGE MUST NOT DO, both learned by producing blank images:
+  no network reporter (a pending request stops Chrome's virtual clock, so the
+  budget expires before anything is drawn), and no multi-megabyte fill (that is
+  real CPU work the virtual clock runs straight past). The quota failure is
+  staged by refusing one key instead.
+-->
+<div id="host"></div>
+<script>
+const Q = new URLSearchParams(location.search);
+const THEME = Q.get("theme") || "";
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const DOC = "doc_shot_savefail";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "BrighterDay $60K Playbook", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: [
+    { type: "header", data: { text: "BrighterDay $60K Playbook", level: 1 } },
+    { type: "paragraph", data: { text: "One document. What you're doing every week. " +
+      "What you're selling in each meeting. What you read before each meeting." } },
+    { type: "paragraph", data: { text: "Last updated: October 6, 2026 (after Meeting 3)" } },
+  ]}));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  if (THEME) {
+    const st = JSON.parse(localStorage.getItem("folio_settings") || "{}");
+    st.theme = THEME;
+    localStorage.setItem("folio_settings", JSON.stringify(st));
+  }
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1180px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC + "/edit";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2200);
+
+  const w = f.contentWindow, d = f.contentDocument;
+
+  /*
+   * Refuse ONLY this page's content key. Refusing "folio_documents" as well
+   * threw during ordinary startup and the iframe rendered nothing at all.
+   */
+  w.eval('(function(){ var real = localStorage.setItem.bind(localStorage);' +
+         'localStorage.setItem = function(k, v) {' +
+         '  if (String(k).indexOf("folio_doc_") === 0) {' +
+         '    var e = new Error("The quota has been exceeded.");' +
+         '    e.name = "QuotaExceededError"; e.code = 22; throw e; }' +
+         '  return real(k, v); }; })()');
+
+  const inst = w.eval("Editor.getInstance()");
+  if (inst) {
+    await inst.blocks.insert("paragraph", { text: "You need $60K in new revenue from BD " +
+      "beyond the current $38K agreement. Your floor is $40K. Below that, the math breaks." });
+  }
+  await wait(300);
+
+  d.getElementById("mode-toggle").click();
+  await wait(1500);
+
+  /* The title is the only report channel that cannot stall the clock. */
+  document.title = d.getElementById("save-failed-banner") ? "ready" : "NO BANNER";
+}
+main().catch((e) => { document.title = "SHOT FAILED: " + (e && e.message); });
+</script>
