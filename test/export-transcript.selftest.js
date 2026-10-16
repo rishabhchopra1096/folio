@@ -32,6 +32,15 @@ const comments = [
   { id:"c2", highlightId:"hl_a", text:"Counter starts at zero — good baseline.", createdAt:"2026-08-19T10:00:30Z" },
   { id:"c3", highlightId:"hl_b", text:"This is the\nreal decision point.", createdAt:"2026-08-19T10:01:30Z" },
   { id:"c4", highlightId:"hl_gone", text:"Orphan comment.", createdAt:"2026-08-19T10:02:00Z" },
+  /*
+   * A note with a REAL paragraph break in it — a blank line, not a soft wrap.
+   * c3 above has a single newline, which is a soft wrap and is still collapsed
+   * into one line, so it does not exercise the paragraph-keeping code at all.
+   * Without this fixture a mutation that threw the breaks away would pass.
+   */
+  { id:"c5", highlightId:"hl_b",
+    text:"Two separate points here.\n\nThe second one needs its own paragraph.",
+    createdAt:"2026-08-19T10:03:00Z" },
 ];
 
 global.FolioStore = {
@@ -87,9 +96,17 @@ ok("Notes section",    /## Notes/.test(out));
  * text, so a regression that dropped the label could not pass by matching
  * the sentence alone.
  */
+/*
+ * The shape changed deliberately on 2026-10-16: a note is no longer a single
+ * line but a fenced block, with the label on its own header line and the text
+ * quoted beneath it. Both halves are pinned below.
+ */
 ok("general note, dated",
-   /- \*\*MY THOUGHT ON AUG 19, 2026:\*\* Ok, that's cool\./.test(out),
-   (out.split("\n").find((l) => /Ok, that's cool/.test(l)) || "line not found"));
+   /^> \*\*MY THOUGHT ON AUG 19, 2026\*\*$/m.test(out),
+   (out.split("\n").find((l) => /MY THOUGHT/.test(l)) || "header not found"));
+ok("...with its text fenced beneath, not run onto the label",
+   /^> Ok, that's cool\.$/m.test(out),
+   (out.split("\n").find((l) => /Ok, that's cool/.test(l)) || "text line not found"));
 ok("Transcript section", /## Transcript/.test(out));
 
 console.log("\n=== the WHOLE transcript is present, not just commented lines ===");
@@ -102,14 +119,41 @@ const iL=out.indexOf("[1:05]"), iC=out.indexOf("Counter starts at zero"), iN=out
 ok("after its line",  iC>iL, `${iL} -> ${iC}`);
 ok("before the next", iC<iN, `${iC} -> ${iN}`);
 ok("marked as a comment, and dated",
-   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* Counter starts at zero/.test(out),
-   (out.split("\n").find((l) => /Counter starts at zero/.test(l)) || "line not found"));
-ok("second comment on its own line, and dated",
-   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* This is the real decision point\./.test(out),
-   (out.split("\n").find((l) => /real decision point/.test(l)) || "line not found"));
+   /^ {2}> 💬 \*\*MY THOUGHT ON AUG 19, 2026\*\*$/m.test(out),
+   (out.split("\n").find((l) => /💬/.test(l)) || "header not found"));
+ok("...with the note itself on its own fenced line",
+   /^ {2}> Counter starts at zero/m.test(out),
+   (out.split("\n").find((l) => /Counter starts at zero/.test(l)) || "text line not found"));
+ok("second comment is its own fenced block",
+   /^ {2}> This is the real decision point\.$/m.test(out),
+   (out.split("\n").find((l) => /real decision point/.test(l)) || "text line not found"));
+
+console.log("\n=== a note keeps the paragraphs you typed ===");
+/*
+ * Why this matters: every export used to collapse a note to one line, so his
+ * longest thought — several distinct points — came out as one wall of text.
+ * A blank line in the note is now a blank QUOTED line in the file, which is
+ * what keeps the paragraphs apart inside the one blockquote.
+ */
+ok("the first paragraph is fenced",
+   /^ {2}> Two separate points here\.$/m.test(out),
+   (out.split("\n").find((l) => /Two separate points/.test(l)) || "not found"));
+ok("the second paragraph is fenced too, not glued to the first",
+   /^ {2}> The second one needs its own paragraph\.$/m.test(out),
+   (out.split("\n").find((l) => /second one needs/.test(l)) || "not found"));
+ok("...separated by a quoted blank line, so markdown keeps them apart",
+   /^ {2}> Two separate points here\.\n {2}>\n {2}> The second one needs its own paragraph\.$/m.test(out),
+   "the two paragraphs ran together");
+ok("...and every line of the note carries the fence, so none can read as transcript",
+   out.split("\n").filter((l) => /Two separate points|second one needs/.test(l))
+      .every((l) => /^\s*>/.test(l)),
+   "a line of a note was left unfenced");
 
 console.log("\n=== robustness ===");
-ok("multi-line comment flattened", !/decision\n/.test(out));
+/* A SINGLE newline is a soft wrap, not a paragraph, and is still collapsed —
+ * the same way markdown itself treats one. Only a blank line starts a new
+ * paragraph (asserted above). */
+ok("a soft wrap inside a paragraph is still collapsed", !/decision\n/.test(out));
 ok("orphan comment not lost", /Orphan comment\./.test(out));
 ok("[shows] prefix preserved", /\[shows\]/.test(out));
 ok("no raw HTML leaked", !/<[a-z]/i.test(out), (out.match(/<[a-z][^>]*>/i)||[""])[0]);

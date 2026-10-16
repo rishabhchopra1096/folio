@@ -252,14 +252,44 @@ ok("...and no NaN or Invalid Date leaks into the file",
 console.log("\nPART D — all three export shapes");
 
 const full = run("full", null);
+/*
+ * The shape changed again on 2026-10-16. A note is now a fenced block, headed
+ * by the dated label, with the passage named on its own line and the thought
+ * beneath it — because the old one-line form held the whole passage verbatim
+ * and so printed the document twice. The label and the date are unchanged;
+ * only the fencing and the length of the quoted passage moved.
+ */
+/* A consolidated export tags each header with its read, so the line may carry
+ * a "[Read 1]" after the label — anchor the start, not the end. */
 ok("the whole-document export dates each comment",
-   /\*\*MY THOUGHT ON MAR 2, 2026[^*]*\*\*.*on "Clarity about what matters"/.test(full),
-   full.split("\n").find((l) => /Clarity about what matters"/.test(l) && /MY THOUGHT/.test(l)));
+   /^> \*\*MY THOUGHT ON MAR 2, 2026[^*]*\*\*/m.test(full),
+   full.split("\n").find((l) => /^> \*\*MY THOUGHT/.test(l)) || "no header line");
 ok("...and the old bare COMMENT prefix is gone",
    !/^COMMENT /m.test(full),
    full.split("\n").find((l) => /^COMMENT /.test(l)) || "");
 ok("...and it still names the passage a note was about",
-   /on "Clarity about what matters"/.test(full));
+   /^> \*on the highlighted passage \u201CClarity about what matters\u201D\*$/m.test(full),
+   full.split("\n").find((l) => /highlighted passage/.test(l)) || "no locator line");
+/*
+ * The passage is no longer reprinted inside quotation marks that its own
+ * quotes can close. This is the fault that cost 14 of his 22 notes: `on
+ * "<passage>"` closed early on every passage containing a double quote.
+ */
+ok("...without the straight-quote wrapper a passage can close itself",
+   !/on "/.test(full),
+   full.split("\n").find((l) => /on "/.test(l)) || "");
+/* The legend is excluded on purpose: it NAMES the label while explaining the
+ * convention, and it is a line of the file's own front matter rather than a
+ * note, so it is correctly unfenced. Every actual note line must be fenced. */
+const noteLines = full.split("\n")
+  .filter((l) => /MY THOUGHT|highlighted passage/.test(l))
+  .filter((l) => !/^_\*\*How to read/.test(l));
+ok("...and every line of a note is fenced, so none can read as document text",
+   noteLines.length > 0 && noteLines.every((l) => /^\s*>/.test(l)),
+   noteLines.find((l) => !/^\s*>/.test(l)) || "(no note lines found at all)");
+ok("...and the file explains the convention before the first note",
+   /How to read this file/.test(full),
+   full.split("\n").slice(0, 8).join(" | "));
 
 /*
  * The transcript export, which also carries a position in the video.
@@ -281,12 +311,21 @@ Store.saveComments(DOC, forVideo);
 
 const tr = run("full", null);
 const vidLine = tr.split("\n").find((l) => /Said at this exact moment/.test(l));
-ok("the transcript really put the comment on a line", !!vidLine && /💬/.test(vidLine),
+/*
+ * In a transcript the note is still a fenced block, so the thought and its
+ * header are now two separate lines: the header carries the glyph, the date
+ * and the moment in the video, and the thought sits quoted beneath it.
+ */
+const vidHead = tr.split("\n").find((l) => /💬/.test(l));
+ok("the transcript really put the comment on a line", !!vidLine && /^\s*>/.test(vidLine),
    vidLine || "no comment line at all");
-ok("...and that line is dated",
-   !!vidLine && /💬 \*\*MY THOUGHT ON SEP 5, 2026:\*\*/.test(vidLine), vidLine);
+ok("...and its header is dated",
+   !!vidHead && /💬 \*\*MY THOUGHT ON SEP 5, 2026\*\*/.test(vidHead),
+   vidHead || "no header line");
 ok("...and keeps the position in the video, which is a different fact from the date",
-   !!vidLine && /\[70\]/.test(vidLine), vidLine);
+   !!vidHead && /\[70\]/.test(vidHead), vidHead || "no header line");
+ok("...and the two facts sit in that one header, not on the thought's own line",
+   !!vidLine && !/MY THOUGHT|\[70\]/.test(vidLine), vidLine || "no comment line");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

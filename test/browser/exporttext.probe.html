@@ -126,35 +126,90 @@ async function main() {
 
   // ── Comments inline, under the passage they belong to ──
   /*
-   * THE LABEL CHANGED ON 2026-10-15. It used to be a bare "COMMENT", which
-   * said nothing about WHEN the note was written — and a document carrying
-   * notes from three different readings needs exactly that to be readable.
-   * The date is computed here the same way the module computes it, rather than
-   * hardcoded, so this does not start failing tomorrow.
+   * THE LABEL CHANGED ON 2026-10-15 and the SHAPE AROUND IT ON 2026-10-16.
+   *
+   * The label used to be a bare "COMMENT", which said nothing about WHEN the
+   * note was written — and a document carrying notes from three readings needs
+   * exactly that to be readable. The date is computed here the same way the
+   * module computes it, rather than hardcoded, so this does not start failing
+   * tomorrow.
+   *
+   * The shape then changed because a note was a plain paragraph holding the
+   * whole quoted passage: the document got printed twice and a reader had no
+   * way to tell where the note ended. A note is now a fenced block — "> " on
+   * every line, the label on its own header line, the passage named beneath
+   * it, the thought beneath that.
    */
   const TODAY_STAMP = new Date().toLocaleDateString("en-US",
     { month: "short", day: "numeric", year: "numeric" }).toUpperCase();
   ok("comments are labelled with the day they were written",
-     new RegExp("^\\*\\*MY THOUGHT ON " + TODAY_STAMP + "\\*\\*", "m").test(md),
+     new RegExp("^> \\*\\*MY THOUGHT ON " + TODAY_STAMP + "\\*\\*", "m").test(md),
      lines.filter((l) => /MY THOUGHT/.test(l)).join(" | ").slice(0, 300) || md.slice(0, 300));
   ok("...and the old bare COMMENT prefix is gone", !/^COMMENT /m.test(md),
      lines.filter((l) => l.startsWith("COMMENT")).join(" | "));
 
-  const pOne = idxOf(P_ONE), cOne = idxOf("this is the decided bit");
+  /*
+   * THE FENCE, which is the whole point: a note's own words must never sit at
+   * the document's level, because that is what made them indistinguishable
+   * from the prose. Checked against the real file in a real browser.
+   */
+  const noteTexts = ["this is the decided bit", "note about avatars",
+                     "a page level note", "orphaned but still mine"];
+  ok("every note's words are fenced, so none can read as the document",
+     noteTexts.every((t) => {
+       const ls = lines.filter((l) => l.includes(t));
+       return ls.length > 0 && ls.every((l) => /^\s*>/.test(l));
+     }),
+     noteTexts.map((t) => t + ": " +
+       (lines.find((l) => l.includes(t)) || "MISSING").slice(0, 40)).join(" | "));
+  ok("...while the document's own paragraphs are NOT fenced",
+     [P_ONE, P_TWO, P_THREE].every((t) =>
+       lines.some((l) => l === t || (l.includes(t) && !/^\s*>/.test(l)))),
+     [P_ONE, P_TWO, P_THREE].map((t) =>
+       (lines.find((l) => l.includes(t)) || "MISSING").slice(0, 40)).join(" | "));
+
+  const pOne = idxOf(P_ONE), hOne = idxOf("MY THOUGHT ON " + TODAY_STAMP);
+  const cOne = idxOf("this is the decided bit");
   ok("the first comment follows its own paragraph",
-     pOne !== -1 && cOne !== -1 && cOne > pOne && cOne - pOne <= 2,
+     pOne !== -1 && cOne !== -1 && cOne > pOne && cOne - pOne <= 6,
      `paragraph at ${pOne}, comment at ${cOne}`);
+  ok("...with its header immediately after that paragraph",
+     hOne !== -1 && hOne - pOne <= 2 && hOne < cOne,
+     `paragraph at ${pOne}, header at ${hOne}, text at ${cOne}`);
 
   const pThree = idxOf(P_THREE), cThree = idxOf("note about avatars");
   ok("the third comment follows ITS paragraph, not the first",
-     pThree !== -1 && cThree !== -1 && cThree > pThree && cThree - pThree <= 2,
+     pThree !== -1 && cThree !== -1 && cThree > pThree && cThree - pThree <= 6,
      `paragraph at ${pThree}, comment at ${cThree}`);
   ok("and it is not filed under an earlier paragraph", cThree > idxOf(P_TWO));
 
+  /*
+   * The passage is NAMED on its own fenced line, in curly quotes. Curly
+   * because 14 of 22 passages in a real export contained a straight double
+   * quote of their own, which closed the old `on "<passage>"` wrapper early.
+   * This passage is short, so it is printed whole rather than shortened.
+   */
   ok("the quoted passage is named so you know what it refers to",
-     new RegExp('\\*\\*MY THOUGHT ON [A-Z]{3} \\d+, \\d{4}\\*\\* on "' +
-                HL_ONE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"').test(md),
-     lines.filter((l) => /MY THOUGHT/.test(l)).join(" | ").slice(0, 300));
+     new RegExp('^> \\*on the highlighted passage \u201C' +
+                HL_ONE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '\u201D\\*$', "m").test(md),
+     lines.filter((l) => /highlighted passage/.test(l)).join(" | ").slice(0, 300));
+  ok("...and the old straight-quote wrapper is gone, so a passage cannot close it",
+     !/\*\* on "/.test(md),
+     lines.filter((l) => / on "/.test(l)).join(" | ").slice(0, 200));
+
+  /*
+   * THE LEGEND. The cheapest half of the fix: a reader told the convention
+   * before meeting the first note never has to infer it, and the count makes a
+   * note lost in a copy-paste detectable.
+   */
+  ok("the file explains its own convention before the first note",
+     /_\*\*How to read this file\.\*\*/.test(md) &&
+     lines.findIndex((l) => /How to read this file/.test(l)) <
+       lines.findIndex((l) => /^> \*\*MY THOUGHT/.test(l)),
+     lines.slice(0, 6).join(" | ").slice(0, 300));
+  ok("...and counts the notes it holds",
+     /There are 4 such notes below/.test(md),
+     lines.find((l) => /such note/.test(l)) || "no count line");
 
   // ── Nothing is silently dropped ──
   ok("the page level note is kept", md.includes("a page level note"));

@@ -492,14 +492,28 @@ ok("C8 a single-read full export does NOT tag comments",
 ok("C9 ...and leaves the earlier read's comments out",
    !full2.includes("Obvious in hindsight."));
 /*
- * The prefix here used to be a bare "COMMENT". It is now "MY THOUGHT ON
- * <DATE>" — see the note in js/comments.js above thoughtLabel. What this
- * assertion is actually about is unchanged: a single-read export must keep
- * the QUOTE from an earlier read when this read's comment refers to it.
+ * The prefix here used to be a bare "COMMENT", then "MY THOUGHT ON <DATE>" on
+ * one line with the whole passage quoted after it. Since 2026-10-16 a note is
+ * a fenced block and the passage is named on its own line — short passages
+ * like this one in full, long ones shortened to their opening words. See the
+ * long note in js/comments.js above thoughtBlock for why.
+ *
+ * What this assertion is actually about is unchanged: a single-read export
+ * must keep the PASSAGE from an earlier read when this read's comment refers
+ * to it.
  */
 ok("C10 ...while keeping the quote its comment refers to",
-   /\*\*MY THOUGHT ON [A-Z]{3} \d+, \d{4}\*\* on "Don't repeat yourself\."/.test(full2),
+   /\*\*MY THOUGHT ON [A-Z]{3} \d+, \d{4}\*\*\n> \*on the highlighted passage \u201CDon't repeat yourself\.\u201D\*/.test(full2),
    "the Read 1 highlight was dropped, so the Read 2 comment lost its context");
+/*
+ * A short passage is printed WHOLE — under about a hundred characters there is
+ * nothing to save by trimming, and a trimmed version would be nearly as long
+ * while being less precise. So no ellipsis on this one.
+ */
+ok("C10b ...in full, because it is short enough that shortening would gain nothing",
+   full2.includes("\u201CDon't repeat yourself.\u201D") &&
+   !/Don't repeat\u2026/.test(full2),
+   "a 22-character passage was shortened anyway");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

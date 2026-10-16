@@ -120,12 +120,43 @@ console.log("\n=== each note carries its own timestamp ===");
  * text, so a regression that dropped the label could not pass by matching
  * the sentence alone.
  */
+/*
+ * The shape changed deliberately on 2026-10-16. A note used to be one line —
+ * `> 💬 **MY THOUGHT ON <date>:** [20:14] <text>` — and is now a fenced block
+ * whose header carries the date and the moment, with the text on its own
+ * quoted line beneath:
+ *
+ *     > 💬 **MY THOUGHT ON AUG 19, 2026** [20:14]
+ *     >
+ *     > There are different game mechanics...
+ *
+ * These assertions pin BOTH halves, so neither the header nor the fence on the
+ * text can be lost while the other still matches.
+ */
 ok("the 20:14 note is stamped, and dated",
-   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* \[20:14\] There are different game mechanics/.test(out),
-   (out.split("\n").find((l) => /20:14\] There are different/.test(l)) || "line not found"));
+   /^ {2}> 💬 \*\*MY THOUGHT ON AUG 19, 2026\*\* \[20:14\]$/m.test(out),
+   (out.split("\n").find((l) => /20:14\]$/.test(l)) || "header line not found"));
+ok("...and its text is fenced on its own line, not run onto the header",
+   /^ {2}> There are different game mechanics/m.test(out),
+   (out.split("\n").find((l) => /There are different/.test(l)) || "text line not found"));
 ok("the 25:32 note is stamped, and dated",
-   /> 💬 \*\*MY THOUGHT ON AUG 19, 2026:\*\* \[25:32\] Another game mechanic/.test(out),
-   (out.split("\n").find((l) => /25:32\] Another game/.test(l)) || "line not found"));
+   /^ {2}> 💬 \*\*MY THOUGHT ON AUG 19, 2026\*\* \[25:32\]$/m.test(out),
+   (out.split("\n").find((l) => /25:32\]$/.test(l)) || "header line not found"));
+ok("...and its text is fenced too",
+   /^ {2}> Another game mechanic is the grind/m.test(out),
+   (out.split("\n").find((l) => /Another game mechanic/.test(l)) || "text line not found"));
+
+/*
+ * The legend at the top of the file. It is the cheapest half of the whole fix:
+ * a reader that is TOLD the convention before meeting the first note never has
+ * to infer it, and the count makes a note lost in a copy-paste detectable.
+ */
+ok("the file explains its own convention before the first note",
+   /How to read this file/.test(out) && /MY THOUGHT ON\*\* is a note I wrote/.test(out),
+   out.split("\n")[4] || "(no legend line)");
+ok("...and says how many notes it holds, so a lost one is detectable",
+   /There are 4 such notes below/.test(out),
+   (out.split("\n").find((l) => /such note/.test(l)) || "count not found"));
 
 console.log("\n=== a note taken before the transcript existed still lands ===");
 const iPend = at("Dictated while the transcript was still streaming");
