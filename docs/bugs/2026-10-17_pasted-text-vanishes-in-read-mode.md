@@ -7,7 +7,9 @@
 - **Not caused by the export work shipped the same day.** A probe reproduced it on the previous day's code and again on code from 4 September, six weeks older.
 - **The cause: `route()` in `js/app.js` called the async `Editor.hide()` without awaiting it**, then read the storage that `hide()` was still in the middle of writing.
 - **A second, worse fault was found while diagnosing it, and that one did lose work.** Going from one page's editor straight into another's never flushed at all, so the last second of typing in the first page was destroyed — gone from storage, not merely undrawn.
-- **Both fixed, live, and covered by 24 new browser assertions** across two probes. One mutation escaped and is written down as unproven rather than counted as tested.
+- **Then the same sentence came back, and the screenshot carried the real answer:** "Save failed", in grey 12px type in the corner. The browser's storage was full, nothing had been written, and closing the editor destroyed the only copy.
+- **A failed save now refuses to close the page**, says so in a band across the top, and the warning that should have come first — wired to image paste only, so typing never triggered it — now runs after every save.
+- **All of it covered by 46 new browser assertions** across three probes, with 21 mutations caught. Two defects in the banner were found only by rendering it and looking.
 
 ## Document map
 
@@ -83,6 +85,27 @@ Making `route()` async means two navigations can be in flight at once, so each c
 
 The guard stays, because it costs three lines and the failure it prevents is silent and nasty. But the honest status is written both in `js/app.js` where it lives and in `routerace.probe.html`, and the assertions that remain there describe the outcome a person sees rather than claiming to prove the mechanism.
 
+## The second report, and the bug underneath both
+
+**The fixes above were live when the same sentence came back: *"still same problem, content vanishes when i press view button"* — and this time a screenshot came with it, carrying the answer nobody had read.**
+
+In the corner of the topbar, in grey 12px type, were the words **"Save failed"**. localStorage was full. Nothing had been written. The reader drew exactly what was stored, which was nothing. And `hide()` destroyed the Editor.js instance on its way out, so the only copy of the writing went with it.
+
+**Every part of that chain behaved as designed, which is why none of it was caught.** `writeJSON` was a bare `localStorage.setItem` with no error handling, so a full disk surfaced as a thrown exception that `persistContent` caught and turned into the string `"failed"`. That string reached a label in a corner. Nothing else happened.
+
+| What was wrong | What it does now |
+|---|---|
+| A write failure was indistinguishable from any other error | `writeJSON` tags a quota failure before rethrowing, so the message can be specific |
+| `hide()` destroyed an editor it could not save | It refuses, leaving the instance, the content and the document id standing |
+| `route()` drew an empty reader over unsaved work | It abandons the navigation and keeps the editor up |
+| The only notice was a corner label | A band across the top, saying what happened, that the writing is safe, and what to do |
+| The early warning was wired to image paste only | It runs after every successful save |
+| The warning compared against a guessed limit | It decides by TRYING a 256KB write, since the limit is 10MB here and 5MB elsewhere |
+
+**The warning's wiring was the real failure.** `checkStorageQuota()` existed, read sensibly, and was called from exactly one place: the image-paste handler. Filling the storage by typing and pasting text never ran it once. The first theory — that its 6MB threshold sat above a 5MB wall — was wrong, and measuring disproved it: this Chrome refuses at 10MB, so 6MB was perfectly reachable. **The measurement is kept in the probe because it is what disproved the first explanation.**
+
+**Two things were only ever found by rendering the banner and looking at it.** It sat on top of the topbar, hiding the view, comments and theme buttons for as long as it was up — so the message about not being able to save also took away the controls. And it said "Storage holds 0.0MB" for a failure that had nothing to do with space, which is self-contradictory and costs the rest of the sentence its credibility. Neither was visible to any assertion.
+
 ## Lessons
 
 - **"It vanished" is two bugs wearing one sentence**, and they need opposite responses. Text that never reached storage is lost and urgent; text that reached storage and was drawn late is a timing bug and nothing is gone. Report which one it is before proposing anything — the probe here prints `drawn` and `saved` as separate facts for exactly that reason.
@@ -90,3 +113,9 @@ The guard stays, because it costs three lines and the failure it prevents is sil
 - **An unawaited async call is invisible until something downstream reads what it was writing.** Nothing throws, nothing logs, and the code reads correctly.
 - **A function that reassigns its own identity before tearing down the old state is a trap for any cleanup added later.** `openEditor` sets `currentDocId` before the destroy, so the obvious place to add the flush was the wrong place, and the wrong version would have corrupted rather than lost.
 - **Fixing a race can open one.** Check the fix's own new failure modes in the same pass, and if a guard cannot be made to fail, say so where it lives instead of letting it look tested.
+- **Read the screenshot before the code.** The second report carried the diagnosis in plain sight — "Save failed" — and the first round of work was spent on a real but different bug because the screenshot had not arrived yet. When a fix does not take, ask for the screen before theorising again.
+- **An error path that ends in a corner label is an error path with no ending.** Anything the user must act on to avoid losing work has to be impossible to miss, and "impossible to miss" is a size and a position, not a wording.
+- **A warning is only as good as its call sites.** This one was correct, well written, and wired to a single rare event. Before trusting any guard, grep for where it is actually invoked — the logic being right is the easy half.
+- **Never hardcode a browser limit.** localStorage is 10MB in current Chrome and 5MB in older ones and elsewhere. Any threshold expressed as a number is wrong on some browser; trying a write is right on all of them.
+- **Fill it properly or you are not testing it.** Three attempts were needed: large chunks leave most of a chunk free, and filling after the edit lets the auto-save land while there is still room. Both versions passed while testing nothing.
+- **Render the thing and look at it.** Two real defects in the banner — covering the controls, and quoting a number that contradicted its own sentence — survived twenty-two passing assertions and died in one screenshot.
