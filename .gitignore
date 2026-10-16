@@ -2,3 +2,10 @@
 node_modules/
 dist/
 *.dmg
+
+# Export-format samples. These are real exports of REAL documents — a client's
+# name, a child's name, dollar figures, a sales strategy written on the
+# assumption the client will not read it. This repository is PUBLIC. The
+# samples are kept on disk so they can be opened locally and compared, and
+# they never leave the machine.
+docs/export-format/samples/
