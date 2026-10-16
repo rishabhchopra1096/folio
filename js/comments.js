@@ -1288,6 +1288,167 @@ const Comments = (function () {
     return new Date(thoughtDate(a) || 0) - new Date(thoughtDate(b) || 0);
   }
 
+  /*
+   * ==========================================================================
+   * FENCING A THOUGHT OFF FROM THE DOCUMENT
+   * ==========================================================================
+   * These three helpers exist because of one complaint, and it is worth
+   * writing down in full because the obvious reading of it is wrong.
+   *
+   * On 16 October 2026 an export came back with this shape:
+   *
+   *   **MY THOUGHT ON OCT 16, 2026** on "<the whole paragraph again>": <the note>
+   *
+   * and the report was: "I think this will confuse an AI on what's the actual
+   * text, and what's the comment."
+   *
+   * The obvious diagnosis is that the LABEL is not loud enough. It is not.
+   * Measuring the actual file found three different faults, and the label was
+   * not one of them:
+   *
+   * 1. THE QUOTE WAS REPRINTING THE DOCUMENT. A highlight is by definition
+   *    text that is already on the page, so quoting it in full prints that
+   *    passage twice. In his file that came to 10,873 characters of quote
+   *    against 9,834 characters of his own thinking — the quotes were LONGER
+   *    than the thoughts, 18.5% of the file was the document repeated, and 20
+   *    of 22 quotes were found verbatim elsewhere in the same file. One note
+   *    quoted five paragraphs, all of which appear immediately below it. That
+   *    duplication is the actual reason a reader cannot tell document from
+   *    comment: both copies are the document.
+   * 2. THE QUOTE WRAPPER WAS ALREADY BROKEN. 14 of his 22 highlighted
+   *    passages contain a straight double quote of their own, so `"<quote>"`
+   *    closed early. One note's passage BEGAN with a quote mark, producing
+   *    `on ""What's your marketing plan?" ...` — an empty string followed by
+   *    loose prose.
+   * 3. NOTHING MARKED WHERE A THOUGHT ENDED. The note was a plain markdown
+   *    paragraph, so the document simply resumed after it with no boundary of
+   *    any kind.
+   *
+   * So the fix is not a louder label. It is: fence every LINE of a note, stop
+   * reprinting the passage, and say at the top of the file what the notes are.
+   */
+
+  /*
+   * Wrap a passage in typographic quotes.
+   *
+   * Curly deliberately, not straight: the passages themselves are full of
+   * straight quotes and those were closing the wrapper. A curly pair cannot be
+   * closed by anything inside the text. It is decoration rather than
+   * structure — the real boundary is the "> " on every line — so a passage
+   * that happens to contain a curly quote of its own is cosmetic, not a bug.
+   */
+  function curlyQuote(s) {
+    return "\u201C" + String(s == null ? "" : s) + "\u201D";
+  }
+
+  /*
+   * WHERE a note was written, short enough not to reprint the paragraph.
+   *
+   * The passage is sitting directly above the note in the file, so the note
+   * only needs enough of it to be found by eye. About ninety characters of the
+   * opening words, cut at a word boundary so it does not end mid-word.
+   *
+   * A SHORT passage is printed whole. Under about a hundred characters there
+   * is nothing to save by trimming, and the trimmed version would be nearly as
+   * long as the original while being less precise.
+   */
+  function passageLocator(quote) {
+    const q = String(quote == null ? "" : quote).replace(/\s+/g, " ").trim();
+    if (!q) return "";
+    if (q.length <= 100) return curlyQuote(q);
+    let head = "";
+    q.split(" ").some(function (w) {
+      if ((head ? head + " " + w : w).length > 90) return true;
+      head = head ? head + " " + w : w;
+      return false;
+    });
+    /* A single word longer than the budget would leave head empty, which would
+     * print a locator of nothing at all. Take the cut mid-word in that case —
+     * an ugly locator beats an absent one. */
+    if (!head) head = q.slice(0, 90);
+    return curlyQuote(head + "\u2026");
+  }
+
+  /*
+   * Split a note into paragraphs, keeping the breaks the user typed.
+   *
+   * Every export used to flatten a note to a single line, which turned his
+   * longest thought — 1,566 characters, several distinct points — into one
+   * wall of text. Blank lines separate paragraphs; single newlines inside a
+   * paragraph are soft wraps and get collapsed, the same way markdown treats
+   * them.
+   */
+  function thoughtParagraphs(text) {
+    return String(text == null ? "" : text)
+      .split(/\n\s*\n/)
+      .map(function (p) {
+        return p.split("\n").map(function (l) { return l.trim(); })
+                .filter(Boolean).join(" ");
+      })
+      .filter(Boolean);
+  }
+
+  /*
+   * A thought as a markdown blockquote — the lines of it, ready to push.
+   *
+   * EVERY line carries "> ", including the blank ones between paragraphs.
+   * That is the whole point and it is what the previous format lacked: the
+   * fence is not a marker at each end that a reader has to remember, it is on
+   * every single line, so no line of a note can be read as document prose and
+   * the note's end is simply the first line without one. It also renders as a
+   * visually inset margin note in every markdown reader — Notion, GitHub,
+   * Obsidian, Claude — which is exactly what the thing IS.
+   *
+   * Options:
+   *   tag     a read label like "[Read 2]", when the file holds more than one,
+   *           and in a transcript the moment in the video it was made at
+   *   gone    true when the passage has been deleted from the document, in
+   *           which case the FULL quote is kept rather than a locator, because
+   *           with the passage gone this note is the only record of what was
+   *           being read
+   *   indent  spaces before the fence, so a note can hang off a transcript
+   *           line rather than sitting at the document's own level
+   *   mark    a glyph before the label; the transcript uses a speech bubble so
+   *           a note is findable while scrolling a wall of timestamps
+   */
+  function thoughtBlock(c, quote, opts) {
+    const o = opts || {};
+    const pre = (o.indent || "") + "> ";
+    const out = [pre + (o.mark ? o.mark + " " : "") +
+                 "**" + thoughtLabel(c) + "**" + (o.tag ? " " + o.tag : "")];
+    if (quote) {
+      out.push(pre + (o.gone
+        ? "*on a passage no longer in the document: " + curlyQuote(quote) + "*"
+        : "*on the highlighted passage " + passageLocator(quote) + "*"));
+    }
+    /* A blank quoted line before each paragraph, so markdown keeps them apart
+     * instead of running them together inside the one blockquote, and so the
+     * header is separated from the note itself. */
+    thoughtParagraphs(c && c.text).forEach(function (p) {
+      out.push((o.indent || "") + ">");
+      out.push(pre + p);
+    });
+    /* A note with no text at all still gets its header, so an empty record is
+     * visible rather than silently dropped. */
+    return out;
+  }
+
+  /*
+   * The line at the top of a file that tells the reader what the notes are.
+   *
+   * This is the cheapest and largest part of the fix. A reader — human or AI —
+   * that is TOLD the convention before it meets the first note never has to
+   * infer it. The count is there so anything lost in a copy-paste is
+   * detectable: the file says how many notes it contains.
+   */
+  function readingLegend(n) {
+    if (!n) return "";
+    return "_**How to read this file.** The prose is the document. Every indented " +
+           "block headed **MY THOUGHT ON** is a note I wrote in the margin on the " +
+           "date shown \u2014 my own commentary, not part of the document. There " +
+           (n === 1 ? "is 1 such note" : "are " + n + " such notes") + " below._";
+  }
+
   // ==========================================================================
   // EXPORT — dump highlights + comments as a markdown bulleted list
   // ==========================================================================
@@ -1721,8 +1882,13 @@ const Comments = (function () {
       lines.push("");
       lines.push("**Notes whose highlight was removed:**");
       lines.push("");
-      orphans.sort(byThoughtDate)
-             .forEach((c) => lines.push(`- **${thoughtLabel(c)}:** ${flatten(c.text)}`));
+      /* Paragraph breaks kept, the same as every other note in this digest —
+       * a long thought flattened to one line is unreadable. */
+      orphans.sort(byThoughtDate).forEach((c) => {
+        const paras = thoughtParagraphs(c.text);
+        lines.push(`- **${thoughtLabel(c)}:** ${paras[0] || ""}`);
+        paras.slice(1).forEach((pp) => { lines.push(""); lines.push(`  ${pp}`); });
+      });
       lines.push("");
     }
   }
@@ -1800,14 +1966,20 @@ const Comments = (function () {
       });
 
     /*
-     * Every line starts with MY THOUGHT ON <date> — the same label the digest
-     * uses, so one habit reads both files — and names the passage when one is
-     * known, so you can tell which part of a long paragraph a note was about.
+     * Every note comes out as a fenced block headed MY THOUGHT ON <date> — the
+     * same label the digest uses, so one habit reads both files — and names
+     * the passage when one is known, so you can tell which part of a long
+     * paragraph a note was about.
      *
-     * This replaced a bare "COMMENT". That was greppable, which was the point,
-     * and "MY THOUGHT" greps just as well while also saying when. In a
+     * The label replaced a bare "COMMENT". That was greppable, which was the
+     * point, and "MY THOUGHT" greps just as well while also saying when. In a
      * document with notes from three different readings, the date is the only
      * thing that tells them apart as you scroll.
+     *
+     * The FENCE came later, and for a different reason — see the long note on
+     * thoughtBlock above. In short: a note used to be a plain paragraph
+     * holding the whole quoted passage, which printed the document twice and
+     * gave a reader no way to tell where the note ended.
      */
     /*
      * A read prefix is added only when the file holds more than one read.
@@ -1824,11 +1996,10 @@ const Comments = (function () {
       return r ? `[${FolioStore.readLabel(r)}] ` : "";
     };
 
-    const commentLine = (c, quote) => {
-      const head = `**${thoughtLabel(c)}**${readTag(c) ? " " + readTag(c).trim() : ""}`;
-      return quote ? `${head} on "${quote}": ${flatten(c.text)}`
-                   : `${head}: ${flatten(c.text)}`;
-    };
+    const block = (c, quote, gone) => thoughtBlock(c, quote, {
+      tag: readTag(c) ? readTag(c).trim() : "",
+      gone: !!gone,
+    });
 
     const out = [];
     out.push(`# ${title}`);
@@ -1837,12 +2008,19 @@ const Comments = (function () {
       const when = readDateLabel(ctx.scopeRead);
       out.push(`_${FolioStore.readLabel(ctx.scopeRead)}${when ? " · " + when : ""} — comments from this read only_`);
     }
+    /*
+     * Tell the reader the convention before they meet the first note. A file
+     * with no notes in it needs no explanation, so the legend is omitted
+     * there rather than announcing a format that never appears.
+     */
+    const legend = readingLegend(comments.length);
+    if (legend) { out.push(""); out.push(legend); }
     out.push("");
 
     rendered.forEach((md, i) => {
       if (md && md.trim()) { out.push(md); out.push(""); }
       (perBlock.get(i) || []).forEach(({ c, quote }) => {
-        out.push(commentLine(c, quote));
+        out.push.apply(out, block(c, quote, false));
         out.push("");
       });
     });
@@ -1852,7 +2030,17 @@ const Comments = (function () {
       out.push("");
       out.push("## Notes not attached to a passage");
       out.push("");
-      loose.forEach(({ c, quote }) => { out.push(commentLine(c, quote)); out.push(""); });
+      /*
+       * These two cases look alike and are not. A note with no quote is a
+       * page-level note — it was never about a passage. A note WITH a quote
+       * that landed here had its passage deleted from the document, so this
+       * note now holds the only copy of what was being read, and the quote is
+       * printed IN FULL rather than shortened to a locator.
+       */
+      loose.forEach(({ c, quote }) => {
+        out.push.apply(out, block(c, quote, !!quote));
+        out.push("");
+      });
     }
 
     const safeTitle = title.replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").slice(0, 60) || "notes";
@@ -2087,6 +2275,13 @@ const Comments = (function () {
       const when = readDateLabel(ctx.scopeRead);
       out.push(`_${FolioStore.readLabel(ctx.scopeRead)}${when ? " · " + when : ""} — comments from this read only_`);
     }
+    /*
+     * The same legend the text export writes. A transcript interleaves the
+     * same two kinds of writing — what the video said and what you thought
+     * about it — so it needs the same sentence telling them apart.
+     */
+    const legend = readingLegend(comments.length);
+    if (legend) { out.push(""); out.push(legend); }
     out.push("");
 
     if (general.length) {
@@ -2094,8 +2289,10 @@ const Comments = (function () {
       out.push("");
       general
         .sort(byThoughtDate)
-        .forEach((c) => out.push(`- **${thoughtLabel(c)}:** ${readTag(c)}${flatten(c.text)}`));
-      out.push("");
+        .forEach((c) => {
+          out.push.apply(out, thoughtBlock(c, "", { tag: readTag(c).trim() }));
+          out.push("");
+        });
     }
 
     out.push("## Transcript");
@@ -2117,12 +2314,21 @@ const Comments = (function () {
                      typeof Gemini !== "undefined"
             ? `[${Gemini.formatTime(c.videoTime)}] ` : "";
           /*
-           * Two different times sit on this line and they mean different
+           * Two different times sit in this header and they mean different
            * things: the date is WHEN YOU THOUGHT IT, the [12:34] is where in
            * the video you were. A note made on a second watch is the whole
            * reason both are worth printing.
+           *
+           * Indented two spaces so the note hangs off the transcript line it
+           * was made against, and marked with a speech bubble so it is
+           * findable while scrolling a wall of timestamps. No passage locator:
+           * a note on a video is anchored by its moment, not by quoted text.
            */
-          out.push(`  > 💬 **${thoughtLabel(c)}:** ${readTag(c)}${at}${flatten(c.text)}`);
+          out.push.apply(out, thoughtBlock(c, "", {
+            indent: "  ",
+            mark: "💬",
+            tag: (readTag(c) + at).trim(),
+          }));
         });
       }
       out.push("");
@@ -2146,11 +2352,6 @@ const Comments = (function () {
     const d = document.createElement("div");
     d.innerHTML = String(s == null ? "" : s);
     return d.textContent || "";
-  }
-
-  // Collapse a multi-line comment so it sits on one markdown line.
-  function flatten(s) {
-    return String(s == null ? "" : s).split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
   }
 
   function downloadBlob(text, filename, mimeType) {
