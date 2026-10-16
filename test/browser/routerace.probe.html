@@ -1,0 +1,174 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>How many times does route() actually run on a fast double navigation?</title>
+<!--
+  Written because a mutation ESCAPED. route() was made async to fix a paste
+  vanishing from read mode, and an async router can paint a view the user has
+  already left — so it was given a ticket per call that makes a superseded call
+  give up. A probe case was written for that race and it passed with the guard
+  disabled, which means it never reproduced the race and proved nothing.
+
+  So before keeping or removing the guard: find out what the browser actually
+  does. Setting location.hash twice in one turn may fire one hashchange or
+  two, and if it fires one there is no race to guard against in that scenario.
+
+  This probe counts route() entries and exits rather than asserting an opinion.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const A = "doc_race_a", B = "doc_race_b";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: A, title: "Page A", icon: "", parentId: null, order: 0, createdAt: now, updatedAt: now },
+    { id: B, title: "Page B", icon: "", parentId: null, order: 1, createdAt: now, updatedAt: now }]));
+  for (const id of [A, B]) {
+    localStorage.setItem("folio_doc_" + id, JSON.stringify({
+      time: Date.now(), blocks: [{ type: "paragraph", data: { text: "Body of " + id } }] }));
+    localStorage.setItem("folio_comments_" + id, "[]");
+    localStorage.setItem("folio_highlights_" + id, "[]");
+  }
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + A + "/edit";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+
+  /*
+   * Count hashchange events the app itself would receive. A second listener on
+   * the same event sees exactly what the router's listener sees.
+   */
+  w.eval("window.__hc = 0; window.addEventListener('hashchange', function(){ window.__hc++; });");
+
+  // ── Both hash writes in ONE turn, which is what the earlier case did ──
+  w.eval("window.__hc = 0");
+  w.eval("location.hash = '#/doc/" + A + "'; location.hash = '#/doc/" + B + "';");
+  await wait(1500);
+  const sameTurn = w.eval("window.__hc");
+  const crumb0 = (d.getElementById("breadcrumb") || {}).textContent || "";
+  say("two hash writes in ONE turn fired " + sameTurn + " hashchange event(s)");
+  /*
+   * THE FINDING, and it is why the first attempt at a race test proved
+   * nothing. Two events DO fire — but route() reads window.location.hash
+   * fresh at the top of each call rather than taking it from the event, and
+   * by the time either handler runs the hash is already at its final value.
+   * So both calls route to the SAME destination and there is nothing to
+   * diverge. A guard cannot be exercised this way.
+   */
+  ok("both calls fire, and both see the same final hash, so neither can lose",
+     sameTurn === 2 && crumb0.includes("Page B"),
+     "events=" + sameTurn + " crumb=" + crumb0.trim());
+
+  // ── Now genuinely two turns, with an editor to flush on the first ──
+  w.location.hash = "#/doc/" + A + "/edit";
+  await wait(2500);
+  const inst = w.eval("Editor.getInstance()");
+  await inst.blocks.insert("paragraph", { text: "MAKES THE FLUSH TAKE REAL TIME" });
+
+  w.eval("window.__hc = 0");
+  /*
+   * Separate turns, so two hashchange events really do fire. The FIRST
+   * navigation is the slow one — it leaves the editor and has to flush — and
+   * the second is instant, so without a guard the first resumes last and
+   * paints Page A over Page B.
+   */
+  w.eval("location.hash = '#/doc/" + A + "'; setTimeout(function(){ location.hash = '#/doc/" + B + "'; }, 0);");
+  await wait(2000);
+  const twoTurns = w.eval("window.__hc");
+  const crumb = (d.getElementById("breadcrumb") || {}).textContent || "";
+  const body = (d.getElementById("reader-content") || d.querySelector("#view-reader") || {}).textContent || "";
+  say("two hash writes in SEPARATE turns fired " + twoTurns + " hashchange event(s)" +
+      "; hash=" + w.location.hash + "; crumb=" + crumb.trim());
+
+  ok("two separate navigations really do fire two route() calls", twoTurns === 2,
+     "fired " + twoTurns);
+  ok("THE LAST navigation is the one on screen", crumb.includes("Page B") &&
+     body.includes("Body of " + B) && !body.includes("Body of " + A),
+     "crumb=" + crumb.trim() + " body=" + body.replace(/\s+/g, " ").slice(0, 120));
+  ok("...and the URL agrees with it", w.location.hash === "#/doc/" + B,
+     w.location.hash);
+  ok("...and the edit that had to be flushed still reached storage",
+     (w.localStorage.getItem("folio_doc_" + A) || "").includes("MAKES THE FLUSH TAKE REAL TIME"),
+     "the flush was lost");
+
+  // ────────────────────────────────────────────────────────────────────────
+  // THE RACE, with the window held open on purpose — AND THE GUARD IS NOT
+  // PROVEN BY IT. Read this before trusting the assertions below.
+  //
+  // route() was made async and given a ticket per call so that a superseded
+  // navigation gives up instead of painting over a newer one. THREE attempts
+  // were made to catch that guard being removed, and all three passed with it
+  // disabled. The third is below: the editor's own save() is wrapped to take
+  // 600ms — a large document on a slow machine — and a second navigation
+  // arrives 50ms into that window, which is as deep inside the race as a test
+  // can get. It still did not matter.
+  //
+  // WHY, and it is worth knowing rather than guessing. Every branch of route()
+  // has exactly ONE await, and it is the same call: Editor.hide(). A second
+  // navigation arriving while the first is mid-flush finds the editor still
+  // alive — the first call's teardown happens AFTER its await — so it takes
+  // the slow path too, and its own 600ms timer was started later and
+  // therefore resolves later. A later call cannot overtake an earlier one, so
+  // the superseded call is never the one that paints last.
+  //
+  // So the guard is unreachable with today's code and is kept as insurance
+  // against a future await with different timing, not as a fix for something
+  // observed. It is recorded as unproven rather than quietly counted as
+  // tested. What the assertions below DO prove is the outcome a user sees:
+  // the last navigation is on screen and the slow flush still landed.
+  // ────────────────────────────────────────────────────────────────────────
+  w.location.hash = "#/doc/" + A + "/edit";
+  await wait(2500);
+  w.eval(
+    "(function(){" +
+    "  var inst = Editor.getInstance();" +
+    "  var real = inst.save.bind(inst);" +
+    "  inst.save = function(){ return real().then(function(r){" +
+    "    return new Promise(function(res){ setTimeout(function(){ res(r); }, 600); });" +
+    "  }); };" +
+    "})()");
+  const instSlow = w.eval("Editor.getInstance()");
+  await instSlow.blocks.insert("paragraph", { text: "WRITTEN WHILE THE SAVE IS SLOW" });
+
+  w.eval("window.__hc = 0");
+  /*
+   * Leave the editor for Page A — that call must wait out the 600ms flush —
+   * and 50ms later navigate to Page B, whose own flush is instant because
+   * there is no editor left to save.
+   */
+  w.eval("location.hash = '#/doc/" + A + "';" +
+         "setTimeout(function(){ location.hash = '#/doc/" + B + "'; }, 50);");
+  await wait(2500);
+
+  const crumb2 = (d.getElementById("breadcrumb") || {}).textContent || "";
+  const body2 = (d.getElementById("reader-content") || d.querySelector("#view-reader") || {}).textContent || "";
+  say("DIAGNOSIS slow-flush race: hash=" + w.location.hash +
+      " crumb=" + crumb2.trim() +
+      " showing=" + (body2.includes("Body of " + B) ? "B" : body2.includes("Body of " + A) ? "A" : "neither"));
+
+  /* Outcome, not mechanism — this passes with the guard removed. */
+  ok("a navigation during a slow flush shows the page the user asked for",
+     crumb2.includes("Page B") && body2.includes("Body of " + B) &&
+     !body2.includes("Body of " + A),
+     "the abandoned navigation painted last: the URL says " + w.location.hash +
+     " and the screen shows " + (body2.includes("Body of " + A) ? "Page A" : "neither page") +
+     " — crumb=" + crumb2.trim());
+
+  ok("...and the slow flush still landed, so nothing was traded away for it",
+     (w.localStorage.getItem("folio_doc_" + A) || "").includes("WRITTEN WHILE THE SAVE IS SLOW"),
+     "the 600ms flush was abandoned and the text lost");
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL probe crashed -> " + (e && e.message)); say("DONE"); });
+</script>

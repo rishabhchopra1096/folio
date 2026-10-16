@@ -1,0 +1,322 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Text pasted in edit mode must still be there in read mode</title>
+<!--
+  THE REPORT (17 October 2026): "when i paste the text, it's visible in edit
+  mode, but vanishes in view mode?"
+
+  WHAT THIS PROBE IS FOR. Two completely different things produce that
+  sentence, and they need opposite fixes, so the first job is telling them
+  apart:
+
+    (a) THE TEXT WAS NEVER SAVED. Then it is genuinely lost and every later
+        visit to the document is missing it. This is the catastrophic reading.
+    (b) THE TEXT WAS SAVED AND THE READER DREW THE OLD COPY. Then nothing is
+        lost at all — storage is correct, the screen is one revision behind,
+        and a reload shows the text. This is a timing bug.
+
+  The suspect for (b) is in js/app.js: `Editor.hide()` is an async function
+  that flushes the editor to storage with `await persistContent()`, and
+  route() calls it WITHOUT awaiting. So Reader.renderDocument() reads
+  localStorage in the same synchronous turn, before the flush has landed, and
+  draws the revision from before the paste.
+
+  Every assertion below reports which of the two it saw, because "it vanished"
+  is a symptom and the distinction is the whole diagnosis.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_paste_vanish";
+const PASTED = "PASTED SENTENCE THAT MUST SURVIVE THE VIEW SWITCH";
+const SECOND = "A SECOND PASTED PARAGRAPH";
+
+const stored = (w) => w.localStorage.getItem("folio_doc_" + DOC) || "";
+/* What is actually DRAWN in read mode, which is a different question from what
+ * is in storage — and the difference between the two readings above. */
+const onScreen = (d) => {
+  const body = d.getElementById("reader-content") ||
+               d.querySelector("#view-reader");
+  return body ? (body.textContent || "") : "";
+};
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Pasting Into A Page", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({
+    time: Date.now(),
+    blocks: [{ type: "paragraph", data: { text: "The line that was already here." } }],
+  }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1200px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC + "/edit";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(3500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__ed = Editor");
+  ok("the editor is open to begin with", !!d.querySelector("#view-editor.active"),
+     "no editor view");
+
+  // ────────────────────────────────────────────────────────────────────────
+  // CASE 1 — paste, then switch to read mode IMMEDIATELY, as a person does.
+  // ────────────────────────────────────────────────────────────────────────
+  const inst = w.__ed.getInstance();
+  ok("the editor instance is reachable", !!inst && !!inst.blocks, "no instance");
+
+  /*
+   * A real paste goes through Editor.js's own paste handling, which ends up
+   * inserting blocks. Inserting the block directly is the same end state and
+   * is the part this probe is about — what happens on the way OUT of the
+   * editor, not how the text got in.
+   */
+  await inst.blocks.insert("paragraph", { text: PASTED });
+  ok("the pasted text is in the editor", /PASTED SENTENCE/.test(d.body.textContent),
+     "not even in the editor's DOM");
+
+  /*
+   * No wait. This is the whole point: a person pastes and switches straight
+   * away, well inside the one-second auto-save debounce.
+   */
+  w.location.hash = "#/doc/" + DOC;
+  await wait(1200);
+
+  const screen1 = onScreen(d);
+  const stored1 = stored(w);
+  const drawn = screen1.includes(PASTED);
+  const saved = stored1.includes(PASTED);
+
+  /* The headline. Which of the two readings is this? */
+  say("DIAGNOSIS case 1: drawn=" + drawn + " saved=" + saved);
+  ok("THE PASTE IS NOT LOST — it reached storage", saved,
+     "CATASTROPHIC: the text was never written. stored=" + stored1.slice(0, 200));
+  ok("THE PASTE IS ON SCREEN in read mode", drawn,
+     "the reader drew the revision from before the paste; storage " +
+     (saved ? "DOES" : "does NOT") + " have it, so nothing is lost — " +
+     "screen=" + screen1.replace(/\s+/g, " ").slice(0, 160));
+
+  /*
+   * If it is the timing bug, re-rendering the SAME document from the SAME
+   * storage must now show the text. That is the proof that storage was right
+   * and only the draw was early — and it is what the user would see on a
+   * reload, which is why it matters to say so.
+   */
+  w.eval("Reader.renderDocument('" + DOC + "')");
+  await wait(400);
+  const screen2 = onScreen(d);
+  ok("a second render of the same storage shows it",
+     screen2.includes(PASTED),
+     "even re-rendering does not show it, so this is NOT a draw-timing " +
+     "problem: screen=" + screen2.replace(/\s+/g, " ").slice(0, 160));
+
+  // ────────────────────────────────────────────────────────────────────────
+  // CASE 2 — the same thing, but waiting out the auto-save first. If this
+  // passes while case 1 fails, the diagnosis is confirmed as timing.
+  // ────────────────────────────────────────────────────────────────────────
+  w.location.hash = "#/doc/" + DOC + "/edit";
+  await wait(2500);
+  const inst2 = w.__ed.getInstance();
+  await inst2.blocks.insert("paragraph", { text: SECOND });
+  await wait(1800);                        // past the 1s debounce
+  w.location.hash = "#/doc/" + DOC;
+  await wait(1200);
+
+  const screen3 = onScreen(d);
+  ok("pasting and WAITING a moment before switching works",
+     screen3.includes(SECOND),
+     "even with the save flushed first it does not draw: " +
+     screen3.replace(/\s+/g, " ").slice(0, 160));
+
+  /*
+   * And the first paste must still be there. A fix that draws the newest
+   * paste while dropping the previous one would pass everything above.
+   */
+  ok("...and the earlier paste is still there too",
+     screen3.includes(PASTED),
+     "the first paste went missing later: " + screen3.replace(/\s+/g, " ").slice(0, 200));
+
+  // ────────────────────────────────────────────────────────────────────────
+  // CASE 3 — nothing about the EXPORT code can be involved, so say so with a
+  // check rather than an opinion. The reader must not depend on it at all.
+  // ────────────────────────────────────────────────────────────────────────
+  const exportTouched = w.eval(
+    "(function(){ try { return typeof Comments !== 'undefined' &&" +
+    " typeof Comments.exportFull === 'function'; } catch(e) { return 'threw'; } })()");
+  ok("the comments module loaded fine alongside all this",
+     exportTouched === true, String(exportTouched));
+
+  // ────────────────────────────────────────────────────────────────────────
+  // CASE 4 — THE WORSE ONE, found while diagnosing the first.
+  //
+  // js/editor.js openEditor() destroys the previous Editor.js instance
+  // WITHOUT flushing it, and route()'s edit branch never calls hide(). So
+  // going straight from editing one page to editing another — which is what
+  // clicking a second page in the sidebar does — drops whatever was typed or
+  // pasted into the first within the last second. That is not a draw-timing
+  // problem and nothing brings it back: the text is gone from storage too.
+  //
+  // Worse, openEditor sets currentDocId to the NEW document before the
+  // destroy, so a naive flush added inside it would write the first page's
+  // content under the second page's id. The flush has to happen before that
+  // reassignment, which is why the fix belongs in route().
+  // ────────────────────────────────────────────────────────────────────────
+  const DOC2 = "doc_paste_vanish_2";
+  const INTO_FIRST = "TYPED INTO THE FIRST PAGE AND NEVER SAVED";
+  const docs = JSON.parse(w.localStorage.getItem("folio_documents"));
+  docs.push({ id: DOC2, title: "Another Page", icon: "", parentId: null, order: 1,
+              createdAt: now, updatedAt: now });
+  w.localStorage.setItem("folio_documents", JSON.stringify(docs));
+  w.localStorage.setItem("folio_doc_" + DOC2, JSON.stringify({
+    time: Date.now(), blocks: [{ type: "paragraph", data: { text: "The other page." } }] }));
+  w.localStorage.setItem("folio_comments_" + DOC2, "[]");
+  w.localStorage.setItem("folio_highlights_" + DOC2, "[]");
+
+  w.location.hash = "#/doc/" + DOC + "/edit";
+  await wait(2500);
+  const inst3 = w.__ed.getInstance();
+  await inst3.blocks.insert("paragraph", { text: INTO_FIRST });
+  /* Straight to the OTHER page's editor, inside the debounce — a sidebar click. */
+  w.location.hash = "#/doc/" + DOC2 + "/edit";
+  await wait(2500);
+
+  const firstDoc = w.localStorage.getItem("folio_doc_" + DOC) || "";
+  const secondDoc = w.localStorage.getItem("folio_doc_" + DOC2) || "";
+  say("DIAGNOSIS case 4: kept=" + firstDoc.includes(INTO_FIRST) +
+      " leaked-into-other=" + secondDoc.includes(INTO_FIRST));
+  ok("editing a SECOND page keeps what was typed into the first",
+     firstDoc.includes(INTO_FIRST),
+     "DATA LOSS: it is gone from storage, not merely undrawn. first page = " +
+     firstDoc.slice(0, 200));
+  ok("...and does not write the first page's text into the second",
+     !secondDoc.includes(INTO_FIRST),
+     "WORSE: the first page's content was saved under the second page's id — " +
+     secondDoc.slice(0, 200));
+
+  // ────────────────────────────────────────────────────────────────────────
+  // CASE 5 — THE FIX MUST NOT BREAK FAST NAVIGATION.
+  //
+  // route() is now async, so two quick navigations are both in flight at once
+  // and the obvious new failure is the wrong page on screen with the right
+  // URL in the bar. This checks the OUTCOME: the last navigation is what gets
+  // drawn, and they agree.
+  //
+  // IT DOES NOT PROVE THE TICKET GUARD in route(). This case passes with that
+  // guard disabled, and so did two harder attempts in
+  // test/browser/routerace.probe.html — including one that slowed the
+  // editor's save to 600ms. The reason is written there and in js/app.js: a
+  // later route() call cannot overtake an earlier one, because both await the
+  // same Editor.hide() and the later one's timer starts later. The guard is
+  // recorded as unproven insurance rather than counted as tested.
+  // ────────────────────────────────────────────────────────────────────────
+  w.location.hash = "#/doc/" + DOC + "/edit";
+  await wait(2500);
+  const inst4 = w.__ed.getInstance();
+  await inst4.blocks.insert("paragraph", { text: "SOMETHING TO MAKE THE FLUSH REAL" });
+
+  /* Two navigations in the same turn: to the first page's reader, then
+   * immediately to the second page's reader. The second must win. */
+  w.location.hash = "#/doc/" + DOC;
+  w.location.hash = "#/doc/" + DOC2;
+  await wait(1800);
+
+  const finalScreen = onScreen(d);
+  const crumb = (d.getElementById("breadcrumb") || {}).textContent || "";
+  say("DIAGNOSIS case 5: hash=" + w.location.hash + " crumb=" + crumb.trim());
+  /* Outcome, not mechanism — passes with the guard removed. */
+  ok("after two fast navigations the LAST one is what is drawn",
+     finalScreen.includes("The other page.") &&
+     !finalScreen.includes("The line that was already here."),
+     "the earlier navigation painted over the later one: crumb=" + crumb.trim() +
+     " screen=" + finalScreen.replace(/\s+/g, " ").slice(0, 160));
+  ok("...and the URL and the screen agree about which page it is",
+     w.location.hash === "#/doc/" + DOC2 && crumb.includes("Another Page"),
+     "hash=" + w.location.hash + " crumb=" + crumb.trim());
+  ok("...and the edit made before all that still reached storage",
+     (w.localStorage.getItem("folio_doc_" + DOC) || "")
+       .includes("SOMETHING TO MAKE THE FLUSH REAL"),
+     "the flush was skipped by the abandoned navigation");
+
+  // ────────────────────────────────────────────────────────────────────────
+  // CASE 6 — THE FIX MUST NOT RESURRECT A DELETED PAGE.
+  //
+  // route() now flushes the editor on the way out, and deleting the page you
+  // are editing navigates home — which runs that flush against a document
+  // that no longer exists. If it wrote, the page would come back from the
+  // dead, which is a far worse bug than the one being fixed.
+  //
+  // persistContent()'s staleness guard is what stops it: storageTime() of a
+  // missing key is 0, which cannot equal the loadedTime of a real document,
+  // so the write is refused. The edge worth checking is a page whose
+  // loadedTime is ALSO 0 — a brand new one that has never been written —
+  // because then the two agree and the guard would let the write through.
+  // ────────────────────────────────────────────────────────────────────────
+  const DOC3 = "doc_paste_vanish_3";
+  const docs2 = JSON.parse(w.localStorage.getItem("folio_documents"));
+  docs2.push({ id: DOC3, title: "Doomed Page", icon: "", parentId: null, order: 2,
+               createdAt: now, updatedAt: now });
+  w.localStorage.setItem("folio_documents", JSON.stringify(docs2));
+  w.localStorage.setItem("folio_doc_" + DOC3, JSON.stringify({
+    time: Date.now(), blocks: [{ type: "paragraph", data: { text: "About to be deleted." } }] }));
+  w.localStorage.setItem("folio_comments_" + DOC3, "[]");
+  w.localStorage.setItem("folio_highlights_" + DOC3, "[]");
+
+  w.location.hash = "#/doc/" + DOC3 + "/edit";
+  await wait(2500);
+  const instDoomed = w.__ed.getInstance();
+  await instDoomed.blocks.insert("paragraph", { text: "EDITED JUST BEFORE DELETION" });
+  /* Delete it and go home inside the debounce, exactly as the sidebar does. */
+  w.eval("FolioStore.deleteDocument('" + DOC3 + "'); location.hash = '#/';");
+  await wait(2000);
+
+  const resurrected = w.localStorage.getItem("folio_doc_" + DOC3);
+  const inList = JSON.parse(w.localStorage.getItem("folio_documents") || "[]")
+                   .some((x) => x.id === DOC3);
+  say("DIAGNOSIS case 6: content-key-back=" + (resurrected !== null) +
+      " in-page-list=" + inList);
+  ok("deleting the page being edited does NOT bring its content back",
+     resurrected === null,
+     "RESURRECTED: the flush wrote a document that had just been deleted — " +
+     String(resurrected).slice(0, 160));
+  ok("...and it stays out of the page list",
+     !inList, "the deleted page is listed again");
+
+  /*
+   * THE EDGE: a page whose stored revision time is 0, so the staleness guard
+   * cannot tell "deleted" from "unchanged" by comparing times.
+   */
+  const DOC4 = "doc_paste_vanish_4";
+  const docs3 = JSON.parse(w.localStorage.getItem("folio_documents"));
+  docs3.push({ id: DOC4, title: "Never Written", icon: "", parentId: null, order: 3,
+               createdAt: now, updatedAt: now });
+  w.localStorage.setItem("folio_documents", JSON.stringify(docs3));
+  w.localStorage.setItem("folio_doc_" + DOC4, JSON.stringify({ time: 0, blocks: [] }));
+  w.localStorage.setItem("folio_comments_" + DOC4, "[]");
+  w.localStorage.setItem("folio_highlights_" + DOC4, "[]");
+
+  w.location.hash = "#/doc/" + DOC4 + "/edit";
+  await wait(2500);
+  const instFresh = w.__ed.getInstance();
+  await instFresh.blocks.insert("paragraph", { text: "TYPED INTO A NEVER-WRITTEN PAGE" });
+  w.eval("FolioStore.deleteDocument('" + DOC4 + "'); location.hash = '#/';");
+  await wait(2000);
+
+  const res4 = w.localStorage.getItem("folio_doc_" + DOC4);
+  say("DIAGNOSIS case 6b (time=0 page): content-key-back=" + (res4 !== null));
+  ok("the same holds for a page whose revision time is zero",
+     res4 === null,
+     "RESURRECTED via the time=0 edge: " + String(res4).slice(0, 160));
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL probe crashed -> " + (e && e.message)); say("DONE"); });
+</script>
