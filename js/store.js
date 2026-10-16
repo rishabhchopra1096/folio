@@ -93,8 +93,78 @@ const FolioStore = (function () {
   }
 
   // Write a JSON value to localStorage
+  /*
+   * Every write to storage goes through here, and every one of them can fail.
+   *
+   * localStorage.setItem throws QuotaExceededError when the origin is full —
+   * about five megabytes in Chrome. It used to be called bare, so a full disk
+   * surfaced as the word "Save failed" in grey 12px type in a corner of the
+   * topbar, which is how a page got edited for a while with nothing being
+   * kept. The throw is left to propagate, because the caller is the only one
+   * that knows what to do about it, but it is tagged first so a caller can
+   * tell "the disk is full" from "something else went wrong" — those need
+   * completely different messages.
+   */
   function writeJSON(key, value) {
-    localStorage.setItem(key, JSON.stringify(value));
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (err) {
+      if (isQuotaError(err)) {
+        err.folioQuota = true;
+        err.folioKey = key;
+        console.error("[folio] storage is FULL — could not write " + key +
+                      ". Nothing was saved.", err);
+      } else {
+        console.error("[folio] could not write " + key, err);
+      }
+      throw err;
+    }
+  }
+
+  /*
+   * Browsers disagree about how a full quota announces itself: Chrome and
+   * Safari throw QuotaExceededError (code 22), Firefox throws
+   * NS_ERROR_DOM_QUOTA_REACHED (code 1014), and private-mode Safari has
+   * historically thrown with a zero quota and a different name again. Checking
+   * the name alone misses two of those.
+   */
+  function isQuotaError(err) {
+    if (!err) return false;
+    return err.name === "QuotaExceededError" ||
+           err.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+           err.code === 22 || err.code === 1014 ||
+           /quota/i.test(err.message || "");
+  }
+
+  /*
+   * How much of the origin's storage is in use, and what is using it.
+   *
+   * Returned grouped rather than key by key: fifty documents listed
+   * individually say nothing, while "4.1 MB of documents, 0.3 MB of comments"
+   * says where to look. Used by the warning that fires before the wall, and by
+   * the message shown when a write has already failed.
+   */
+  function storageReport() {
+    let total = 0;
+    const groups = {};
+    const biggest = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      const v = localStorage.getItem(k);
+      const n = (k.length + (v ? v.length : 0)) * 2;  // UTF-16
+      total += n;
+      biggest.push({ key: k, bytes: n });
+      const g = k.indexOf("folio_doc_") === 0 ? "pages"
+              : k.indexOf("folio_comments_") === 0 ? "comments"
+              : k.indexOf("folio_highlights_") === 0 ? "highlights"
+              : k.indexOf("folio_reads_") === 0 ? "reads"
+              : k === "folio_feedback" ? "feedback"
+              : k.indexOf("folio_") === 0 ? "other Folio data"
+              : "not Folio";
+      groups[g] = (groups[g] || 0) + n;
+    }
+    biggest.sort((a, b) => b.bytes - a.bytes);
+    return { total: total, groups: groups, biggest: biggest.slice(0, 10) };
   }
 
   // ==========================================================================
@@ -998,6 +1068,8 @@ const FolioStore = (function () {
     requestDurableStorage,
     storageDurability,
     storageEstimate,
+    storageReport,
+    isQuotaError,
     reorderDocument,
     isDescendantOf,
   };

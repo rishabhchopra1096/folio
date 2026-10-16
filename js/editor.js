@@ -463,33 +463,71 @@ const Editor = (function () {
   }
 
   /*
-   * Soft quota warning — localStorage is typically capped at 5-10MB per origin,
-   * which fills up fast once you start pasting images. We don't block pastes,
-   * but once usage crosses ~6MB we nag the user once per session to export a
-   * backup. Better to warn early than to lose data when localStorage rejects
-   * the next write.
+   * Soft quota warning — and the two things wrong with it were both found on
+   * 17 October 2026, after a page failed to save with no warning at all.
+   *
+   * FAULT ONE, AND IT IS THE REAL ONE: this was called from exactly one place,
+   * the image-paste handler. So it only ever ran when an IMAGE was pasted. He
+   * pasted TEXT into a document, filled the storage with ordinary writing, and
+   * the check never executed once. It is now called after every successful
+   * save, which is both the moment that matters and the moment the size
+   * actually changed. It costs one walk of localStorage per session, because
+   * it stops checking after it has warned.
+   *
+   * FAULT TWO: the threshold was a guess at the browser's limit, and the guess
+   * is not knowable. Chrome allows ten megabytes per origin in current
+   * versions and five in older ones; other browsers differ again. A fixed
+   * number is either so low it nags on a roomy browser or so high it never
+   * fires on a tight one.
+   *
+   * So the real signal is not a number at all: TRY A WRITE. A quarter-megabyte
+   * test value, written and immediately removed, answers "is there room for
+   * another page?" on any browser without needing to know its limit. The size
+   * check stays as a second trigger for the case where the wall is still some
+   * way off but approaching.
    */
+  const SOFT_LIMIT = 4 * 1024 * 1024;
+  const HEADROOM_TEST = 256 * 1024;      // a generous page, in UTF-16 bytes
   let storageWarned = false;
+
+  /*
+   * Is there room for another page? Asked by writing one and taking it back.
+   * The key is removed in a finally, so a failure cannot leave the test value
+   * behind taking up the very space it was measuring.
+   */
+  function hasHeadroom() {
+    const key = "__folio_headroom__";
+    try {
+      localStorage.setItem(key, "x".repeat(HEADROOM_TEST / 2));
+      return true;
+    } catch (err) {
+      return false;
+    } finally {
+      try { localStorage.removeItem(key); } catch (e) { /* nothing to undo */ }
+    }
+  }
+
   function checkStorageQuota() {
     if (storageWarned) return;
-    let total = 0;
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      const v = localStorage.getItem(k);
-      total += (k.length + (v ? v.length : 0)) * 2; // UTF-16 estimate
-    }
-    if (total > 6 * 1024 * 1024) {
-      storageWarned = true;
-      const mb = (total / 1024 / 1024).toFixed(1);
-      // Long and prominent, but still non-blocking — a modal here would stop a
-      // video mid-sentence to deliver news that can wait ten seconds.
-      setTimeout(() => {
-        const msg = `Storage is ${mb}MB, near the browser's ~5-10MB limit. ` +
-                    `Open Settings → Backup → Export all now, before edits start failing.`;
-        if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(msg, 12000);
-        else console.warn("[folio]", msg);
-      }, 100);
-    }
+    const report = FolioStore.storageReport();
+    const roomy = hasHeadroom();
+    if (roomy && report.total <= SOFT_LIMIT) return;
+
+    storageWarned = true;
+    const mb = (report.total / 1048576).toFixed(1);
+    /* Name the biggest group, because "storage is full" leaves the user with
+     * nowhere to start and "3.1MB of that is pages" does not. */
+    const top = Object.entries(report.groups).sort((a, b) => b[1] - a[1])[0];
+    const where = top ? ` Most of it (${(top[1] / 1048576).toFixed(1)}MB) is ${top[0]}.` : "";
+    const how = roomy
+      ? `Storage is up to ${mb}MB.`
+      : `Storage is ${mb}MB and there is no longer room for another page.`;
+    setTimeout(() => {
+      const msg = `${how}${where} Open Settings → Backup → Export all now — ` +
+                  `once it is full, edits stop being saved.`;
+      if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(msg, 14000);
+      else console.warn("[folio]", msg);
+    }, 100);
   }
 
   // Cheap heuristic: does this blob of text look like structured markdown?
@@ -686,12 +724,33 @@ const Editor = (function () {
       FolioStore.updateDocument(id, { content: data });
       // Our own write is now the revision this instance is based on.
       loadedTime = data.time || loadedTime;
+      /*
+       * Check the room left AFTER every successful save. This used to be
+       * checked only when an image was pasted, so a document filled with
+       * ordinary typing could walk all the way into a failed save without one
+       * word of warning — which is what happened. It returns immediately once
+       * it has warned, so this costs one walk of storage per session.
+       */
+      checkStorageQuota();
       return "saved";
     } catch (err) {
       console.error("Auto-save failed:", err);
+      /*
+       * REMEMBER WHY IT FAILED, because the two causes need different words.
+       * A full disk is something the user can act on — export, delete a page,
+       * carry on. Anything else is a defect they can do nothing about, and
+       * telling them "storage holds 0.0MB" in that case is both useless and
+       * obviously wrong, which costs the rest of the message its credibility.
+       * Found by looking at a rendered banner, not by any assertion.
+       */
+      lastSaveFailure = FolioStore.isQuotaError(err) ? "quota" : "other";
       return "failed";
     }
   }
+
+  /* Why the last save failed: "quota", "other", or null if none has. */
+  let lastSaveFailure = null;
+  function lastSaveFailureReason() { return lastSaveFailure; }
 
   /*
    * Does what the editor holds match what is already on disk? Compared on type
@@ -817,13 +876,43 @@ const Editor = (function () {
   // ==========================================================================
 
   // Force-save and clean up (called when navigating away)
-  async function hide() {
+  /*
+   * Close the editor, flushing it first — and REFUSE to close it if that flush
+   * failed, because the text would then exist nowhere.
+   *
+   * Reported 17 October 2026: a page edited with a full localStorage showed
+   * "Save failed" in the corner, and pressing the view button drew an empty
+   * document. Nothing had been written, the instance was destroyed anyway, and
+   * the only copy of the text went with it. The reader was telling the truth —
+   * storage really was empty — which made it look exactly like the text had
+   * been deleted.
+   *
+   * So a failed flush now leaves EVERYTHING standing: the instance, its
+   * content, the document id. The caller is told, and it is the caller's job
+   * to keep the user where their words are. Pass { force: true } to close
+   * anyway, which is for the case where the user has been told and chooses to
+   * leave regardless.
+   *
+   * Returns the persist result: "saved" | "clean" | "stale" | "failed".
+   */
+  async function hide(opts) {
+    const force = !!(opts && opts.force);
+    let result = "clean";
     if (currentDocId && editorInstance) {
       clearTimeout(saveTimer);
       clearTimeout(titleTimer);
       // Flushes only if the user actually edited, and only if nothing else has
       // rewritten the document since this editor opened.
-      await persistContent();
+      result = await persistContent();
+
+      /*
+       * The whole point of the change. Tearing down here would destroy the
+       * only copy of what is on screen.
+       */
+      if (result === "failed" && !force) {
+        if (saveIndicator) saveIndicator.textContent = "Save failed";
+        return result;
+      }
       /*
        * Same rule for the title. It used to be written unconditionally, so
        * renaming a page from the sidebar while its editor was open got reverted
@@ -831,8 +920,18 @@ const Editor = (function () {
        * won over the rename you had just made.
        */
       if (titleDirty) {
-        FolioStore.updateDocument(currentDocId, { title: titleInput.value || "Untitled" });
-        titleDirty = false;
+        try {
+          FolioStore.updateDocument(currentDocId, { title: titleInput.value || "Untitled" });
+          titleDirty = false;
+        } catch (err) {
+          /* A title that cannot be written is the same failure as a body that
+           * cannot be written, and for the same reason: the storage is full. */
+          console.error("[editor] could not save the title", err);
+          if (!force) {
+            if (saveIndicator) saveIndicator.textContent = "Save failed";
+            return "failed";
+          }
+        }
       }
     }
     if (editorInstance) {
@@ -840,6 +939,7 @@ const Editor = (function () {
       editorInstance = null;
     }
     currentDocId = null;
+    return result;
   }
 
   // Get the ID of the document currently being edited
@@ -857,6 +957,7 @@ const Editor = (function () {
     hide,
     getCurrentDocId,
     getInstance,
+    lastSaveFailureReason,
     debouncedSave,
   };
 })();

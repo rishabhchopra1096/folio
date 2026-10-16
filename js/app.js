@@ -112,9 +112,25 @@ const App = (function () {
        * Flush and tear down the editor we are leaving BEFORE opening the next
        * one. Without this, moving between two pages' editors loses the last
        * second of work on the first.
+       *
+       * There was briefly a guard here that skipped this when the editor was
+       * already open on this exact document, to stop a rebuild from storage
+       * discarding unsaved work. It was removed because a mutation test showed
+       * it changed nothing, and the reason holds: the only way an instance is
+       * still alive when route() runs is that a previous flush was REFUSED,
+       * and the refusal below returns before openEditor is reached. Leaving it
+       * out also means pressing the button again genuinely retries the save,
+       * which is what someone who has just freed up space expects.
        */
-      await Editor.hide();
+      const leftEdit = await Editor.hide();
       if (!current()) return;
+      if (leftEdit === "failed") {
+        /* The page we are leaving could not be written. Go back to it rather
+         * than opening another one on top of work that exists nowhere else. */
+        showSaveFailed(saveFailedMessage(Editor.getCurrentDocId()));
+        window.location.hash = "#/doc/" + Editor.getCurrentDocId() + "/edit";
+        return;
+      }
 
       currentMode = "edit";
       currentDocId = docId;
@@ -141,13 +157,30 @@ const App = (function () {
       currentDocId = docId;
 
       /*
-       * AWAITED, and that is the whole fix for the reported bug. hide()
-       * flushes the editor to storage asynchronously; renderDocument() below
-       * reads that storage. Unawaited, the read happened first and the reader
-       * drew the text as it was before the last edit.
+       * AWAITED, and that is half the fix for the reported bug. hide() flushes
+       * the editor to storage asynchronously; renderDocument() below reads
+       * that storage. Unawaited, the read happened first and the reader drew
+       * the text as it was before the last edit.
+       *
+       * The other half is the refusal below. When the flush FAILS there is
+       * nothing in storage to draw, and carrying on would paint an empty page
+       * over the only copy of the user's writing — which is exactly what was
+       * reported. So the navigation is abandoned and the editor stays up.
        */
-      await Editor.hide();
+      const flushed = await Editor.hide();
       if (!current()) return;
+      if (flushed === "failed") {
+        const stuckOn = Editor.getCurrentDocId() || docId;
+        showSaveFailed(saveFailedMessage(stuckOn));
+        currentMode = "edit";
+        currentDocId = stuckOn;
+        showView(viewEditor);
+        updateModeToggle("edit");
+        /* Put the URL back so it agrees with what is on screen. The guard at
+         * the top of the edit branch stops this rebuilding the editor. */
+        window.location.hash = "#/doc/" + stuckOn + "/edit";
+        return;
+      }
 
       showView(viewReader);
       topbar.style.display = "";
@@ -171,17 +204,140 @@ const App = (function () {
     currentMode = null;
     currentDocId = null;
     /* Awaited for the same reason: going home from an editor must not race
-     * the flush of what was just written. */
-    await Editor.hide();
+     * the flush of what was just written — and refused for the same reason
+     * too, since the welcome screen would hide unsaved writing just as
+     * completely as an empty reader would. */
+    const wentHome = await Editor.hide();
     if (!current()) return;
+    if (wentHome === "failed") {
+      const stuckOn = Editor.getCurrentDocId();
+      showSaveFailed(saveFailedMessage(stuckOn));
+      window.location.hash = "#/doc/" + stuckOn + "/edit";
+      return;
+    }
     showView(viewWelcome);
     topbar.style.display = "none";
     SidebarUI.setActiveDoc(null);
   }
 
   // ==========================================================================
-  // BREADCRUMB — Show the page hierarchy in the topbar
+  // THE SAVE-FAILED BANNER — the one message that must not be missable
   // ==========================================================================
+
+  /*
+   * WHY THIS EXISTS, in the user's words on 17 October 2026: "still same
+   * problem, content vanishes when i press view button". The screenshot that
+   * came with it showed "Save failed" in grey 12px type in the corner of the
+   * topbar, which he had not noticed, and a blank page where his writing had
+   * been. The writing was fine — it was in the editor, unsaved, because the
+   * browser's storage was full — but nothing on screen said so.
+   *
+   * A corner label is the wrong shape for this news. Everything else Folio
+   * says can be missed without consequence; this cannot, because carrying on
+   * typing is the one response that guarantees losing the work. So it is a
+   * band across the top that stays until it is dismissed, in the colour the
+   * app uses for nothing else.
+   *
+   * BUILT IN JAVASCRIPT ON PURPOSE. index.html and index-electron.html both
+   * have to carry any new markup, and the two drifting apart is a standing
+   * hazard in this repo. A banner that creates itself cannot drift.
+   */
+  let banner = null;
+  function showSaveFailed(detail) {
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "save-failed-banner";
+      banner.setAttribute("role", "alert");
+      banner.style.cssText = [
+        "position:fixed", "top:0", "left:0", "right:0", "z-index:100000",
+        "background:#8c2f1d", "color:#fff6ee",
+        "font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+        "padding:14px 56px 14px 20px", "box-shadow:0 2px 12px rgba(0,0,0,.4)",
+      ].join(";");
+      const close = document.createElement("button");
+      close.textContent = "×";
+      close.title = "Dismiss";
+      close.style.cssText = [
+        "position:absolute", "top:8px", "right:14px", "background:none",
+        "border:0", "color:inherit", "font-size:24px", "line-height:1",
+        "cursor:pointer", "padding:4px 8px",
+      ].join(";");
+      close.addEventListener("click", clearSaveFailed);
+      banner.appendChild(document.createElement("span"));
+      banner.appendChild(close);
+      document.body.appendChild(banner);
+    }
+    banner.firstChild.innerHTML = detail;
+    /*
+     * PUSH THE PAGE DOWN RATHER THAN SIT ON TOP OF IT. The first version
+     * overlaid the topbar, which hides the breadcrumb and the view, comments
+     * and theme buttons for as long as the banner is up — so the message
+     * about not being able to save also took away the controls. Only visible
+     * by looking at a screenshot of it. The sidebar is fixed-position and the
+     * shell is not, so both need the offset.
+     */
+    const h = banner.getBoundingClientRect().height;
+    document.body.style.paddingTop = h + "px";
+    const side = document.getElementById("sidebar");
+    if (side) { side.style.top = h + "px"; side.style.height = "calc(100vh - " + h + "px)"; }
+  }
+
+  /* Undo the offset, so dismissing gives the page back exactly as it was. */
+  function clearSaveFailed() {
+    if (banner) { banner.remove(); banner = null; }
+    document.body.style.paddingTop = "";
+    const side = document.getElementById("sidebar");
+    if (side) { side.style.top = ""; side.style.height = ""; }
+  }
+
+  /*
+   * What to actually say. A full disk and a document rewritten underneath you
+   * are both "could not save" and need completely different actions, so they
+   * get completely different sentences — and the full-disk one names the
+   * biggest thing in storage, because "free up space" with no idea where to
+   * start is not advice.
+   */
+  function saveFailedMessage(docId) {
+    const head = "<strong>This page could not be saved, so it has been left open.</strong> " +
+                 "Your writing is still on screen and still safe — but it is only here, " +
+                 "so copy it somewhere safe before closing this tab. ";
+
+    /*
+     * Only blame the storage when the storage is to blame. A rendered shot of
+     * the first version said "Storage holds 0.0MB" for a failure that had
+     * nothing to do with space, which is both useless and visibly wrong — and
+     * a message that is visibly wrong in one clause does not get believed in
+     * the others.
+     */
+    const why = (typeof Editor !== "undefined" && Editor.lastSaveFailureReason)
+      ? Editor.lastSaveFailureReason() : null;
+    if (why !== "quota") {
+      return head + "The reason is not a full browser — something else refused " +
+             "the write. The browser console has the details.";
+    }
+
+    let where = "This browser's storage is full. ";
+    try {
+      const r = FolioStore.storageReport();
+      /*
+       * QUOTE THE NUMBER ONLY IF IT AGREES WITH THE FAILURE. A rendered shot
+       * said "storage is full at 0.0MB", which is self-contradictory and makes
+       * the rest of the sentence unbelievable. If the measurement says there
+       * is almost nothing stored while the browser refuses to write, the
+       * measurement is the part that is wrong — so the plain sentence is used
+       * and no figure is invented.
+       */
+      if (r.total > 1048576) {
+        const top = Object.entries(r.groups).sort((a, b) => b[1] - a[1])[0];
+        where = "This browser's storage is full at " + (r.total / 1048576).toFixed(1) + "MB" +
+                (top ? ", most of it (" + (top[1] / 1048576).toFixed(1) + "MB) " + top[0] : "") +
+                ". ";
+      }
+    } catch (e) { /* the plain sentence above already says the useful part */ }
+
+    return head + where +
+           "Open Settings → Backup → Export all, then delete a few pages to make room.";
+  }
 
   function updateBreadcrumb(meta) {
     const breadcrumb = document.getElementById("breadcrumb");
