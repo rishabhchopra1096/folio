@@ -43,7 +43,56 @@ const App = (function () {
   // ROUTER — Parse the URL hash and switch to the right view
   // ==========================================================================
 
-  function route() {
+  /*
+   * WHY THIS IS ASYNC, AND WHY IT COUNTS ITS OWN CALLS.
+   *
+   * Reported 17 October 2026: "when i paste the text, it's visible in edit
+   * mode, but vanishes in view mode." Two separate faults, both here, and
+   * both long-standing — a probe reproduced them in code six weeks older.
+   *
+   * FAULT ONE, the one that was reported. Editor.hide() is an async function:
+   * it flushes the editor to storage with `await persistContent()`, which in
+   * turn awaits Editor.js's own save(). This function used to call it WITHOUT
+   * awaiting, then read storage in the same synchronous turn — so the reader
+   * drew the revision from BEFORE the paste. Nothing was lost; the screen was
+   * one revision behind, and a reload would have shown the text. But a person
+   * who pastes and switches to read mode has no way to know that.
+   *
+   * FAULT TWO, found while diagnosing the first, and worse. The edit branch
+   * never flushed at all, and openEditor() destroys the previous Editor.js
+   * instance without saving it. So clicking from one page's editor straight
+   * into another page's editor really did destroy whatever had been typed in
+   * the first within the last second — gone from storage, not merely undrawn.
+   * Awaiting the flush here fixes both, and it has to be HERE rather than
+   * inside openEditor, which reassigns currentDocId to the new document
+   * before that destroy — a flush added there would write the first page's
+   * content under the second page's id.
+   *
+   * THE TOKEN, AND AN HONEST NOTE ABOUT IT. Making this async opens a race it
+   * did not have before: two quick navigations both await, and whichever
+   * resumes last paints its view over the newer one. Each call takes a ticket
+   * and gives up after an await if a newer call has started.
+   *
+   * That guard is UNPROVEN and is kept as insurance, not as a fix for
+   * anything observed. test/browser/routerace.probe.html tried three times to
+   * catch its removal — including wrapping the editor's save() to take 600ms
+   * and navigating again 50ms into that window — and every attempt passed
+   * with the guard disabled. The reason is that every branch below has
+   * exactly one await and it is the same call: a second navigation arriving
+   * mid-flush finds the editor still alive, because the teardown happens
+   * after that await, so it takes the slow path too and its own timer was
+   * started later. A later call cannot overtake an earlier one.
+   *
+   * It stays because it costs three lines and the failure it prevents — the
+   * wrong page on screen with the right URL in the bar — is nasty and silent.
+   * If a future await with different timing is added below, this is already
+   * handled. But it should not be counted as tested.
+   */
+  let routeToken = 0;
+
+  async function route() {
+    const token = ++routeToken;
+    const current = () => token === routeToken;
     const hash = window.location.hash || "#/";
 
     // Clean up previous view state
@@ -58,6 +107,14 @@ const App = (function () {
       const docId = editMatch[1];
       const doc = FolioStore.getDocument(docId);
       if (!doc) { window.location.hash = "#/"; return; }
+
+      /*
+       * Flush and tear down the editor we are leaving BEFORE opening the next
+       * one. Without this, moving between two pages' editors loses the last
+       * second of work on the first.
+       */
+      await Editor.hide();
+      if (!current()) return;
 
       currentMode = "edit";
       currentDocId = docId;
@@ -83,8 +140,14 @@ const App = (function () {
       currentMode = "read";
       currentDocId = docId;
 
-      // Must hide editor before showing reader (cleanup Editor.js)
-      Editor.hide();
+      /*
+       * AWAITED, and that is the whole fix for the reported bug. hide()
+       * flushes the editor to storage asynchronously; renderDocument() below
+       * reads that storage. Unawaited, the read happened first and the reader
+       * drew the text as it was before the last edit.
+       */
+      await Editor.hide();
+      if (!current()) return;
 
       showView(viewReader);
       topbar.style.display = "";
@@ -107,7 +170,10 @@ const App = (function () {
     // Default: Welcome / Home
     currentMode = null;
     currentDocId = null;
-    Editor.hide();
+    /* Awaited for the same reason: going home from an editor must not race
+     * the flush of what was just written. */
+    await Editor.hide();
+    if (!current()) return;
     showView(viewWelcome);
     topbar.style.display = "none";
     SidebarUI.setActiveDoc(null);
