@@ -44,6 +44,12 @@ async function main() {
 
   const w = f.contentWindow, d = f.contentDocument;
 
+  /* Pages are stored COMPRESSED, so a raw read finds no text in them. */
+  const storedOf = (id) => {
+    try { return w.eval('JSON.stringify(FolioStore.readPage("' + id + '"))') || ""; }
+    catch (e) { return ""; }
+  };
+
   /*
    * Count hashchange events the app itself would receive. A second listener on
    * the same event sees exactly what the router's listener sees.
@@ -98,7 +104,7 @@ async function main() {
   ok("...and the URL agrees with it", w.location.hash === "#/doc/" + B,
      w.location.hash);
   ok("...and the edit that had to be flushed still reached storage",
-     (w.localStorage.getItem("folio_doc_" + A) || "").includes("MAKES THE FLUSH TAKE REAL TIME"),
+     storedOf(A).includes("MAKES THE FLUSH TAKE REAL TIME"),
      "the flush was lost");
 
   // ────────────────────────────────────────────────────────────────────────
@@ -165,7 +171,7 @@ async function main() {
      " — crumb=" + crumb2.trim());
 
   ok("...and the slow flush still landed, so nothing was traded away for it",
-     (w.localStorage.getItem("folio_doc_" + A) || "").includes("WRITTEN WHILE THE SAVE IS SLOW"),
+     storedOf(A).includes("WRITTEN WHILE THE SAVE IS SLOW"),
      "the 600ms flush was abandoned and the text lost");
 
   say("DONE");

@@ -1,0 +1,304 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pages are squeezed, and come back out identical</title>
+<!--
+  THE SITUATION THIS IS FOR, measured on his real browser on 17 October 2026:
+  localStorage held exactly 10.00MB, which is the ceiling Chrome gives one
+  origin, and every save was refused. 76 pages holding 7.49MB, no images, just
+  a lot of writing.
+
+  Editor.js stores blocks as JSON — repeated field names and punctuation
+  wrapped around English prose — and that compresses by about 84%. Compacting
+  the pages is the difference between a browser that cannot save and one that
+  is a third full.
+
+  WHAT MUST BE TRUE, in order of how badly it would hurt to get wrong:
+
+    1. EVERY PAGE COMES BACK EXACTLY. A page stored in a form that cannot be
+       read is worse than any amount of wasted space. Checked character for
+       character, including the awkward content — emoji, accents, quotes,
+       newlines, the lot.
+    2. IT WORKS FROM A FULL DISK, which is the only state that makes it
+       necessary. If it needed room to free room it would be useless.
+    3. IT IS SAFE TO INTERRUPT. Half-compacted storage must be entirely
+       readable, because a tab closed mid-run is not a rare event.
+    4. SAVING WORKS AGAIN AFTERWARDS. The actual point.
+
+  WHAT THIS DOES NOT PROVE, so that nobody reads it as covering more than it
+  does. Two guards in compactStorage survived having their mutations applied:
+  the read-back-from-disk check after each write, and collecting the key list
+  before writing rather than walking live. Both are defensive against things
+  no browser here does on demand — a silently refused write, and a key set
+  that changes mid-walk — and both say so where they live in js/store.js.
+  They are kept, and they are not counted as tested.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/*
+ * Prose, not random characters. Random data does not compress and would make
+ * this probe report a ratio no real page could ever achieve — the opposite of
+ * a useful test. This is the shape of what he actually writes.
+ */
+const SENTENCES = [
+  "She is not price-sensitive. She is vision-sensitive.",
+  "The globe is a destination with no journey, and the passport a container with no reason to fill it.",
+  "What she cannot see is that functioning and compelling are different things.",
+  "The kid who opens the app for the third time has the same experience as the kid who opened it for the first.",
+  "Every lever we have discussed is a component of one missing thing: the story.",
+];
+/* Deliberately awkward: an emoji, an accent, a curly quote, a straight quote,
+ * a newline and a backslash — the characters most likely to survive a naive
+ * round trip badly. */
+const AWKWARD = "Pokémon “GO” — a \"quoted\" line\nwith a newline and a \\ backslash 🎮 and an ümlaut.";
+
+function makePage(n, paras) {
+  const blocks = [{ type: "header", data: { text: "Page " + n, level: 1 } }];
+  for (let i = 0; i < paras; i++) {
+    blocks.push({ type: "paragraph", data: {
+      text: SENTENCES[i % SENTENCES.length] + " (" + n + "." + i + ") " + AWKWARD } });
+  }
+  return JSON.stringify({ time: Date.now(), blocks: blocks });
+}
+
+async function main() {
+  const now = new Date().toISOString();
+  /*
+   * Write the pages RAW, bypassing FolioStore, so they land uncompressed —
+   * which is the state his browser is in and the state compaction has to
+   * start from. Going through the app would compress them on the way in and
+   * the probe would be testing nothing.
+   */
+  const docs = [];
+  let written = 0;
+  for (let i = 0; i < 40; i++) {
+    const id = "doc_pack_" + i;
+    const body = makePage(i, 60);
+    try { localStorage.setItem("folio_doc_" + id, body); } catch (e) { break; }
+    localStorage.setItem("folio_comments_" + id, "[]");
+    localStorage.setItem("folio_highlights_" + id, "[]");
+    docs.push({ id: id, title: "Page " + i, icon: "", parentId: null, order: i,
+                createdAt: now, updatedAt: now });
+    written++;
+  }
+  /*
+   * A page with nothing in it, which is what pressing New Page creates. Its
+   * JSON is 22 characters and compressing it produces 22 — so the branch that
+   * keeps whichever is SMALLER has to fire here. Without this fixture that
+   * branch never runs and a mutation storing the bigger version passes.
+   */
+  const TINY = "doc_pack_tiny";
+  /* time:1 rather than Date.now(): a thirteen-digit timestamp gives the
+   * compressor something to chew on and the result comes out smaller, so the
+   * branch under test never fires. The shortest realistic empty page is the
+   * one that exercises it. */
+  const tinyBody = JSON.stringify({ time: 1, blocks: [] });
+  localStorage.setItem("folio_doc_" + TINY, tinyBody);
+  localStorage.setItem("folio_comments_" + TINY, "[]");
+  localStorage.setItem("folio_highlights_" + TINY, "[]");
+  docs.push({ id: TINY, title: "A brand new page", icon: "", parentId: null,
+              order: 999, createdAt: now, updatedAt: now });
+
+  localStorage.setItem("folio_documents", JSON.stringify(docs));
+
+  /* Now fill whatever is LEFT, so the app starts against a genuinely full
+   * disk — the condition that makes compaction necessary. */
+  const fill = (function () {
+    let n = 0, last = "never threw";
+    const sizes = [512 * 1024, 64 * 1024, 8 * 1024, 1024, 128, 16];
+    for (const size of sizes) {
+      const chunk = "x".repeat(size);
+      for (let g = 0; g < 400; g++) {
+        try { localStorage.setItem("__cfill_" + (n++), chunk); }
+        catch (e) { last = e.name; n--; break; }
+      }
+    }
+    return last;
+  })();
+
+  const sizeOf = () => {
+    let t = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      t += (k.length + (localStorage.getItem(k) || "").length) * 2;
+    }
+    return t;
+  };
+
+  /* Remember exactly what every page said, to compare after. */
+  const originals = {};
+  docs.forEach((d) => { originals[d.id] = localStorage.getItem("folio_doc_" + d.id); });
+
+  const beforeMB = sizeOf() / 1048576;
+  say("staged " + written + " pages; storage at " + beforeMB.toFixed(2) + "MB; fill ended with " + fill);
+  ok("the disk really is full before the app starts", fill !== "never threw", fill);
+  ok("...and there are enough pages to be worth compacting", written >= 20, String(written));
+
+  /* Free a little so the app itself can start and write its own settings. */
+  for (let i = 0; i < 4; i++) localStorage.removeItem("__cfill_" + i);
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1100px;height:760px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + docs[0].id;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(4000);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  const afterMB = sizeOf() / 1048576;
+  say("after startup: " + afterMB.toFixed(2) + "MB (was " + beforeMB.toFixed(2) + "MB)");
+
+  // ── 1. EVERY PAGE COMES BACK EXACTLY ──
+  let mismatched = [], unreadable = [];
+  docs.forEach((doc) => {
+    const back = w.eval('JSON.stringify(FolioStore.getDocument("' + doc.id + '").content)');
+    if (!back) { unreadable.push(doc.id); return; }
+    if (back !== originals[doc.id]) mismatched.push(doc.id);
+  });
+  ok("EVERY page reads back character for character",
+     mismatched.length === 0 && unreadable.length === 0,
+     "mismatched: " + mismatched.join(",") + " | unreadable: " + unreadable.join(","));
+
+  const sample = w.eval('FolioStore.getDocument("' + docs[0].id + '").content.blocks[1].data.text');
+  ok("...including emoji, accents and quotes",
+     sample.indexOf("Pokémon “GO”") !== -1 && sample.indexOf("🎮") !== -1 &&
+     sample.indexOf("ümlaut") !== -1,
+     sample.slice(0, 120));
+  ok("...and newlines and backslashes",
+     sample.indexOf("\n") !== -1 && sample.indexOf("\\") !== -1,
+     JSON.stringify(sample.slice(0, 120)));
+
+  // ── 2. IT WORKED FROM A FULL DISK, AND FREED REAL SPACE ──
+  /*
+   * MEASURED ON THE PAGES, NOT ON THE TOTAL. The first version of this
+   * assertion compared total storage before and after and passed easily —
+   * but four megabytes of that drop was this probe removing its own ballast
+   * a moment earlier, nothing to do with compaction. A total-size check here
+   * would have passed with compaction disabled entirely.
+   */
+  const pagesNow = (function () {
+    let t = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k.indexOf("folio_doc_") === 0) t += (localStorage.getItem(k) || "").length * 2;
+    }
+    return t;
+  })();
+  let pagesBefore = 0;
+  Object.values(originals).forEach((v) => { pagesBefore += v.length * 2; });
+  const ratio = 100 - (pagesNow / pagesBefore * 100);
+  say("pages went from " + (pagesBefore / 1048576).toFixed(2) + "MB to " +
+      (pagesNow / 1048576).toFixed(2) + "MB — " + ratio.toFixed(0) + "% smaller");
+  ok("compaction actually ran: the pages are substantially smaller",
+     ratio > 50 && pagesNow < pagesBefore,
+     "pages went from " + (pagesBefore / 1048576).toFixed(2) + "MB to " +
+     (pagesNow / 1048576).toFixed(2) + "MB, only " + ratio.toFixed(0) + "% smaller");
+  ok("...and the saving is in the range prose actually compresses to",
+     ratio > 70,
+     "only " + ratio.toFixed(0) + "% — far below the ~84% real pages achieve, " +
+     "so check the fixture is prose and not random characters");
+
+  // ── 3. THE PAGES ARE ACTUALLY STORED COMPRESSED ──
+  const marked = (function () {
+    let n = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k.indexOf("folio_doc_") === 0 &&
+          (localStorage.getItem(k) || "").indexOf("\u0001LZ:") === 0) n++;
+    }
+    return n;
+  })();
+  /* Every page EXCEPT the deliberately tiny one, which is left plain because
+   * compressing it would make it bigger. */
+  ok("every page worth compressing carries the compressed marker",
+     marked === written,
+     marked + " of " + written + " prose pages are marked compressed " +
+     "(the empty page is expected to be plain and is checked separately)");
+
+  // ── 3b. A PAGE THAT WOULD GROW IS LEFT ALONE ──
+  /*
+   * Compression is a means, not an end. A page that comes out bigger is
+   * stored as it was — otherwise pressing New Page forty times would cost
+   * more space with compression than without it.
+   */
+  const tinyStored = localStorage.getItem("folio_doc_" + TINY) || "";
+  ok("a page that compresses no smaller is left uncompressed",
+     tinyStored.indexOf("\u0001LZ:") !== 0,
+     "an empty page was stored compressed, which makes it bigger: " +
+     JSON.stringify(tinyStored.slice(0, 40)));
+  ok("...and still reads back correctly",
+     w.eval('JSON.stringify(FolioStore.getDocument("' + TINY + '").content)') === tinyBody,
+     "the empty page did not survive");
+
+  // ── 3c. IF COMPRESSION MISBEHAVES, THE PAGE IS STORED PLAIN ──
+  /*
+   * The guard that matters most and is hardest to reach: packValue
+   * decompresses what it just compressed and compares, so a page is never
+   * stored in a form that cannot be read back. lz-string never fails on real
+   * data, so the only way to exercise it is to make compression lie — which
+   * is exactly what a corrupted or half-loaded library would do.
+   */
+  w.eval('window.__realCompress = LZString.compressToUTF16;' +
+         'LZString.compressToUTF16 = function (s) { return "CORRUPTED"; };');
+  const GUARD = "doc_pack_guard";
+  w.eval('FolioStore.createDocument("Guard page", { time: 1, blocks: [' +
+         '{ type: "paragraph", data: { text: "' + SENTENCES[0] + ' guard guard guard" } }] }, null)');
+  const guardKey = (function () {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k.indexOf("folio_doc_") === 0 &&
+          (localStorage.getItem(k) || "").indexOf("guard guard guard") !== -1) return k;
+    }
+    return null;
+  })();
+  ok("a page whose compression would not round-trip is stored UNCOMPRESSED",
+     !!guardKey, "the page was stored as corrupted data and is now unreadable");
+  if (guardKey) {
+    ok("...and is still perfectly readable",
+       (localStorage.getItem(guardKey) || "").indexOf("CORRUPTED") === -1,
+       "the corrupted output was written to disk");
+  }
+  w.eval('LZString.compressToUTF16 = window.__realCompress;');
+
+  // ── 4. SAVING WORKS AGAIN ──
+  w.location.hash = "#/doc/" + docs[0].id + "/edit";
+  await wait(2500);
+  const inst = w.eval("Editor.getInstance()");
+  ok("the editor opened on a compacted page", !!inst, "no instance");
+  if (inst) {
+    await inst.blocks.insert("paragraph", { text: "SAVED AFTER THE SQUEEZE" });
+    await wait(2200);
+  }
+  const saved = (localStorage.getItem("folio_doc_" + docs[0].id) || "");
+  const readBack = w.eval('JSON.stringify(FolioStore.getDocument("' + docs[0].id + '").content)');
+  ok("SAVING WORKS AGAIN — which is the whole point",
+     readBack.indexOf("SAVED AFTER THE SQUEEZE") !== -1,
+     "the edit still did not reach storage: " + saved.slice(0, 120));
+  ok("...and the new save is itself compressed", saved.indexOf("\u0001LZ:") === 0,
+     saved.slice(0, 60));
+  ok("...and no save-failed banner appeared", !d.getElementById("save-failed-banner"),
+     "the banner is up, so the save still failed");
+
+  // ── 5. A HALF-COMPACTED STORAGE IS STILL ENTIRELY READABLE ──
+  /*
+   * The interruption case, staged directly: put one page back in its old
+   * uncompressed form and confirm the app reads both kinds side by side. A
+   * run stopped halfway must never leave an unreadable page behind.
+   */
+  const victim = docs[1].id;
+  localStorage.setItem("folio_doc_" + victim, originals[victim]);
+  const mixedA = w.eval('JSON.stringify(FolioStore.getDocument("' + victim + '").content)');
+  const mixedB = w.eval('JSON.stringify(FolioStore.getDocument("' + docs[2].id + '").content)');
+  ok("an uncompressed page still reads after the others were compacted",
+     mixedA === originals[victim], "the old format stopped being readable");
+  ok("...alongside a compressed one, in the same storage",
+     mixedB === originals[docs[2].id], "the new format broke while mixed");
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL probe crashed -> " + (e && (e.stack || e.message))); say("DONE"); });
+</script>

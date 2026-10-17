@@ -111,7 +111,8 @@ async function main() {
   ok("the text came through", /body slam/i.test(d.querySelector("#article").textContent));
 
   // And in storage, which is what survives a reload.
-  const stored = JSON.parse(w.localStorage.getItem("folio_doc_" + DOC));
+  /* Through FolioStore: the stored value is compressed. */
+  const stored = JSON.parse(w.eval('JSON.stringify(FolioStore.readPage("' + DOC + '"))'));
   const timed = stored.blocks.filter((b) => b.type === "paragraph" && b.data && b.data.t != null);
   ok("storage holds the timed blocks", timed.length === 5, String(timed.length));
   ok("the video block survived", stored.blocks.some((b) => b.type === "video"));

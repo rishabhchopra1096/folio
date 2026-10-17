@@ -28,9 +28,14 @@ const NEW = [
   { type: "paragraph", data: { text: "NEW regenerated line two.", t: 40 } },
 ];
 
+/* Pages are stored COMPRESSED since 17 October 2026, so reading the raw
+ * value and searching it for text finds nothing. Read through FolioStore,
+ * which is what the app itself does and what the user actually gets. */
 const blocksOf = (w) => {
-  const raw = w.localStorage.getItem("folio_doc_" + DOC);
-  return raw ? (JSON.parse(raw).blocks || []) : [];
+  try {
+    const c = JSON.parse(w.eval('JSON.stringify(FolioStore.readPage("' + DOC + '"))') || "null");
+    return c ? (c.blocks || []) : [];
+  } catch (e) { return []; }
 };
 const textOf = (w) => blocksOf(w).map((b) => (b.data && b.data.text) || "").join(" | ");
 const titleOf = (w) =>

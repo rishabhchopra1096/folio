@@ -19,7 +19,13 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const DOC = "doc_saves_1";
 
-const stored = (w) => w.localStorage.getItem("folio_doc_" + DOC) || "";
+/* Pages are stored COMPRESSED since 17 October 2026, so reading the raw
+ * value and searching it for text finds nothing. Read through FolioStore,
+ * which is what the app itself does and what the user actually gets. */
+const stored = (w) => {
+  try { return w.eval('JSON.stringify(FolioStore.readPage("' + DOC + '"))') || ""; }
+  catch (e) { return ""; }
+};
 const titleOf = (w) =>
   (JSON.parse(w.localStorage.getItem("folio_documents") || "[]")
     .find((d) => d.id === DOC) || {}).title;
@@ -120,7 +126,11 @@ async function newPageScenario(w, d) {
   await inst.blocks.insert("paragraph", { text: "PASTED BODY PARAGRAPH." });
   await wait(2000);
 
-  const raw = () => w.localStorage.getItem("folio_doc_" + NEW_DOC) || "";
+  /* Through FolioStore: the stored value is compressed. */
+  const raw = () => {
+    try { return w.eval('JSON.stringify(FolioStore.readPage("' + NEW_DOC + '"))') || ""; }
+    catch (e) { return ""; }
+  };
   ok("content pasted into a NEW page is saved",
      /PASTED DOCUMENT TITLE/.test(raw()) && /PASTED BODY PARAGRAPH/.test(raw()),
      raw().slice(0, 200));

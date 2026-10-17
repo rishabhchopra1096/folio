@@ -88,7 +88,10 @@ async function main() {
   hls.forEach((h) => { h.startNodeIndex += 9; h.endNodeIndex += 9; });
   w.localStorage.setItem("folio_highlights_" + DOC, JSON.stringify(hls));
 
-  const doc = JSON.parse(w.localStorage.getItem("folio_doc_" + DOC));
+  /* Read through FolioStore (the value is compressed); the write below
+   * deliberately stays raw and plain, which also proves a page written in
+   * the old uncompressed form is still read correctly. */
+  const doc = JSON.parse(w.eval('JSON.stringify(FolioStore.readPage("' + DOC + '"))'));
   doc.blocks = doc.blocks.filter((b) => b.data.text !== GONE);
   doc.blocks.unshift({ type: "paragraph", data: { text: "A brand new paragraph on top." } });
   w.localStorage.setItem("folio_doc_" + DOC, JSON.stringify(doc));

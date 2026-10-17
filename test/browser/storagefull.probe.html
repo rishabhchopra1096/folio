@@ -79,10 +79,19 @@ async function main() {
      * Stepping down to 16 bytes exhausts it properly.
      */
     var n = 0, lastError = "never threw";
-    var sizes = [512 * 1024, 64 * 1024, 8 * 1024, 1024, 128, 16];
+    var sizes = [512 * 1024, 64 * 1024, 8 * 1024, 1024, 128, 16, 1];
     for (var s = 0; s < sizes.length; s++) {
       var chunk = "x".repeat(sizes[s]);
-      for (var guard = 0; guard < 400; guard++) {
+      /*
+       * EACH SIZE RUNS UNTIL IT ACTUALLY THROWS, not for a fixed number of
+       * tries. A 400-try cap left a few bytes free whenever the stage before
+       * it had freed more than the cap could reabsorb, and the probe then
+       * reported "STILL HAS ROOM" at random — testing a disk that was not
+       * quite full, which is the one thing it exists to avoid. The outer
+       * bound is high enough to be unreachable and low enough to stop a
+       * runaway loop.
+       */
+      for (var guard = 0; guard < 20000; guard++) {
         try { localStorage.setItem("__ballast_" + (n++), chunk); }
         catch (e) { lastError = e.name; n--; break; }
       }
@@ -214,7 +223,8 @@ async function main() {
      readerText.includes(WRITING) && readerText.includes("ADDED AFTER MAKING ROOM"),
      readerText.replace(/\s+/g, " ").slice(0, 200));
   ok("...and the writing from before the disk filled was not lost on the way",
-     (w.localStorage.getItem("folio_doc_" + DOC) || "").includes(WRITING),
+     (function () { try { return w.eval('JSON.stringify(FolioStore.readPage("' + DOC + '"))')
+       .includes(WRITING); } catch (e) { return false; } })(),
      "the text never reached storage even after room was made");
 
   // ────────────────────────────────────────────────────────────────────────

@@ -34,7 +34,17 @@ const DOC = "doc_paste_vanish";
 const PASTED = "PASTED SENTENCE THAT MUST SURVIVE THE VIEW SWITCH";
 const SECOND = "A SECOND PASTED PARAGRAPH";
 
-const stored = (w) => w.localStorage.getItem("folio_doc_" + DOC) || "";
+/* Pages are stored COMPRESSED since 17 October 2026, so reading the raw
+ * value and searching it for text finds nothing. Read through FolioStore,
+ * which is what the app itself does and what the user actually gets. */
+const stored = (w) => {
+  try { return w.eval('JSON.stringify(FolioStore.readPage("' + DOC + '"))') || ""; }
+  catch (e) { return ""; }
+};
+const storedOf = (w, id) => {
+  try { return w.eval('JSON.stringify(FolioStore.readPage("' + id + '"))') || ""; }
+  catch (e) { return ""; }
+};
 /* What is actually DRAWN in read mode, which is a different question from what
  * is in storage — and the difference between the two readings above. */
 const onScreen = (d) => {
@@ -189,8 +199,8 @@ async function main() {
   w.location.hash = "#/doc/" + DOC2 + "/edit";
   await wait(2500);
 
-  const firstDoc = w.localStorage.getItem("folio_doc_" + DOC) || "";
-  const secondDoc = w.localStorage.getItem("folio_doc_" + DOC2) || "";
+  const firstDoc = storedOf(w, DOC);
+  const secondDoc = storedOf(w, DOC2);
   say("DIAGNOSIS case 4: kept=" + firstDoc.includes(INTO_FIRST) +
       " leaked-into-other=" + secondDoc.includes(INTO_FIRST));
   ok("editing a SECOND page keeps what was typed into the first",
@@ -242,8 +252,7 @@ async function main() {
      w.location.hash === "#/doc/" + DOC2 && crumb.includes("Another Page"),
      "hash=" + w.location.hash + " crumb=" + crumb.trim());
   ok("...and the edit made before all that still reached storage",
-     (w.localStorage.getItem("folio_doc_" + DOC) || "")
-       .includes("SOMETHING TO MAKE THE FLUSH REAL"),
+     storedOf(w, DOC).includes("SOMETHING TO MAKE THE FLUSH REAL"),
      "the flush was skipped by the abandoned navigation");
 
   // ────────────────────────────────────────────────────────────────────────
