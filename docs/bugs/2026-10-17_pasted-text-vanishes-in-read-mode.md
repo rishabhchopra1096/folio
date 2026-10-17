@@ -13,7 +13,7 @@
 
 ## Document map
 
-**Symptom and first question** is what he saw and whether today's work caused it · **The two faults** is what was actually wrong in each case · **Why the fix goes where it goes** explains the one non-obvious placement decision · **What the fix could have broken** is the three regressions checked for deliberately · **The mutation that escaped** is the guard that could not be proven and why it was kept anyway · **Lessons** is what to carry forward.
+**Symptom and first question** is what he saw and whether today's work caused it · **The two faults** is what was actually wrong in each case · **Why the fix goes where it goes** explains the one non-obvious placement decision · **What the fix could have broken** is the three regressions checked for deliberately · **The mutation that escaped** is the guard that could not be proven and why it was kept anyway · **The second report** is the bug the screenshot revealed underneath the first · **What the storage actually held** is the measured contents of his browser and the compression that fixed it · **Lessons** is what to carry forward.
 
 ## Symptom, and the first question to answer
 
