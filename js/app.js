@@ -457,6 +457,31 @@ const App = (function () {
      * warning — Safari after about a week of not visiting. Asking first is the
      * difference between "my notes are gone" and not.
      */
+    /*
+     * SQUEEZE THE PAGES BEFORE ANYTHING ELSE RUNS.
+     *
+     * On 17 October 2026 storage hit 10.00MB — Chrome's ceiling for one
+     * origin — and every save started failing. Page content was 7.49MB of
+     * that, and Editor.js JSON wrapped around prose compresses by about
+     * 84%, so compacting it is the difference between a browser that refuses
+     * to save and one that is a third full.
+     *
+     * It runs FIRST because every module below reads pages, and a module that
+     * read one mid-compaction would be reading a value in the middle of being
+     * replaced. It is synchronous for the same reason.
+     *
+     * It is also cheap after the first run: already-compressed pages are
+     * recognised by their marker and skipped, so this costs a walk of the
+     * keys and nothing more.
+     */
+    try {
+      FolioStore.compactStorage();
+    } catch (err) {
+      /* Never let a space optimisation stop the app from starting. The worst
+       * case without it is the storage staying as large as it was. */
+      console.error("[folio] could not compact storage at startup", err);
+    }
+
     FolioStore.requestDurableStorage().then(function (state) {
       if (state === "best-effort") {
         console.warn("[folio] The browser would not promise to keep this data. " +

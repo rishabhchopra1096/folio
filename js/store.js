@@ -82,11 +82,101 @@ const FolioStore = (function () {
     return `${prefix}_${timestamp}_${random}`;
   }
 
+  // ==========================================================================
+  // COMPRESSION — fitting a notebook into a browser's five-inch shelf
+  // ==========================================================================
+  /*
+   * WHY THIS EXISTS. On 17 October 2026 saving stopped working: localStorage
+   * held exactly 10.00MB, which is the ceiling Chrome allows one origin, and
+   * every write was refused. Measured at the time: 76 pages holding 7.49MB,
+   * plus 1.22MB of comments and 0.88MB of highlights. No images at all — just
+   * a lot of writing.
+   *
+   * Editor.js stores its blocks as JSON, which is mostly repeated punctuation
+   * and field names wrapped around English prose, and that compresses
+   * extremely well. His largest page, 977KB, comes out at 157KB — 84% smaller.
+   * Across all 76 pages it buys back something close to six megabytes, which
+   * is the difference between a browser that refuses to save and one that is
+   * a third full.
+   *
+   * WHY lz-string RATHER THAN ANYTHING CLEVERER. It is synchronous. Every
+   * module in this app reads from FolioStore expecting an answer immediately,
+   * and CompressionStream — the modern, faster option — is asynchronous and
+   * would turn every one of those reads into a promise. That is a rewrite of
+   * the whole app to save a few milliseconds nobody would notice.
+   *
+   * WHY ONLY PAGES. Comments and highlights are read on every render and
+   * every selection, and they came to 2.1MB between them against the pages'
+   * 7.49MB. Compressing the pages alone solves the problem with the smallest
+   * surface; the other two can follow if they ever need to.
+   */
+
+  /*
+   * The marker. A stored value is either plain JSON — which always begins with
+   * "{" or "[" — or this prefix followed by compressed text. Using a prefix
+   * rather than a separate flag means an old uncompressed page and a new
+   * compressed one can sit side by side in storage and both be read, which is
+   * what makes the migration safe to interrupt.
+   *
+   * The character is one that JSON can never begin with.
+   */
+  const LZ_MARK = "\u0001LZ:";
+
+  /* Only page content is compressed. See the note above for why. */
+  function shouldCompress(key) {
+    return String(key).indexOf("folio_doc_") === 0;
+  }
+
+  function lzAvailable() {
+    return typeof LZString !== "undefined" &&
+           typeof LZString.compressToUTF16 === "function";
+  }
+
+  /*
+   * Compress, and PROVE IT CAME BACK before handing it over.
+   *
+   * The verification costs one decompress — about 20ms on the largest page
+   * here — and it buys the only guarantee that matters: a page is never
+   * stored in a form that cannot be read back. If anything at all goes wrong,
+   * the original text is returned and stored uncompressed, which is bigger
+   * but never unreadable. Losing the space is recoverable. Losing a page is
+   * not.
+   */
+  function packValue(key, text) {
+    if (!shouldCompress(key) || !lzAvailable()) return text;
+    try {
+      const packed = LZ_MARK + LZString.compressToUTF16(text);
+      if (unpackValue(packed) !== text) {
+        console.warn("[folio] compression did not round-trip for " + key +
+                     " — storing it uncompressed instead.");
+        return text;
+      }
+      /* A tiny page can compress to something LARGER than it started.
+       * Keeping whichever is smaller costs one comparison. */
+      return packed.length < text.length ? packed : text;
+    } catch (err) {
+      console.warn("[folio] could not compress " + key + ", storing it as-is", err);
+      return text;
+    }
+  }
+
+  function unpackValue(raw) {
+    if (typeof raw !== "string" || raw.indexOf(LZ_MARK) !== 0) return raw;
+    if (!lzAvailable()) {
+      console.error("[folio] a page is compressed but the compression library " +
+                    "did not load — it cannot be read until it does.");
+      return null;
+    }
+    return LZString.decompressFromUTF16(raw.slice(LZ_MARK.length));
+  }
+
   // Safely read and parse JSON from localStorage, returning a fallback if missing
   function readJSON(key, fallback) {
     try {
       const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
+      if (!raw) return fallback;
+      const text = unpackValue(raw);
+      return text ? JSON.parse(text) : fallback;
     } catch {
       return fallback;
     }
@@ -107,7 +197,7 @@ const FolioStore = (function () {
    */
   function writeJSON(key, value) {
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      localStorage.setItem(key, packValue(key, JSON.stringify(value)));
     } catch (err) {
       if (isQuotaError(err)) {
         err.folioQuota = true;
@@ -134,6 +224,120 @@ const FolioStore = (function () {
            err.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
            err.code === 22 || err.code === 1014 ||
            /quota/i.test(err.message || "");
+  }
+
+  /*
+   * The stored content of one page, unpacked.
+   *
+   * EXISTS SO NOTHING OUTSIDE THIS FILE TOUCHES THE RAW VALUE. Two places in
+   * the editor used to read `folio_doc_<id>` straight out of localStorage and
+   * JSON.parse it — a staleness check and a has-it-changed check. The moment
+   * pages became compressed, both threw: the staleness check then reported
+   * every page as modified elsewhere and the editor REFUSED TO SAVE ANYTHING.
+   * The browser probes caught it; nothing else would have.
+   *
+   * Returns null when the page is missing or unreadable, which both callers
+   * already handle.
+   */
+  function readPage(id) {
+    return readJSON("folio_doc_" + id, null);
+  }
+
+  /*
+   * Squeeze every page that is still stored uncompressed.
+   *
+   * THIS HAS TO WORK FROM A FULL DISK, which is the state that makes it
+   * necessary. It does, because each page is REPLACED by a smaller value:
+   * the browser compares the new total against the quota, and the new total
+   * is always lower. The very first page compressed frees enough room for the
+   * rest.
+   *
+   * IT IS SAFE TO INTERRUPT. Pages are done one at a time, each one written
+   * before the next is read, and readJSON understands both formats — so a run
+   * that stops halfway leaves a storage full of some compressed pages and
+   * some plain ones, every one of them readable. The next run finishes the
+   * job.
+   *
+   * IT NEVER REPLACES A PAGE IT CANNOT READ BACK. packValue verifies each
+   * one, and this checks the written value as well before moving on. A page
+   * that fails either check is left exactly as it was.
+   */
+  function compactStorage() {
+    if (!lzAvailable()) {
+      console.warn("[folio] compression library not loaded; storage not compacted");
+      return { ran: false, pages: 0, before: 0, after: 0 };
+    }
+
+    /*
+     * Collect the keys FIRST, then write.
+     *
+     * An earlier comment here claimed that writing while walking reorders
+     * localStorage and pages get skipped. A mutation test disproved it:
+     * replacing the value of an EXISTING key changes no index, so walking and
+     * writing together works fine today. It is done this way because it only
+     * stays true for as long as this loop never ADDS or REMOVES a key, and
+     * that is not a property worth depending on silently.
+     */
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (shouldCompress(k)) keys.push(k);
+    }
+
+    let before = 0, after = 0, done = 0, skipped = 0;
+    keys.forEach(function (k) {
+      let raw;
+      try { raw = localStorage.getItem(k); } catch (e) { return; }
+      if (!raw) return;
+      before += raw.length * 2;
+
+      // Already compressed: nothing to do, but still count its size.
+      if (raw.indexOf(LZ_MARK) === 0) { after += raw.length * 2; return; }
+
+      const packed = packValue(k, raw);
+      if (packed === raw) { after += raw.length * 2; skipped++; return; }
+
+      try {
+        localStorage.setItem(k, packed);
+        /*
+         * Read it back from STORAGE, not from the variable.
+         *
+         * packValue has already proved the text survives a round trip in
+         * memory. This proves something different: that what localStorage
+         * actually HOLDS is that text — which a browser that silently
+         * truncated or refused the write would fail.
+         *
+         * UNPROVEN, and recorded as such rather than counted as tested. A
+         * mutation disabling this check was not caught, because no browser
+         * here fails that way on demand and packValue catches everything that
+         * can be caused deliberately. It stays because the cost is one read
+         * during a once-ever migration and the thing it guards against is a
+         * page silently becoming unreadable.
+         */
+        const check = localStorage.getItem(k);
+        if (unpackValue(check) !== raw) {
+          localStorage.setItem(k, raw);
+          console.warn("[folio] " + k + " did not read back correctly; left uncompressed");
+          after += raw.length * 2;
+          skipped++;
+          return;
+        }
+        after += packed.length * 2;
+        done++;
+      } catch (err) {
+        console.warn("[folio] could not compact " + k, err);
+        after += raw.length * 2;
+        skipped++;
+      }
+    });
+
+    const freed = (before - after) / 1048576;
+    if (done) {
+      console.log("[folio] compacted " + done + " of " + keys.length + " pages, " +
+                  "freeing " + freed.toFixed(2) + "MB" +
+                  (skipped ? " (" + skipped + " left as they were)" : ""));
+    }
+    return { ran: true, pages: done, skipped: skipped, before: before, after: after };
   }
 
   /*
@@ -949,15 +1153,27 @@ const FolioStore = (function () {
   // BACKUP / RESTORE — Export and import all data as a single JSON blob
   // ==========================================================================
 
+  /*
+   * A BACKUP IS PLAIN JSON, always.
+   *
+   * Pages are compressed in storage, and this used to JSON.parse the raw
+   * value — which throws on a compressed page and fell through to copying the
+   * compressed blob verbatim. The file still restored into this app, so
+   * nothing failed loudly; it simply stopped being readable by a person or by
+   * any other tool, which is most of what a backup is for. Unpacking here
+   * costs a moment and keeps the file what it says it is.
+   */
   function exportAll() {
     const data = {};
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (key.startsWith("folio_")) {
+        const raw = localStorage.getItem(key);
+        const text = unpackValue(raw);
         try {
-          data[key] = JSON.parse(localStorage.getItem(key));
+          data[key] = JSON.parse(text);
         } catch {
-          data[key] = localStorage.getItem(key);
+          data[key] = text;
         }
       }
     }
@@ -1019,13 +1235,17 @@ const FolioStore = (function () {
     return { added, skipped };
   }
 
-  // Helper for importAll — accept either a JSON-encoded string or a raw value
+  /*
+   * Helper for importAll — accept either a JSON-encoded string or a raw value.
+   *
+   * Goes through packValue so a restored page is compressed like any other.
+   * Without that, importing a large backup would put seven megabytes of plain
+   * JSON back into a browser that only has ten, which is how the storage
+   * filled up in the first place.
+   */
   function writeValue(key, value) {
-    if (typeof value === "string") {
-      localStorage.setItem(key, value);
-    } else {
-      localStorage.setItem(key, JSON.stringify(value));
-    }
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    localStorage.setItem(key, packValue(key, text));
   }
 
   // ==========================================================================
@@ -1070,6 +1290,8 @@ const FolioStore = (function () {
     storageEstimate,
     storageReport,
     isQuotaError,
+    compactStorage,
+    readPage,
     reorderDocument,
     isDescendantOf,
   };

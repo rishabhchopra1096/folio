@@ -474,6 +474,13 @@
     <script src="vendor/marker.umd.min.js"></script>
     <script src="vendor/marked.min.js"></script>
 
+    <!-- lz-string: squeezes page content before it reaches localStorage.
+         Vendored rather than loaded from a CDN because it must be there
+         before store.js runs, on a page that may well be offline — a page
+         that cannot decompress is a page that cannot be read at all.
+         MUST stay above js/store.js. -->
+    <script src="vendor/lz-string.min.js"></script>
+
     <!-- Folio modules -->
     <script src="js/store.js"></script>
     <script src="js/gemini.js"></script>

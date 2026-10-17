@@ -134,11 +134,20 @@ const Editor = (function () {
   let titleDirty = false;      // has the user edited the title in this editor?
   let loadedTime = 0;          // the `time` stamp of the content we loaded
 
-  /* The `time` currently in storage, or 0 if there is nothing readable. */
+  /*
+   * The `time` currently in storage, or 0 if there is nothing readable.
+   *
+   * GOES THROUGH FolioStore, NEVER STRAIGHT TO localStorage. Pages are stored
+   * compressed, so reading the raw value and JSON.parsing it throws — and
+   * because this catch returns 0, the staleness check below would then decide
+   * that every page had been rewritten by somebody else and REFUSE TO SAVE
+   * ANYTHING. That is exactly what happened when compression first went in,
+   * and only the browser probes noticed.
+   */
   function storageTime(id) {
     try {
-      const raw = localStorage.getItem(`folio_doc_${id}`);
-      return raw ? (JSON.parse(raw).time || 0) : 0;
+      const content = FolioStore.readPage(id);
+      return content ? (content.time || 0) : 0;
     } catch { return 0; }
   }
 
@@ -759,10 +768,14 @@ const Editor = (function () {
    */
   function sameAsStored(id, blocks) {
     try {
-      const raw = localStorage.getItem(`folio_doc_${id}`);
-      if (!raw) return false;
+      /* Through FolioStore for the same reason as storageTime above: the
+       * stored value is compressed and parsing it directly throws. Here the
+       * failure would be quieter — every save would think the content had
+       * changed and write regardless — but it is the same mistake. */
+      const content = FolioStore.readPage(id);
+      if (!content) return false;
       const shape = (bs) => JSON.stringify((bs || []).map((b) => [b.type, b.data]));
-      return shape(JSON.parse(raw).blocks) === shape(blocks);
+      return shape(content.blocks) === shape(blocks);
     } catch { return false; }
   }
 
