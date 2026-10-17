@@ -119,3 +119,28 @@ In the corner of the topbar, in grey 12px type, were the words **"Save failed"**
 - **Never hardcode a browser limit.** localStorage is 10MB in current Chrome and 5MB in older ones and elsewhere. Any threshold expressed as a number is wrong on some browser; trying a write is right on all of them.
 - **Fill it properly or you are not testing it.** Three attempts were needed: large chunks leave most of a chunk free, and filling after the edit lets the auto-save land while there is still room. Both versions passed while testing nothing.
 - **Render the thing and look at it.** Two real defects in the banner — covering the controls, and quoting a number that contradicted its own sentence — survived twenty-two passing assertions and died in one screenshot.
+
+## What the storage actually held, and what was done about it
+
+**Read out of his own Chrome profile rather than asked for: 10.00 MB, which is exactly Chrome's ceiling for one origin.**
+
+| Where it went | |
+|---|---|
+| Pages | 7.49 MB across 76 documents |
+| Comments | 1.22 MB |
+| Highlights | 0.88 MB |
+| Everything else | 0.41 MB |
+| Feedback screenshots | 0.00 MB |
+
+**The suspicion that the feedback box's screenshots had filled it was wrong**, and worth recording as wrong: they came to nothing, because the bytes are dropped once a note has been written out. There were no images anywhere in the storage. It was 76 documents of ordinary writing, several of them long video transcripts — the largest a 984 KB Pokémon GO walkthrough.
+
+**The fix is compression, chosen over the alternatives on measured numbers.** Editor.js stores blocks as JSON, which is repeated field names and punctuation wrapped around prose, and that compresses by about 84% — his largest page goes from 977 KB to 157 KB. Across all 76 that is close to six megabytes back without deleting a single page.
+
+- **lz-string rather than `CompressionStream`**, which is faster and built in, because it is *synchronous*. Every module reads from `FolioStore` expecting an answer immediately; the async option turns every one of those reads into a promise, which is a rewrite of the whole app to save milliseconds nobody would notice.
+- **Vendored rather than loaded from a CDN.** A page that cannot be decompressed cannot be read at all, so this must not depend on the network.
+- **Pages only.** Comments and highlights are read on every render and came to 2.1 MB between them. Compressing the pages alone solves the problem with the smallest surface.
+- **IndexedDB was the other real option** and would lift the ceiling to hundreds of megabytes. It is the right destination and it was deliberately not taken tonight: it makes every read asynchronous, and `CLAUDE.md` says not to introduce it without discussing it first.
+
+**The change broke saving, and only the browser probes noticed.** Two places in `js/editor.js` read `folio_doc_<id>` straight out of localStorage and `JSON.parse`d it. Against a compressed page that throws — and because the staleness check treats a throw as "time 0", every save then decided the page had been rewritten by somebody else and refused to write. The backup export had the same fault more quietly: it fell through to copying the compressed blob verbatim, so backups kept restoring into Folio but stopped being readable by a person or any other tool.
+
+**The lesson generalises: a storage format change breaks every reader that bypassed the storage layer**, and those readers are invisible until something throws. The grep that finds them takes a minute and should be the first step, not the debugging.
