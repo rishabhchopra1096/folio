@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Drive — a real-sized markdown paste</title>
+<!--
+  The drive probe pastes eight lines. A real markdown file is thousands of
+  words, and the things that only go wrong at that size are the ones worth
+  knowing about before a drive: whether the browser's storage takes it, how
+  long the converter takes on a phone-sized document, and whether the chunker
+  then finds the same pieces in it that the reader would.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(n, c, x) { say((c ? "PASS " : "FAIL ") + n + (c ? "" : "  -> " + x)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const FRAME = 417, FPS = 44100 / 1152;
+function silentMp3(sec) {
+  const n = Math.round(sec * FPS), b = new Uint8Array(FRAME * n);
+  for (let i = 0; i < n; i++) { const o = i * FRAME; b[o] = 0xFF; b[o+1] = 0xFB; b[o+2] = 0x90; }
+  return new Blob([b], { type: "audio/mpeg" });
+}
+
+/* A document shaped like one he would actually paste: sections, prose, lists,
+   the odd quote and some bold — about 6,000 words. */
+function longMarkdown() {
+  const out = ["# Notes from the whole of October", ""];
+  for (let s = 1; s <= 24; s++) {
+    out.push("## " + s + ". A section with something in it", "");
+    for (let p = 0; p < 3; p++) {
+      out.push("The point of section " + s + ", paragraph " + p + ", is that it reads like " +
+        "ordinary prose rather than filler — **long enough** that the chunker has to make " +
+        "real decisions about where one piece ends and the next begins, and varied enough " +
+        "that the sentence splitter is doing work. It also runs past a line break, which is " +
+        "where a converter that is nearly right stops being right.", "");
+    }
+    out.push("- A bullet that says something.", "- And a second one, for the list branch.", "");
+    if (s % 4 === 0) out.push("> A line worth keeping, set apart.", "");
+  }
+  return out.join("\n");
+}
+
+async function main() {
+  localStorage.clear();
+  const md = longMarkdown();
+  say("NOTE pasting " + md.split(/\s+/).length + " words, " + md.length + " characters");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:393px;height:852px;border:0";
+  const loaded = new Promise((r) => { f.onload = r; });
+  f.src = "/drive.html";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  w.eval("window.__Drive = Drive; window.__Store = FolioStore; " +
+         "window.__Chunker = Chunker; window.__Speechify = SpeechifyProvider;");
+  w.localStorage.clear();
+  w.__Drive.init();
+  await wait(200);
+
+  /* The keys screen first, exactly as he will do it. */
+  d.getElementById("drive-keys-btn").click();
+  d.getElementById("drive-key-speechify").value = "sk_probe";
+  d.getElementById("drive-keys-save").click();
+  await wait(150);
+
+  w.__Speechify.hasKey = () => true;
+  w.__Speechify.keyWasRejected = () => false;
+  w.__Speechify.currentVoiceId = () => "probe-voice";
+  let asked = 0;
+  w.__Speechify.fetchChunk = () => { asked++; return Promise.resolve(
+    { blob: silentMp3(12), marks: [], url: null }); };
+
+  d.getElementById("drive-add-btn").click();
+  d.getElementById("drive-add-text").value = md;
+
+  const t0 = performance.now();
+  d.getElementById("drive-add-save").click();
+  for (let i = 0; i < 100; i++) { if (w.__Store.listDocuments().length) break; await wait(100); }
+  const convertMs = Math.round(performance.now() - t0);
+
+  const doc = w.__Store.listDocuments()[0];
+  ok("a six-thousand-word paste is accepted and stored", !!doc, "none saved");
+  ok("converting it takes under two seconds", convertMs < 2000, convertMs + "ms");
+  ok("it is titled from its first heading, not the first line of prose",
+     doc && doc.title === "Notes from the whole of October", doc && doc.title);
+
+  const blocks = (w.__Store.readPage(doc.id) || {}).blocks || [];
+  const kinds = {};
+  blocks.forEach((b) => { kinds[b.type] = (kinds[b.type] || 0) + 1; });
+  ok("every section heading survived", (kinds.header || 0) === 25, JSON.stringify(kinds));
+  ok("every paragraph survived", (kinds.paragraph || 0) === 72, JSON.stringify(kinds));
+  ok("the lists and quotes survived too",
+     (kinds.list || 0) === 24 && (kinds.quote || 0) === 6, JSON.stringify(kinds));
+  ok("the bold survived in a tag the editor keeps",
+     (JSON.stringify(blocks).match(/<b>long enough<\/b>/g) || []).length === 72,
+     (JSON.stringify(blocks).match(/<b>/g) || []).length + " <b>");
+
+  ok("it went straight into the player",
+     d.getElementById("drive-player").classList.contains("active"));
+
+  for (let i = 0; i < 200; i++) {
+    const st = w.__Drive._state();
+    if (st.chunks && st.ready === st.chunks) break;
+    await wait(100);
+  }
+  const st = w.__Drive._state();
+  ok("the chunker cut it into real pieces", st.chunks > 5, "chunks=" + st.chunks);
+  ok("it asked for one piece of audio per chunk, no more",
+     asked === st.chunks, "asked=" + asked + " chunks=" + st.chunks);
+  ok("the whole thing finished preparing",
+     st.ready === st.chunks && st.stitched === st.chunks,
+     "ready=" + st.ready + " stitched=" + st.stitched + "/" + st.chunks);
+  say("NOTE status line reads: " + d.getElementById("drive-status").textContent);
+
+  const a = d.getElementById("drive-audio");
+  ok("there is one audio element holding one joined file",
+     !!a && /^blob:/.test(a.src || ""), a ? a.src.slice(0, 20) : "none");
+  /*
+   * Wait for the ELEMENT, not for the stitch. Reading duration the instant the
+   * last chunk is joined gives 0 — the blob is attached but the browser has not
+   * read its header yet. The first version of this check asserted against that
+   * zero and reported a bug that was not there.
+   */
+  for (let i = 0; i < 100; i++) { if (a && isFinite(a.duration) && a.duration > 0) break; await wait(100); }
+  ok("it is as long as all its parts together",
+     a && isFinite(a.duration) && Math.abs(a.duration - st.chunks * 12) < st.chunks * 0.6,
+     a ? "duration=" + (a.duration || 0).toFixed(1) + " expected≈" + st.chunks * 12 : "none");
+
+  d.getElementById("drive-play").click();
+  await wait(700);
+  ok("pressing play starts it", a && !a.paused, "paused=" + (a && a.paused));
+
+  ok("the words view has a line for every sentence of it",
+     d.querySelectorAll("#drive-lyrics .lyric").length > 100,
+     "lines=" + d.querySelectorAll("#drive-lyrics .lyric").length);
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL probe threw  -> " + (e && e.stack ? e.stack.split("\n")[0] : e)); say("DONE"); });
+</script>

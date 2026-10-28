@@ -159,6 +159,7 @@ words, whether it is safe to lock yet.
 | `vercel.json` | `/drive` serves `drive.html`. |
 | `test/chunker-parity.selftest.js` | 21 assertions: the chunker matches `js/tts.js` exactly. |
 | `test/browser/drive.probe.html` | 98 assertions against the real page in a real browser. |
+| `test/browser/longpaste.probe.html` | 15 assertions: a 5,400-word markdown paste, start to playing. |
 | `test/browser/drive.shot.html` | Stages the screen so it can be looked at. |
 | `tools/shoot.js` | **New.** CDP screenshots that wait for the page and can emulate dark mode. |
 | `tools/mutate-drive.sh` | Breaks one thing, runs the probe, restores — and proves it restored. |
@@ -233,6 +234,7 @@ and has NOT been answered.**
 | D-45 | Reopening the keys screen shows what is already saved | browser | PASS |
 | D-46 | No field is small enough to make Safari zoom in and stay there | browser | PASS |
 | D-47 | An empty list names every way forward, and each one is a real control | browser | PASS |
+| D-48 | A real-sized markdown file pastes in, whole, and plays | browser | PASS |
 | D-25 | With no Speechify key it says exactly what is missing | browser | PASS |
 | D-26 | With no Groq key the record button says so | browser | **not run** |
 | D-27 | Recording works on iOS Safari at all | phone | **not run** |
