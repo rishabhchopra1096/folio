@@ -35,6 +35,14 @@ global.FolioStore = {
   createDocument: () => ({ id: "x" }), getDocument: () => null,
   getSettings: () => ({}), saveSettings() {}, searchDocuments: () => [],
 };
+/*
+ * The converter lives in js/markdown.js; the sidebar only forwards to it. Both
+ * are loaded and the SIDEBAR's name is the one called below, so this one test
+ * covers the converter and the fact that the drag-and-drop path still reaches
+ * it. (The drive screen's "paste a page" box calls FolioMarkdown.toBlocks
+ * directly — same function, proven by the same assertions.)
+ */
+global.FolioMarkdown = eval(fs.readFileSync(REPO + "/js/markdown.js", "utf8") + "; FolioMarkdown;");
 const S = eval(fs.readFileSync(REPO + "/js/sidebar.js", "utf8") + "; SidebarUI;");
 
 let pass = 0, fail = 0;
@@ -57,8 +65,35 @@ console.log("\n=== emphasis reaches the editor in tags it keeps ===");
      /<b>/.test(textOf(first("***both***"))) && /<i>/.test(textOf(first("***both***"))),
      textOf(first("***both***")));
 
-  const src = fs.readFileSync(REPO + "/js/sidebar.js", "utf8");
-  ok("no <strong> is ever emitted", !/<strong>/.test(src) || /strong.*->.*b/.test(src));
+  /*
+   * This used to grep the source for the string "<strong>", which stopped
+   * meaning anything the moment the converter moved into js/markdown.js — it
+   * then read a file whose only "<strong>" is in a delete-confirmation dialog.
+   *
+   * So assert the behaviour instead, over EVERY block type rather than the
+   * first paragraph: a tag Editor.js will not keep must not reach any of them.
+   */
+  const everywhere = S.markdownToBlocks([
+    "# A **bold** heading",
+    "",
+    "A **bold** paragraph with *italic* and ~~struck~~ words.",
+    "",
+    "- a **bold** bullet",
+    "- an *italic* bullet",
+    "",
+    "> a **bold** quote",
+    "",
+    "| a | b |",
+    "| - | - |",
+    "| **bold** cell | *italic* cell |",
+  ].join("\n"));
+  const allHtml = JSON.stringify(everywhere.blocks);
+  ok("no tag Editor.js discards reaches any block",
+     !/<(strong|em|del|s)>/.test(allHtml),
+     (allHtml.match(/<(strong|em|del|s)>/g) || []).join(" "));
+  ok("...and the emphasis is still there, in tags it keeps",
+     (allHtml.match(/<b>/g) || []).length >= 4 && /<i>/.test(allHtml),
+     (allHtml.match(/<b>/g) || []).length + " <b>");
 }
 
 console.log("\n=== tags no tool keeps are unwrapped, not swallowed ===");
