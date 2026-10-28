@@ -106,6 +106,67 @@ const Voice = (function () {
    * recordings in parallel.
    */
 
+  /* ==========================================================================
+   * KEEPING THE MICROPHONE WARM
+   *
+   * WHY THIS EXISTS: asking for the microphone is not free. On iOS the phone is
+   * playing audio, so its audio session is configured for playback; granting a
+   * microphone forces it into a record-and-play configuration, and that switch
+   * takes about two seconds. Done on every press, that is two seconds in which
+   * the screen has not changed, the user has already started talking, and the
+   * opening words of every note are lost. Reported from a real drive on
+   * 28 October 2026: "I have to wait 2 seconds till it starts recording. That
+   * is the problem."
+   *
+   * So the stream is acquired once and held. The second note in a burst, and
+   * every one after it, starts the instant the button is pressed.
+   *
+   * WHY IT IS NOT HELD FOR EVER: a live microphone is a live microphone. iOS
+   * shows the orange indicator the whole time it is open, and an open input can
+   * change how playback is routed. Holding one for an hour's drive to save two
+   * seconds now and then is the wrong trade. The caller decides how long to
+   * hold it and calls releaseMic() when the burst is over.
+   * ======================================================================== */
+  let warmStream = null;
+  let warming = null;          // the in-flight promise, so two presses share one ask
+
+  /*
+   * Get a stream, from the warm one if there is one.
+   *
+   * Returns { stream, wasWarm } — wasWarm says whether this was free, which is
+   * what the caller needs in order to decide whether to tell the user to wait.
+   */
+  async function acquireStream() {
+    if (warmStream && warmStream.getTracks().some((t) => t.readyState === "live")) {
+      return { stream: warmStream, wasWarm: true };
+    }
+    if (!warming) {
+      warming = navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
+        .then((s) => { warmStream = s; warming = null; return s; })
+        .catch((e) => { warming = null; throw e; });
+    }
+    return { stream: await warming, wasWarm: false };
+  }
+
+  /*
+   * Open the microphone ahead of time, so the next press does not have to wait.
+   * Resolves to true if the microphone is now live; never throws, because
+   * warming up is an optimisation and a failure here must not stop a recording
+   * that would otherwise have asked for itself.
+   */
+  async function warmMic() {
+    try { await acquireStream(); return true; } catch { return false; }
+  }
+
+  /* Let the microphone go. Safe to call when it was never warmed. */
+  function releaseMic() {
+    if (warmStream) { stopStream(warmStream); warmStream = null; }
+  }
+
+  function isMicWarm() {
+    return !!(warmStream && warmStream.getTracks().some((t) => t.readyState === "live"));
+  }
+
   async function startRecording() {
     // Fail fast with a clear error the caller can surface to the user
     if (typeof MediaRecorder === "undefined") {
@@ -115,9 +176,9 @@ const Voice = (function () {
       throw new Error("Microphone access isn't available in this browser.");
     }
 
-    let stream;
+    let stream, wasWarm;
     try {
-      stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      ({ stream, wasWarm } = await acquireStream());
     } catch (err) {
       if (err && err.name === "NotAllowedError") {
         throw new Error("Microphone permission was denied. Enable it in your browser's site settings and try again.");
@@ -143,7 +204,12 @@ const Voice = (function () {
 
     recorder.start();
 
-    return { recorder, stream, chunks, startedAt: Date.now() };
+    /*
+     * `warm` tells stopRecordingRaw not to close the stream it was handed. A
+     * warm stream outlives the recording that borrowed it; only releaseMic()
+     * closes that one.
+     */
+    return { recorder, stream, chunks, startedAt: Date.now(), warm: wasWarm || stream === warmStream };
   }
 
   /*
@@ -179,8 +245,12 @@ const Voice = (function () {
       handle.recorder.stop();
     });
 
-    // Free the mic — otherwise the browser keeps the "recording" indicator on
-    stopStream(handle.stream);
+    /*
+     * Free the mic — otherwise the browser keeps the "recording" indicator on.
+     * UNLESS it is the warm one, which is deliberately being held open for the
+     * next note and is closed by releaseMic().
+     */
+    if (!handle.warm) stopStream(handle.stream);
 
     // Anything under ~1KB is either silence or a mic that never engaged
     if (audioBlob.size < 1024) {
@@ -217,7 +287,8 @@ const Voice = (function () {
         handle.recorder.stop();
       }
     } catch { /* recorder may already be stopped */ }
-    stopStream(handle.stream);
+    // Same rule as stopRecordingRaw: a warm stream is not this recording's to close.
+    if (!handle.warm) stopStream(handle.stream);
   }
 
   // Release all mic tracks so the browser's "recording" indicator goes away
@@ -327,6 +398,9 @@ const Voice = (function () {
     setKey,
     clearKey,
     hasKey,
+    warmMic,
+    releaseMic,
+    isMicWarm,
     startRecording,
     stopRecording,
     stopRecordingRaw,
