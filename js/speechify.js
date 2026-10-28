@@ -1480,6 +1480,29 @@ const SpeechifyProvider = (function () {
 
     // Exposed for tests and for warming the first chunk when a document opens.
     prefetch: prefetch,
+
+    /*
+     * Hand back one chunk's audio, waiting for it: memory, then disk, then the
+     * network, exactly as playback does.
+     *
+     * This exists for the drive player (js/drive.js), which does not stream
+     * chunk by chunk the way the reader does. It cannot: iOS will not let a
+     * backgrounded page start a NEW audio element, so a locked phone would go
+     * silent at the first chunk boundary. The drive player instead collects
+     * every chunk's MP3 and concatenates them into ONE file — which works
+     * because MP3 is a sequence of self-contained frames, so joining the bytes
+     * joins the audio — and plays that single file like a podcast. One element,
+     * one source, no boundaries to cross, so the lock screen behaves.
+     *
+     * Going through acquire() rather than synthesize() is the whole point: a
+     * passage already heard in the reader is already on disk, and preparing a
+     * drive must not buy it a second time.
+     */
+    fetchChunk: function (text, voiceId, signal) {
+      if (!hasKey()) return Promise.reject(new Error("No Speechify key saved."));
+      if (keyWasRejected()) return Promise.reject(new Error("Speechify rejected the saved key."));
+      return acquire(text, voiceId || currentVoiceId(), signal);
+    },
     _recordFirstAudio: recordFirstAudio,
     _codePointToUtf16Map: codePointToUtf16Map,
     _splitHead: splitHead,
