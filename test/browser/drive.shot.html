@@ -10,8 +10,9 @@
   at a glance in a moving car, or whether anything collides on a short phone.
   That needs eyes, so it needs an image.
 
-  Usage: tools/shoot-drive.sh out.png "?state=player"
-  States: picker | player | recording | pending
+  Usage: node tools/shoot.js drive.shot.html out.png "?state=player"
+  States: picker | empty | add | keys | player | recording | pending |
+          words | words-recording
 -->
 <style>
   html, body { margin: 0; background: #000; }
@@ -65,6 +66,34 @@ async function main() {
   await wait(500);
 
   if (STATE === "picker") { window.__shotReady = true; return; }
+
+  /*
+   * A PHONE THAT HAS NEVER SEEN FOLIO. The first thing he will ever see on the
+   * drive screen, and the one screen whose whole job is words — so it is the
+   * one most worth looking at rather than asserting about.
+   */
+  if (STATE === "empty" || STATE === "add" || STATE === "keys") {
+    const w0 = f.contentWindow, d0 = f.contentDocument;
+    w0.eval("window.__Drive = Drive;");
+    w0.localStorage.clear();
+    w0.__Drive.init();
+    await wait(300);
+    if (STATE === "add") {
+      d0.getElementById("drive-add-btn").click();
+      d0.getElementById("drive-add-title").value = "Pricing, thought through";
+      d0.getElementById("drive-add-text").value =
+        "# Pricing, thought through\n\nThe price is not what it costs us. It is what it " +
+        "is worth to them, minus what it would take them to get the same thing elsewhere.\n\n" +
+        "- Anchor high, then take things away.\n- Never discount; change the offer.\n";
+    }
+    if (STATE === "keys") {
+      d0.getElementById("drive-keys-btn").click();
+      d0.getElementById("drive-key-speechify").value = "sk_live_nottherealone_9f3a2b";
+    }
+    await wait(250);
+    window.__shotReady = true;
+    return;
+  }
   window.__shotWhy = "opening the document";
 
   const w = f.contentWindow, d = f.contentDocument;

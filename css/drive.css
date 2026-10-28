@@ -144,28 +144,141 @@ body {
   color: var(--d-dim);
 }
 .drive-empty { color: var(--d-dim); padding: 1.5rem 1.15rem; line-height: 1.6; }
+/*
+ * An empty list is centred; a real list is not. Top-aligned on a tall black
+ * screen, the message read like a list that had failed to load rather than one
+ * with nothing in it yet — the same words, in the middle, read as deliberate.
+ */
+/* The list is a COLUMN, so the one that centres it vertically is
+   justify-content, not align-items — align-items centred it sideways,
+   which on a full-width paragraph looked like nothing had happened. */
+#drive-doc-list.is-empty { justify-content: center; }
 
-/* Import lives at the bottom of the list: needed once per device, then never
-   again, so it must be findable without competing with the pages above it. */
+/* Getting things IN. Needed often at first and rarely later, so it sits below
+   the pages without competing with them. */
 .drive-picker-foot {
-  padding: 0.4rem 0.75rem calc(1.2rem + env(safe-area-inset-bottom));
-  display: flex;
-  justify-content: center;
+  padding: 0.4rem 0.75rem calc(1.1rem + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
 }
-.drive-import {
+.drive-foot-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 56px;
-  padding: 0 1.4rem;
+  min-height: 60px;
+  padding: 0 1rem;
+  background: none;
   border: 1px dashed var(--d-line);
   border-radius: var(--d-radius);
   color: var(--d-dim);
-  font-size: 0.95rem;
+  font: inherit;
+  font-size: 0.98rem;
   cursor: pointer;
 }
-.drive-import:active { background: var(--d-surface); }
+.drive-foot-btn:active { background: var(--d-surface); }
+.drive-foot-quiet {
+  grid-column: 1 / -1;
+  min-height: 48px;
+  border-style: none;
+  font-size: 0.88rem;
+}
 .drive-import input { display: none; }
+
+/* ---------------------------------------------------------------------------
+   FORMS — adding a page, and the two keys
+   --------------------------------------------------------------------------- */
+.drive-form {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.5rem 1rem calc(1.5rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.drive-field-label {
+  font-size: 0.86rem;
+  color: var(--d-dim);
+  margin-top: 0.7rem;
+}
+.drive-field-label span { opacity: 0.65; }
+.drive-help {
+  margin: 0.3rem 0 0.4rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--d-dim);
+}
+.drive-form input[type="text"],
+.drive-form textarea {
+  width: 100%;
+  background: var(--d-surface);
+  border: 1px solid var(--d-line);
+  border-radius: 14px;
+  color: var(--d-text);
+  font-family: inherit;
+  /*
+   * 16px is a floor, not a taste. Safari on iOS zooms the whole page in when a
+   * field smaller than that takes focus, and then leaves you zoomed — which on
+   * a screen whose buttons are positioned for a thumb is a mess to get out of.
+   */
+  font-size: 16px;
+  line-height: 1.5;
+  padding: 0.85rem 0.95rem;
+  -webkit-appearance: none;
+}
+/*
+ * The box grows into whatever room is left, and the grabber in its corner is
+ * gone: a drag-to-resize handle is a desktop affordance that on a phone is
+ * just a smudge in the corner of the field.
+ */
+.drive-form textarea {
+  resize: none;
+  flex: 1 1 auto;
+  min-height: 180px;
+}
+.drive-form input[type="text"]:focus,
+.drive-form textarea:focus { outline: 2px solid var(--d-accent); outline-offset: 1px; }
+
+/*
+ * margin-top:auto, so the button sits at the BOTTOM of the screen when there
+ * is room to spare rather than tucked under the last field with half a screen
+ * of black below it — which is what the first version looked like, and which
+ * also put the one thing you have to press in the middle, where a thumb has to
+ * stretch for it.
+ *
+ * It degrades correctly: once the content fills the screen (the keyboard is up,
+ * or the pasted page is long) auto resolves to zero and the form scrolls.
+ */
+.drive-primary {
+  margin-top: auto;
+  padding-top: 0;
+  min-height: 72px;
+  background: var(--d-surface-2);
+  border: 1px solid var(--d-accent);
+  border-radius: var(--d-radius);
+  color: var(--d-text);
+  font: inherit;
+  font-size: 1.1rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.drive-primary:active { background: var(--d-surface); }
+
+#drive-title-add, #drive-title-keys {
+  flex: 1;
+  font-size: 1.02rem;
+  font-weight: 500;
+}
+#drive-add-back, #drive-keys-back {
+  flex: 0 0 auto;
+  width: 48px; height: 48px;
+  display: grid; place-items: center;
+  background: none; border: none;
+  color: var(--d-dim); font-size: 1.6rem; line-height: 1;
+  cursor: pointer;
+}
 
 /* ===========================================================================
    THE PLAYER

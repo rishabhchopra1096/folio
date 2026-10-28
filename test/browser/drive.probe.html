@@ -612,9 +612,20 @@ async function main() {
   await wait(500);
   const gd = g.contentDocument, gw = g.contentWindow;
 
-  ok("a phone with nothing on it says so rather than showing an empty screen",
-     /Import a backup/.test(gd.getElementById("drive-doc-list").textContent),
-     gd.getElementById("drive-doc-list").textContent.slice(0, 80));
+  {
+    const empty = gd.getElementById("drive-doc-list").textContent;
+    const routes = ["Paste a page", "Open a file", "Voice keys"];
+    const missing = routes.filter((r) => !empty.includes(r));
+    ok("a phone with nothing on it names every way forward rather than showing an empty screen",
+       empty.length > 40 && missing.length === 0,
+       missing.length ? "never mentions: " + missing.join(", ") : empty.slice(0, 60));
+    /* Each named route must be a control that is actually there to tap. */
+    const absent = [["Paste a page", "drive-add-btn"], ["Open a file", "drive-import"],
+                    ["Voice keys", "drive-keys-btn"]]
+      .filter((pair) => !gd.getElementById(pair[1]));
+    ok("and every route it names is a control on the screen",
+       absent.length === 0, absent.map((p) => p[0]).join(", "));
+  }
   ok("the import control is on the picker", !!gd.getElementById("drive-import"));
 
   ok("the backup carries the voice keys, which a new phone has none of",
@@ -622,7 +633,8 @@ async function main() {
      backup.folio_groq_key === "gsk_probe_groq",
      "speechify=" + backup.folio_speechify_key + " groq=" + backup.folio_groq_key);
 
-  gw.eval("window.__Store = FolioStore;");
+  gw.eval("window.__Store = FolioStore; window.__Drive = Drive; " +
+          "window.__Speechify = SpeechifyProvider;");
   /*
    * Driven through the real file input, not by calling the store.
    *
@@ -655,6 +667,173 @@ async function main() {
      gw.localStorage.getItem("folio_groq_key") === "gsk_probe_groq",
      "speechify=" + gw.localStorage.getItem("folio_speechify_key") +
      " groq=" + gw.localStorage.getItem("folio_groq_key"));
+
+  // ==========================================================================
+  // GETTING A PAGE ONTO THE PHONE WITHOUT A LAPTOP
+  //
+  // The backup path above assumes there IS a laptop with a Folio library on
+  // it, reachable, right now. On a drive there usually is not — what there is
+  // is something already on the clipboard. These check the two ways in that do
+  // not need the computer at all.
+  // ==========================================================================
+  {
+    gw.localStorage.clear();
+    gd.getElementById("drive-keys-btn").click();
+    ok("Voice keys opens its own screen",
+       gd.getElementById("drive-keys").classList.contains("active") &&
+       !gd.getElementById("drive-picker").classList.contains("active"),
+       "keys=" + gd.getElementById("drive-keys").className);
+
+    /*
+     * Typed, not written to localStorage by the test. A field that is not
+     * actually read by the save button would pass the other way round.
+     */
+    gd.getElementById("drive-key-speechify").value = "sk_typed_on_the_phone";
+    gd.getElementById("drive-key-groq").value = "gsk_typed_on_the_phone";
+    gd.getElementById("drive-keys-save").click();
+    await wait(150);
+    ok("a key typed on the phone is saved where the reader looks for it",
+       gw.localStorage.getItem("folio_speechify_key") === "sk_typed_on_the_phone" &&
+       gw.localStorage.getItem("folio_groq_key") === "gsk_typed_on_the_phone",
+       "sp=" + gw.localStorage.getItem("folio_speechify_key"));
+    ok("saving the keys returns you to the list",
+       gd.getElementById("drive-picker").classList.contains("active"));
+
+    gd.getElementById("drive-keys-btn").click();
+    await wait(80);
+    ok("reopening the keys screen shows what is already saved",
+       gd.getElementById("drive-key-speechify").value === "sk_typed_on_the_phone",
+       "field=" + gd.getElementById("drive-key-speechify").value);
+    gd.getElementById("drive-keys-back").click();
+
+    /*
+     * iOS Safari zooms the whole page in when you focus a field whose text is
+     * under 16px, and does not zoom back out — leaving the controls off the
+     * edge of a screen you are meant to be glancing at. Measured, not assumed.
+     */
+    const smallFields = ["drive-key-speechify", "drive-key-groq", "drive-add-title", "drive-add-text"]
+      .filter((id) => parseFloat(gw.getComputedStyle(gd.getElementById(id)).fontSize) < 16);
+    ok("no field is small enough to make Safari zoom in and stay there",
+       smallFields.length === 0, "too small: " + smallFields.join(", "));
+
+    // ---- pasting a page ----
+    gd.getElementById("drive-add-btn").click();
+    ok("Paste a page opens its own screen",
+       gd.getElementById("drive-add").classList.contains("active"));
+
+    gd.getElementById("drive-add-save").click();
+    await wait(120);
+    ok("saving nothing does not make an empty page",
+       gw.__Store.listDocuments().length === 0 &&
+       gd.getElementById("drive-add").classList.contains("active"),
+       "docs=" + gw.__Store.listDocuments().length);
+
+    const PASTED = [
+      "# What I actually want from the quarter",
+      "",
+      "Three things, and **only** three, because a list of nine is a list of none.",
+      "",
+      "- Ship the thing that is nearly shipped.",
+      "- Say no to the two that are not.",
+      "",
+      "> The rest is next quarter's problem.",
+    ].join("\n");
+    gw.__Speechify.hasKey = () => true;
+    gw.__Speechify.keyWasRejected = () => false;
+    gw.__Speechify.currentVoiceId = () => "probe-voice";
+    gw.__Speechify.fetchChunk = () => Promise.resolve(
+      { blob: silentMp3(FAKE_CHUNK_SECONDS), marks: [], url: null });
+
+    gd.getElementById("drive-add-text").value = PASTED;
+    gd.getElementById("drive-add-save").click();
+    for (let i = 0; i < 40; i++) {
+      if (gw.__Store.listDocuments().length) break;
+      await wait(100);
+    }
+    const made = gw.__Store.listDocuments()[0];
+    ok("pasted text becomes a page", !!made, "docs=" + gw.__Store.listDocuments().length);
+    ok("the first heading becomes the title, so the list is readable",
+       made && made.title === "What I actually want from the quarter",
+       "title=" + (made && made.title));
+
+    const blocks = ((made && gw.__Store.readPage(made.id)) || {}).blocks || [];
+    const types = blocks.map((b) => b.type).join(",");
+    ok("the markdown shape survives — heading, paragraph, list, quote",
+       /header/.test(types) && /paragraph/.test(types) && /list/.test(types) && /quote/.test(types),
+       types);
+    ok("bold inside the pasted text survives in a tag the editor keeps",
+       /<b>only<\/b>/.test(JSON.stringify(blocks)),
+       JSON.stringify(blocks).slice(0, 160));
+
+    /*
+     * THE POINT OF THE WHOLE SCREEN: a pasted page has to be readable by the
+     * same chunker the reader uses, or it will play differently from a page
+     * that came over in a backup. Run the real plan over it.
+     */
+    ok("a pasted page goes straight into the player",
+       gd.getElementById("drive-player").classList.contains("active"),
+       "player=" + gd.getElementById("drive-player").className);
+    for (let i = 0; i < 60; i++) {
+      const st = gw.__Drive._state();
+      if (st.chunks > 0) break;
+      await wait(100);
+    }
+    ok("the chunker found something to read in it",
+       gw.__Drive._state().chunks > 0, "chunks=" + gw.__Drive._state().chunks);
+    ok("and the lyric view has a line per sentence of it",
+       gd.querySelectorAll("#drive-lyrics .lyric").length > 3,
+       "lines=" + gd.querySelectorAll("#drive-lyrics .lyric").length);
+
+    gd.getElementById("drive-exit").click();
+    await wait(200);
+
+    // ---- opening a markdown file, which is the same path with a file on it ----
+    const mdDt = new DataTransfer();
+    mdDt.items.add(new File(["## A file from somewhere else\n\nWith a line in it."],
+                            "thoughts-on-pricing.md", { type: "text/markdown" }));
+    const inp = gd.getElementById("drive-import");
+    inp.files = mdDt.files;
+    inp.dispatchEvent(new gw.Event("change", { bubbles: true }));
+    for (let i = 0; i < 40; i++) {
+      if (gd.getElementById("drive-add").classList.contains("active")) break;
+      await wait(100);
+    }
+    ok("a markdown file lands in the paste box rather than being refused as a backup",
+       gd.getElementById("drive-add").classList.contains("active") &&
+       /A file from somewhere else/.test(gd.getElementById("drive-add-text").value),
+       "screen=" + gd.getElementById("drive-add").className);
+    ok("and its filename is offered as the title",
+       gd.getElementById("drive-add-title").value === "thoughts-on-pricing",
+       "title=" + gd.getElementById("drive-add-title").value);
+
+    /*
+     * A BACKUP THAT IS NOT CALLED .json. This is the whole reason the router
+     * reads the file's contents rather than its name: a backup AirDropped off a
+     * Mac, or saved out of Mail, or renamed by Files, arrives called whatever
+     * it arrives called. Without this assertion the router could be changed to
+     * trust the extension and every other check here would still pass —
+     * proven by running exactly that mutation.
+     */
+    gd.getElementById("drive-add-back").click();
+    gw.localStorage.clear();
+    gw.__Drive.init();
+    await wait(200);
+    const oddDt = new DataTransfer();
+    oddDt.items.add(new File([JSON.stringify(backup)], "Backup Oct 28",
+                             { type: "application/octet-stream" }));
+    const oddInput = gd.getElementById("drive-import");
+    oddInput.files = oddDt.files;
+    oddInput.dispatchEvent(new gw.Event("change", { bubbles: true }));
+    for (let i = 0; i < 40; i++) {
+      if (gd.querySelectorAll(".drive-doc").length) break;
+      await wait(150);
+    }
+    ok("a backup is recognised by what is in it, not by being called .json",
+       gd.querySelectorAll(".drive-doc").length > 0 &&
+       !gd.getElementById("drive-add").classList.contains("active"),
+       "rows=" + gd.querySelectorAll(".drive-doc").length +
+       " onAddScreen=" + gd.getElementById("drive-add").classList.contains("active"));
+  }
 
   say("DONE");
 }

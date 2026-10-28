@@ -54,10 +54,17 @@
         without.
       -->
       <div class="drive-picker-foot">
-        <label class="drive-import">
-          Import a backup
-          <input type="file" id="drive-import" accept="application/json,.json" />
+        <button class="drive-foot-btn" id="drive-add-btn">Paste a page</button>
+        <label class="drive-foot-btn drive-import">
+          Open a file
+          <!--
+            Three kinds of file, told apart by what is inside them: a Folio
+            backup (JSON), or plain text / markdown, which becomes a new page.
+          -->
+          <input type="file" id="drive-import"
+                 accept="application/json,.json,.md,.markdown,.txt,text/plain,text/markdown" />
         </label>
+        <button class="drive-foot-btn drive-foot-quiet" id="drive-keys-btn">Voice keys</button>
       </div>
     </div>
 
@@ -141,6 +148,53 @@
       </div>
     </div>
 
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- ADD A PAGE — paste something in, straight from the phone            -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="drive-add" class="screen">
+      <div class="drive-topbar">
+        <button id="drive-add-back" aria-label="Back to the list">&#8592;</button>
+        <div id="drive-title-add">Paste a page</div>
+      </div>
+      <div class="drive-form">
+        <label class="drive-field-label" for="drive-add-title">Title <span>— optional</span></label>
+        <input type="text" id="drive-add-title" placeholder="Taken from the first line if you leave this" />
+
+        <label class="drive-field-label" for="drive-add-text">The page</label>
+        <textarea id="drive-add-text" rows="12"
+                  placeholder="Paste anything here. Markdown headings, lists and quotes are understood."></textarea>
+
+        <button class="drive-primary" id="drive-add-save">Add it</button>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- VOICE KEYS — without these nothing is read and nothing is written   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="drive-keys" class="screen">
+      <div class="drive-topbar">
+        <button id="drive-keys-back" aria-label="Back to the list">&#8592;</button>
+        <div id="drive-title-keys">Voice keys</div>
+      </div>
+      <div class="drive-form">
+        <p class="drive-help">
+          These live in this browser and are never sent anywhere but to the two services
+          themselves. Without the first one nothing can be read aloud; without the second
+          nothing you say can be turned into a note.
+        </p>
+
+        <label class="drive-field-label" for="drive-key-speechify">Speechify <span>— the voice</span></label>
+        <input type="text" id="drive-key-speechify" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false" placeholder="Paste the key" />
+
+        <label class="drive-field-label" for="drive-key-groq">Groq <span>— turning speech into notes</span></label>
+        <input type="text" id="drive-key-groq" autocomplete="off" autocapitalize="off"
+               autocorrect="off" spellcheck="false" placeholder="Paste the key" />
+
+        <button class="drive-primary" id="drive-keys-save">Save them</button>
+      </div>
+    </div>
+
     <!-- Transient messages: "+15s", "Note saved". -->
     <div id="drive-note"></div>
 
@@ -175,6 +229,13 @@
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <!-- Pages are stored compressed; store.js cannot read one without this. -->
     <script src="vendor/lz-string.min.js"></script>
+    <!--
+      marked + markdown.js are here for the "paste a page" box. The sidebar is
+      deliberately NOT loaded: this page needs the converter, not 36KB of
+      page-tree, context-menu and search code on a car's network.
+    -->
+    <script src="vendor/marked.min.js"></script>
+    <script src="js/markdown.js"></script>
     <script src="js/store.js"></script>
     <script src="js/voice.js"></script>
     <script src="js/reader.js"></script>

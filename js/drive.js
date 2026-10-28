@@ -149,6 +149,10 @@ const Drive = (function () {
       "drive-faster", "drive-record", "drive-record-label", "drive-note",
       "drive-outbox", "drive-exit", "drive-article", "drive-wake", "drive-import",
       "drive-lyrics", "drive-view", "drive-record-inline",
+      "drive-add", "drive-add-btn", "drive-add-back", "drive-add-title",
+      "drive-add-text", "drive-add-save",
+      "drive-keys", "drive-keys-btn", "drive-keys-back", "drive-keys-save",
+      "drive-key-speechify", "drive-key-groq",
     ].forEach((id) => { el[id.replace(/^drive-/, "").replace(/-(\w)/g, (m, c) => c.toUpperCase())] = document.getElementById(id); });
   }
 
@@ -209,15 +213,35 @@ const Drive = (function () {
     });
 
     if (!docs.length) {
+      /*
+       * Short on purpose. The first version explained all three buttons in four
+       * sentences — directly above three buttons that say the same three things
+       * in two words each. The only thing the buttons cannot tell you is that
+       * nothing will speak until there is a Speechify key, so that is all this
+       * says.
+       */
+      /*
+       * Short on purpose. The first version explained all three buttons in four
+       * sentences — directly above three buttons that say the same three things
+       * in two words each. The only thing the buttons cannot tell you is that
+       * nothing will speak until there is a Speechify key, so that is nearly
+       * all this says.
+       *
+       * is-empty centres it. Left at the top of a tall black screen it read
+       * like a list that had failed to load rather than a list with nothing in
+       * it yet.
+       */
+      el.docList.classList.add("is-empty");
       el.docList.innerHTML =
-        '<p class="drive-empty">Nothing here yet.<br><br>' +
-        'Folio keeps your pages in this browser, and this browser has never seen them. ' +
-        'On the computer open Folio, go to Settings and export a backup, get the file onto ' +
-        'this phone, then use <b>Import a backup</b> below. It carries your pages, your ' +
-        'notes and your voice keys.</p>';
+        '<p class="drive-empty">' +
+        '<b>Paste a page</b>, or <b>Open a file</b> — a markdown file, or a backup ' +
+        'exported from Folio on a computer.<br><br>' +
+        'Nothing will be read aloud until there is a Speechify key in ' +
+        '<b>Voice keys</b>.</p>';
       return;
     }
 
+    el.docList.classList.remove("is-empty");
     el.docList.innerHTML = docs.map((d) => {
       const blocks = blocksOf(d.id);
       const words = blocks ? FolioStore.countWordsInBlocks(blocks) : 0;
@@ -283,12 +307,11 @@ const Drive = (function () {
    * Merge, not replace: importing must never be the thing that destroys notes
    * made on this phone earlier.
    */
-  async function importBackup(file) {
-    if (!file) return;
-    flash("Reading the backup…", 4000);
+  function importBackup(text, name) {
+    flash("Reading " + (name || "the backup") + "…", 4000);
     let data;
     try {
-      data = JSON.parse(await file.text());
+      data = JSON.parse(text);
     } catch {
       flash("That file is not a Folio backup.", 5000);
       return;
@@ -359,6 +382,126 @@ const Drive = (function () {
   }
 
   // ==========================================================================
+  // GETTING THINGS IN — pasting a page, opening a file, and the two keys
+  // ==========================================================================
+
+  /*
+   * Exactly one screen is up at a time.
+   *
+   * Leaving the player always stops it: walking away from a read and still
+   * hearing it, with the controls out of reach on another screen, is the kind
+   * of thing you notice at forty miles an hour.
+   */
+  function showScreen(name) {
+    [["picker", el.picker], ["player", el.player], ["add", el.add], ["keys", el.keys]]
+      .forEach(function (pair) {
+        if (pair[1]) pair[1].classList.toggle("active", pair[0] === name);
+      });
+  }
+
+  /*
+   * WHAT THIS DOES:
+   * Turns pasted text into a page, using the SAME converter a markdown import
+   * on the desktop uses.
+   *
+   * WHY NOT A SMALLER ONE WRITTEN HERE: headings, lists and quotes decide
+   * where the voice pauses and what a note can attach to, and a second,
+   * simpler converter would quietly disagree with the first about all three.
+   * So this calls js/markdown.js, which is also what a dragged-in .md file
+   * goes through on the laptop.
+   */
+  function saveAdd() {
+    const text = (el.addText.value || "").trim();
+    if (!text) { flash("Nothing to add — paste something first.", 3000); return; }
+
+    let title = (el.addTitle.value || "").trim();
+    if (!title) {
+      // The first markdown heading, else the first line that has words in it.
+      const firstLine = text.split("\n").map((l) => l.trim()).find(Boolean) || "";
+      title = firstLine.replace(/^#+\s*/, "").slice(0, 80) || "Pasted page";
+    }
+
+    const content = FolioMarkdown.toBlocks(text);
+
+    if (!content.blocks || !content.blocks.length) {
+      flash("That did not turn into anything readable.", 3500);
+      return;
+    }
+
+    let meta;
+    try {
+      meta = FolioStore.createDocument(title, content, null);
+    } catch (err) {
+      if (FolioStore.isQuotaError && FolioStore.isQuotaError(err)) {
+        flash("This phone's browser is full. Delete a page on the computer and " +
+              "export a smaller backup.", 8000);
+      } else {
+        flash("Could not save it: " + (err && err.message ? err.message : "unknown"), 6000);
+      }
+      return;
+    }
+
+    el.addTitle.value = "";
+    el.addText.value = "";
+    renderPicker();
+    showScreen("picker");
+    flash("Added “" + title + "”.", 3000);
+    /*
+     * Straight into it. Pasting a page is nearly always followed by wanting to
+     * hear it, and on a phone in a cradle every avoidable tap is worth
+     * avoiding.
+     */
+    open(meta.id);
+  }
+
+  /*
+   * One file input, three kinds of file, told apart by what is in them rather
+   * than by what they are called — a backup AirDropped from a Mac can arrive
+   * with any extension at all.
+   */
+  async function openFile(file) {
+    if (!file) return;
+    let text;
+    try {
+      text = await file.text();
+    } catch {
+      flash("Could not read that file.", 4000);
+      return;
+    }
+    const looksLikeBackup = /^\s*\{/.test(text) && /"folio_documents"/.test(text);
+    if (looksLikeBackup) return importBackup(text, file.name);
+
+    el.addTitle.value = (file.name || "").replace(/\.(md|markdown|txt|json)$/i, "");
+    el.addText.value = text;
+    showScreen("add");
+    flash("Read " + (file.name || "the file") + " — check it and add it.", 4000);
+  }
+
+  function showKeys() {
+    try {
+      el.keySpeechify.value = localStorage.getItem("folio_speechify_key") || "";
+      el.keyGroq.value = localStorage.getItem("folio_groq_key") || "";
+    } catch { /* a locked-down browser; the fields just start empty */ }
+    showScreen("keys");
+  }
+
+  function saveKeys() {
+    const sp = (el.keySpeechify.value || "").trim();
+    const gq = (el.keyGroq.value || "").trim();
+    try {
+      if (sp) localStorage.setItem("folio_speechify_key", sp);
+      else localStorage.removeItem("folio_speechify_key");
+      if (gq) localStorage.setItem("folio_groq_key", gq);
+      else localStorage.removeItem("folio_groq_key");
+    } catch (err) {
+      flash("Could not save the keys: " + (err && err.message ? err.message : "unknown"), 6000);
+      return;
+    }
+    showScreen("picker");
+    flash(sp ? "Saved. Pick a page and it will read." : "Cleared.", 3500);
+  }
+
+  // ==========================================================================
   // OPENING A DOCUMENT
   // ==========================================================================
 
@@ -407,8 +550,7 @@ const Drive = (function () {
     ready = 0; stitched = 0; fetchFailed = null;
 
     el.title.textContent = docTitle;
-    el.picker.classList.remove("active");
-    el.player.classList.add("active");
+    showScreen("player");
     let saved = "focus";
     try { saved = localStorage.getItem(VIEW_KEY) || "focus"; } catch { /* default */ }
     setMode(saved);
@@ -433,8 +575,7 @@ const Drive = (function () {
     pause();
     releaseWakeLock();
     stopTicker();
-    el.player.classList.remove("active");
-    el.picker.classList.add("active");
+    showScreen("picker");
     renderPicker();
   }
 
@@ -1593,11 +1734,18 @@ const Drive = (function () {
         }, { passive: true });
       });
     }
+    if (el.addBtn) el.addBtn.addEventListener("click", () => showScreen("add"));
+    if (el.addBack) el.addBack.addEventListener("click", () => showScreen("picker"));
+    if (el.addSave) el.addSave.addEventListener("click", saveAdd);
+    if (el.keysBtn) el.keysBtn.addEventListener("click", showKeys);
+    if (el.keysBack) el.keysBack.addEventListener("click", () => showScreen("picker"));
+    if (el.keysSave) el.keysSave.addEventListener("click", saveKeys);
+
     if (el.import) {
       el.import.addEventListener("change", function () {
         const f = el.import.files && el.import.files[0];
         // Clear it so picking the same file twice still fires a change event.
-        importBackup(f).finally(() => { el.import.value = ""; });
+        Promise.resolve(openFile(f)).finally(() => { el.import.value = ""; });
       });
     }
 
