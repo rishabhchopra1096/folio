@@ -16,7 +16,7 @@ waiting on him.
 | DRIVE-4 | UX | "I never see what was transcribed. So I like the lyrics view. We have to figure out how I can see what was transcribed." | BUILT |
 | DRIVE-5 | LIKED | "I like the lyrics view." | LIKED |
 | DRIVE-6 | LIKED | "it's working well. It's actually working well." | LIKED |
-| DRIVE-8 | FN | "it was working just fine, and now it shows that the phone will not play audio. It is not supported. What the fuck is happening? It was just working before this deployment." | BUILT |
+| DRIVE-8 | FN | "it was working just fine, and now it shows that the phone will not play audio. It is not supported." · then, after the first fix: "It still shows that it will not start playing audio. I don't know." | BUILT |
 | DRIVE-7 | FN | "It just doesn't auto scroll... to center the sentence that I have to read" — then: "It is auto scrolling. I don't know why it was not. Maybe... when I have messed with it or like scrolled manually." | BUILT |
 
 ---
@@ -150,35 +150,80 @@ That method asks every scrollable ancestor to move and can scroll the page rathe
 list. It was not what he was seeing, but it is a real hazard on iOS and the direct version
 can only ever move the one box.
 
-## DRIVE-8 — the deploy stopped the iPhone playing audio at all
+## DRIVE-8 — the phone refuses to start the audio
 
 **His words:** *"it was working just fine, and now it shows that the phone will not play
 audio. It is not supported. What the fuck is happening? It was just working before this
 deployment."*
 
-**Screenshot:** the status line reading *"The phone would not start audio: The operation is
-not supported."*
+**And after my first fix:** *"It still shows that it will not start playing audio. I don't
+know."*
 
-**I caused this, and the failure is not subtle.** The fix for DRIVE-1 held the microphone
-open for ninety seconds after each note, so that the next note would start instantly. An
-open capture stream puts iOS's audio session into a record-and-play configuration, and an
-`<audio>` element asked to start in that state can be refused outright —
-`NotSupportedError`, which is the message he saw.
+### My first diagnosis was wrong, and I shipped it
 
-**Why no test caught it.** Headless Chrome has no audio session to misconfigure. All 115
-browser assertions passed, including every one about playback, because the thing that
-breaks does not exist in the test environment. This was in the written "what only your
-phone can tell us" list — *"playback is not quieter or re-routed after a recording"* — and
-I built a change that lands squarely in it anyway, and shipped it.
+I blamed the warm microphone — the change in that same deploy that held the mic open for
+ninety seconds after a note, which on iOS puts the audio session into record-and-play and
+can stop an `<audio>` element starting. It was the only change that touched anything near
+the audio system, so I reverted the deploy, removed the warm mic, and shipped again.
 
-**What was done.**
-1. **Reverted within minutes**, before diagnosing, so he was not stuck mid-drive.
-2. Then re-applied everything from that deploy EXCEPT the warm microphone — the note
-   display, the scroll-hold fix, the counter and the instant button feedback are all pure
-   DOM and cannot touch the audio session.
-3. `js/voice.js` now carries the reason in the file itself, where the next person to think
-   this is a good idea will read it: **do not reintroduce it without an iPhone in hand.**
+**It was still broken.** The second screenshot proves the new code was running — it shows
+"5 notes saved", which only the new build draws.
 
-**The rule this buys:** a change that can only be validated on the device is not shipped
-with "the tests pass" as its evidence. There was no evidence. There was an absence of a
-test that could possibly have failed.
+**What I should have done first was read the screenshot properly**, which took two minutes
+once I stopped theorising:
+
+- The remaining time showed a bare **"—"**. That string appears nowhere in the code that
+  writes the clock; it is the value in the HTML. So the clock had never been written since
+  the page loaded, which means `loadedmetadata` never fired, which means **the audio source
+  never loaded at all**.
+- But the error came from `play()`, which is only reached once something has been stitched.
+
+So: a file was built, handed to the element, and the element could not read it.
+
+### The real cause, which predates every deploy
+
+`durationOf()` measured each piece by decoding it, and wrapped the whole thing in a
+`try/catch` that fell back to `blob.size / 6000` — bytes divided by a bitrate.
+
+That fallback was written for a browser with no `AudioContext`. What it actually did was
+swallow **both** cases: no decoder available, and *the decoder refusing these bytes*. A
+piece that could not be decoded was therefore waved through with an invented duration,
+joined into the single MP3 — and **one unreadable piece makes the whole joined file
+unreadable**. The message then names the document, not the piece, which is why it sounded
+catastrophic.
+
+**And it could not recover.** The audio cache is keyed on the paragraph's text, so every
+reload, every retry, every reopen was served the same unreadable bytes from disk. That is
+why it stayed broken rather than failing once.
+
+**The rule it broke** was already written down in this very directory: *a mechanism that
+exists is not a mechanism that is sufficient*. `decodeAudioData` refusing is the single
+best evidence available that bytes are not playable audio, and it was being used as
+"never mind".
+
+### What was done
+
+1. **`durationOf` no longer swallows a decode failure.** No `AudioContext` at all is still
+   a capability gap and still estimates; a decode that fails now throws.
+2. **Nothing enters the file until the browser has proved it can decode it.** A piece that
+   fails is thrown away, **forgotten from the cache** so the next attempt is not handed the
+   same bytes, and fetched once more from the network. Only if the fresh copy also fails is
+   it a real error — which separates bad stored bytes from a decoder that hiccuped.
+3. **A blob under 1KB is rejected without bothering the decoder**, because an error page or
+   a truncated download arrives looking like that and real speech never does.
+4. `SpeechifyProvider.forget(text)` is new, and exists precisely because a cache keyed on
+   text turns one bad response into a permanent one.
+
+**Status: BUILT.** Four new assertions, and the mutation that restores the old
+`try/catch` fails two of them. One of those two is a length check rather than a
+playability check, deliberately: Chrome will happily play a file with rubbish spliced into
+it where iOS will not, so **length is how this environment can see a consequence that only
+his phone can hear.**
+
+### What this says about the testing
+
+The browser probe had 115 assertions about this screen and not one of them ever fed it a
+piece of audio that would not decode. Every chunk in every test was a real, valid,
+generated MP3. The one failure mode that takes the whole feature down had no test because
+the test fixtures were all well-formed — the same shape as a fixture written to make the
+component look right.

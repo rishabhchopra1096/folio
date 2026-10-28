@@ -1077,6 +1077,90 @@ async function main() {
     await wait(200);
   }
 
+  // ==========================================================================
+  // ONE UNREADABLE PIECE MUST NOT TAKE THE WHOLE DOCUMENT DOWN
+  //
+  // From the road, 28 October 2026: "The phone would not start audio: The
+  // operation is not supported." One chunk the browser could not decode was
+  // waved through with a guessed duration, joined into the file, and made the
+  // entire joined MP3 undecodable — then survived every reload, because the
+  // cache is keyed on the text and kept returning the same bytes.
+  // ==========================================================================
+  {
+    const b1 = document.createElement("iframe");
+    b1.style.cssText = "width:393px;height:852px;border:0";
+    const bl = new Promise((r) => { b1.onload = r; });
+    b1.src = "/drive.html";
+    document.getElementById("host").appendChild(b1);
+    await bl;
+    await wait(400);
+    const bw = b1.contentWindow, bd = b1.contentDocument;
+    bw.eval("window.__Drive = Drive; window.__Speechify = SpeechifyProvider; " +
+            "window.__Store = FolioStore;");
+    bw.__Speechify.hasKey = () => true;
+    bw.__Speechify.keyWasRejected = () => false;
+    bw.__Speechify.currentVoiceId = () => "probe-voice";
+
+    /*
+     * The third piece is rubbish the first time it is asked for and real the
+     * second — exactly what a bad cached entry looks like once it has been
+     * forgotten and fetched again.
+     */
+    let served = 0, forgotten = 0, badServedTwice = false;
+    const rubbish = () => new Blob([new Uint8Array(4096).fill(0x42)], { type: "audio/mpeg" });
+    const poisoned = {};
+    bw.__Speechify.forget = function (text) { forgotten++; poisoned[text] = true; return Promise.resolve(true); };
+    bw.__Speechify.fetchChunk = function (text) {
+      served++;
+      const isThird = /PARA6|PARA7/.test(text);
+      if (isThird && !poisoned[text]) {
+        return Promise.resolve({ blob: rubbish(), marks: [], url: null });
+      }
+      if (isThird && poisoned[text]) badServedTwice = true;   // it was re-fetched, good
+      return Promise.resolve({ blob: silentMp3(FAKE_CHUNK_SECONDS), marks: [], url: null });
+    };
+
+    bd.querySelector(".drive-doc").click();
+    for (let i = 0; i < 200; i++) {
+      const st = bw.__Drive._state();
+      if (st.chunks && st.ready === st.chunks && st.stitched === st.chunks) break;
+      await wait(100);
+    }
+    const st = bw.__Drive._state();
+    ok("an unreadable piece is thrown away and fetched again rather than joined in",
+       forgotten > 0, "forget was never called");
+    ok("the whole document still prepares", st.chunks > 0 && st.ready === st.chunks,
+       "ready=" + st.ready + "/" + st.chunks);
+
+    bd.getElementById("drive-play").click();
+    for (let i = 0; i < 60; i++) {
+      if (bd.getElementById("drive-play").classList.contains("playing")) break;
+      await wait(100);
+    }
+    const ba = bd.getElementById("drive-audio");
+    ok("the joined file is playable, which is the whole point",
+       ba && !ba.paused && isFinite(ba.duration) && ba.duration > 0,
+       "paused=" + (ba && ba.paused) + " duration=" + (ba && ba.duration) +
+       " status=" + bd.getElementById("drive-status").textContent);
+    /*
+     * AND IT IS THE RIGHT LENGTH. Chrome will cheerfully play a file with
+     * rubbish bytes spliced into it; iOS will not. What both agree on is that
+     * such a file is the wrong LENGTH — the rubbish is 4KB where a real chunk
+     * is seconds of speech — so the length is how this environment can see the
+     * consequence that only his phone can hear.
+     */
+    ok("and it is as long as all its real pieces, with no rubbish spliced in",
+       ba && Math.abs(ba.duration - st.chunks * FAKE_CHUNK_SECONDS) < st.chunks * 0.5,
+       "duration=" + (ba && ba.duration ? ba.duration.toFixed(1) : "?") +
+       " expected≈" + st.chunks * FAKE_CHUNK_SECONDS);
+    ok("and the clock is running rather than stuck at a dash",
+       bd.getElementById("drive-remaining").textContent !== "—",
+       JSON.stringify(bd.getElementById("drive-remaining").textContent));
+    void badServedTwice;
+    bd.getElementById("drive-exit").click();
+    await wait(200);
+  }
+
   say("DONE");
 }
 

@@ -612,12 +612,16 @@ const Drive = (function () {
       if (docId !== myDoc) break;          // a different document was opened
       if (parts[i]) continue;
       try {
-        const got = await SpeechifyProvider.fetchChunk(plan.chunks[i].text, voiceId);
+        /*
+         * Nothing enters `parts` until the browser has PROVED it can decode it.
+         * Joining one unreadable piece makes the entire file unreadable, and
+         * the failure then names the whole document rather than the piece.
+         */
+        const good = await fetchPlayableChunk(i, voiceId);
         if (docId !== myDoc) break;
-        if (!got || !got.blob) throw new Error("no audio came back");
-        parts[i] = got.blob;
-        marks[i] = got.marks || null;
-        durations[i] = await durationOf(got.blob);
+        parts[i] = good.blob;
+        marks[i] = good.marks;
+        durations[i] = good.seconds;
       } catch (err) {
         /*
          * One failure is not the end of a drive. Everything before this point
@@ -663,16 +667,67 @@ const Drive = (function () {
    * megabytes.
    */
   async function durationOf(blob) {
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return estimateDuration(blob);
-      if (!durationOf._ctx) durationOf._ctx = new Ctx();
-      const buf = await blob.arrayBuffer();
-      const decoded = await durationOf._ctx.decodeAudioData(buf.slice(0));
-      return decoded.duration;
-    } catch {
-      return estimateDuration(blob);
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    /*
+     * No AudioContext at all is a CAPABILITY gap, so guess the length and carry
+     * on. A decode that FAILS is a verdict on the bytes, and it is deliberately
+     * allowed to throw.
+     *
+     * This used to swallow both, returning bytes ÷ 6000 either way — so a chunk
+     * the browser could not read was waved through with a made-up duration,
+     * joined into the file, and made the WHOLE document undecodable. The screen
+     * then said "The phone would not start audio: The operation is not
+     * supported", which is true and says nothing about the one chunk that
+     * caused it. It survived every reload, because the cache is keyed on the
+     * text and kept handing back the same unreadable bytes.
+     *
+     * decodeAudioData refusing is the single best evidence available that these
+     * bytes are not playable audio. Using it as "never mind" threw away the
+     * only check there was.
+     */
+    if (!Ctx) return estimateDuration(blob);
+    if (!durationOf._ctx) durationOf._ctx = new Ctx();
+    const buf = await blob.arrayBuffer();
+    const decoded = await durationOf._ctx.decodeAudioData(buf.slice(0));
+    return decoded.duration;
+  }
+
+  /*
+   * Fetch one chunk and PROVE it is playable before letting it near the file.
+   *
+   * A chunk that will not decode is thrown away, forgotten from the cache so
+   * the next try is not served the same bytes, and fetched once more from the
+   * network. Only if the fresh copy will not decode either is it a real
+   * failure — that distinguishes bad stored bytes, which a refetch fixes, from
+   * a decoder that hiccuped, which retrying also fixes.
+   */
+  async function fetchPlayableChunk(i, voiceId) {
+    const text = plan.chunks[i].text;
+    let lastWhy = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const got = await SpeechifyProvider.fetchChunk(text, voiceId);
+      if (!got || !got.blob) throw new Error("no audio came back");
+      /*
+       * An error page or a truncated download arrives as a small blob and is
+       * not worth handing to the decoder. Real speech is never this short.
+       */
+      if (got.blob.size < 1024) {
+        lastWhy = "only " + got.blob.size + " bytes came back";
+      } else {
+        try {
+          return { blob: got.blob, marks: got.marks || null, seconds: await durationOf(got.blob) };
+        } catch (err) {
+          lastWhy = "the audio would not decode" +
+                    (err && err.message ? " (" + String(err.message).slice(0, 60) + ")" : "");
+        }
+      }
+      // Same bytes next time unless the stored copy goes.
+      if (SpeechifyProvider.forget) {
+        try { await SpeechifyProvider.forget(text, voiceId); } catch { /* best effort */ }
+      }
     }
+    throw new Error("A piece of this document came back unreadable — " + lastWhy +
+                    ". Tap play to try that piece again.");
   }
 
   /*

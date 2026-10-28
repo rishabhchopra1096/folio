@@ -807,6 +807,31 @@ const SpeechifyProvider = (function () {
     } catch { return false; }
   }
 
+  /*
+   * Throw away one cached chunk.
+   *
+   * WHY THIS HAS TO EXIST: the cache is keyed on the text, so a bad entry is
+   * not a one-off — it is served again every single time that paragraph comes
+   * round, for ever, and no amount of retrying can get past it. On
+   * 28 October 2026 one undecodable chunk made a whole document unplayable and
+   * stayed unplayable across reloads, because every attempt was served the
+   * same bytes from disk. A caller that discovers audio it cannot decode needs
+   * a way to say so.
+   */
+  async function forget(text, voiceId) {
+    const key = cacheKey(text, voiceId || currentVoiceId());
+    cache.delete(key);
+    try {
+      const db = await openDb();
+      if (db) await asPromise(tx(db, "readwrite").delete(key));
+      log("forgot", { chars: text.length });
+      return true;
+    } catch (err) {
+      log("forget-failed", { why: String(err && err.message).slice(0, 60) });
+      return false;
+    }
+  }
+
   async function diskPut(key, blob, marks) {
     try {
       const db = await openDb();
@@ -1498,6 +1523,7 @@ const SpeechifyProvider = (function () {
      * passage already heard in the reader is already on disk, and preparing a
      * drive must not buy it a second time.
      */
+    forget: forget,
     fetchChunk: function (text, voiceId, signal) {
       if (!hasKey()) return Promise.reject(new Error("No Speechify key saved."));
       if (keyWasRejected()) return Promise.reject(new Error("Speechify rejected the saved key."));
