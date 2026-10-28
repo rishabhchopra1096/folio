@@ -11,6 +11,10 @@ and not a fact.*
 - **A second, much smaller front end at `/drive`.** Five controls: play/pause, back 15s,
   forward 15s, slower, faster — and one enormous button in the middle that records a
   thought and files it against the paragraph that was being read when you pressed it.
+- **Two views, one toggle.** *Focus* is the big button and nothing else. *Words* shows the
+  sentence being read, large, with the ones around it dimmed — the lyrics idea from Apple
+  Music, and tapping a line jumps there. Both keep the same transport and the same
+  one-button recording, so switching never changes what a control does.
 - **The whole document is fetched and joined into ONE MP3 before it plays.** This is the
   central design decision and everything else follows from it. iOS will not let a
   backgrounded page start a *new* audio element, so the reader's chunk-by-chunk playback
@@ -35,6 +39,7 @@ and not a fact.*
 ## Document map
 
 - **How to use it** — the three things to do before you drive.
+- **The two views** — what each is for, and how following the words is possible at all.
 - **Why one joined file** — the decision the whole design rests on, and the evidence.
 - **What was built** — the files, and what each one is for.
 - **User stories** — every story, its lane, and whether it passed.
@@ -59,6 +64,36 @@ and not a fact.*
 
 While driving: the big button in the middle records. Press it, say the thing, press it
 again. Reading pauses while you talk and starts again by itself.
+
+## The two views
+
+**Focus is for driving. Words is for the moment you stop.**
+
+*Focus* is the default: one enormous button, because the only thing you should be doing
+with this screen at speed is pressing it without looking.
+
+*Words* lays the document out one sentence per line and lights the one being spoken,
+dimming the rest — the same idea as a music app's lyrics screen, for the same reason. At a
+standstill, or as a passenger, it answers "where are we?" in a glance instead of a guess
+from a progress bar. Tapping a line jumps there, which is the one thing focus cannot do:
+"go back to where he started on pricing" becomes a look and a tap rather than hammering
+the fifteen-second button and listening for it.
+
+**Following along is possible because Speechify already tells us when each word is
+spoken** and we were throwing it away. Every chunk comes back with marks — the time each
+word starts, and where that word sits in the chunk's text — at no extra cost. Two binary
+searches over those turn "412 seconds in" into "this sentence", and back again for the
+tap. Where marks are missing the position is spread evenly across the chunk's measured
+duration, which is accurate to a sentence or two rather than to a word.
+
+**A sentence is the unit, not a word or a paragraph.** A paragraph is too big to tell you
+anything at a glance; a word moves too fast to be worth looking at and would invite you to
+watch it. A sentence changes every few seconds, which is about as often as it is safe to
+look at anything.
+
+**It does not fight your thumb.** Touch the list and it stops scrolling itself for six
+seconds, so reading ahead is possible. Without that, looking ahead was impossible — it
+snatched the list back every few seconds.
 
 ## Why one joined file
 
@@ -133,6 +168,13 @@ and has NOT been answered.**
 | D-3 | Back and forward fifteen seconds | browser | PASS |
 | D-4 | Faster and slower, and it says which | browser | PASS |
 | D-5 | I stop for petrol and come back to where I was | browser | PASS |
+| D-31 | A toggle switches between the big button and the words | browser | PASS |
+| D-32 | There is a line for every sentence, headings included | browser | PASS |
+| D-33 | The lit line is the one being spoken | browser | PASS |
+| D-34 | Tapping a line jumps to where it is spoken | browser | PASS |
+| D-35 | Which view I chose is remembered | browser | PASS |
+| D-36 | In the words view nothing overlaps anything else | browser | PASS |
+| D-37 | Scrolling ahead is not snatched back | browser | **not run** |
 | D-6 | The document plays through with no gap between chunks | browser | PASS |
 | D-7 | Reaching the end says so rather than going quiet | browser | PASS |
 | D-8 | The lock screen shows this read | phone | **not run** |
@@ -189,6 +231,18 @@ quietly counted.
    was built for. `adoptCredentials()` now fills the gap, and only the gap — a key already
    on the phone always wins.
 
+5. **The words view pushed every control off the screen.** It was given 80vh of vertical
+   padding to centre the current line — and padding is part of a box and cannot shrink, so
+   the list was 682px tall inside a 529px parent whatever flex said. The sentences lay
+   across the transport and the record bar fell off the bottom. *Cost:* a view in which
+   nothing can be pressed. **Every functional assertion still passed**, which is the whole
+   argument for looking at a screenshot. The room now comes from spacer elements inside
+   the scrolling list, which are content and have no hold over the box.
+
+6. **`min-height: 100dvh` let the page grow instead of scrolling.** Same screenshot, same
+   cause once removed: the screen is now exactly the viewport and the list inside it is
+   what scrolls.
+
 **And one bug in the test itself, which is worth more than the others.** The import test
 first called `FolioStore.importAll` directly and passed, while the real button was still
 leaving the phone with no keys. It was testing the library, not the feature. It now drives
@@ -202,6 +256,7 @@ the actual file input, and bug 4 above is what that change exposed.
 | Stop writing the recording to IndexedDB before upload | 16 assertions, including every outbox one |
 | Register `previoustrack`/`nexttrack` | the one assertion that forbids them |
 | Stop carrying the voice keys on import | the one assertion that requires them |
+| Put the 80vh padding back on the words list | the overlap guard |
 
 `tools/mutate-drive.sh` exists because the first attempt at this left `js/drive.js`
 mutated in the working tree: the restoring `cp` ran from the wrong directory and failed
@@ -227,8 +282,13 @@ screenshot at 393×852 and looking at it.**
    needed to read "1 note waiting to send" was the moment "Note saved" was covering it. It
    now sits in the empty band under the clock, where no control ever goes.
 
+**A fourth fault, found the same way and worth separating out**, is bugs 5 and 6 above:
+the words view hid every control behind the text, and not one of the sixty-eight
+assertions noticed. It is now guarded by a check that walks the seven rows of the layout
+and fails if any one starts before the previous one ends.
+
 Shots are in `docs/drive-mode/images/` (`picker-dark`, `player-dark`, `recording-dark`,
-`pending-dark`). Regenerate with:
+`pending-dark`, `words-dark`). Regenerate with:
 
 ```
 node test/browser/serve.js &
@@ -321,8 +381,11 @@ Fifteen minutes, parked, before you set off:
   around 3.7MB, so it should fit, but it is close enough to be worth knowing.
 - **Note anchoring is accurate to a sentence or two**, not to a word. It interpolates
   across the measured duration of the chunk you were in.
-- **No sentence-level skip.** Fifteen seconds is what a thumb expects and what the lock
-  screen offers.
+- **No sentence-level skip buttons.** Fifteen seconds is what a thumb expects and what the
+  lock screen offers. The words view gives you sentence-level jumps by tapping instead.
+- **The words view follows the audio to the sentence, not the word.** Apple highlights a
+  word at a time; this lights a whole line. Word-level is possible with the same marks and
+  was not done today.
 
 ## What I did not do
 
@@ -335,6 +398,8 @@ Fifteen minutes, parked, before you set off:
   URL. If it earns its place, it should get a link.
 - **I did not handle a document being edited between preparing it and listening.** The
   chunks are planned once when you open it.
+- **I did not test that scrolling ahead in the words view is not snatched back** (D-37).
+  The suppression is six lines and is the kind of thing that works until it does not.
 - **I did not look at the light-mode screenshots**, only dark. Light mode exists and the
   tokens are defined, but I judged the night case the one that mattered and only inspected
   that.
