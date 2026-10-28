@@ -1,0 +1,552 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Drive: one joined file, lock-screen controls, and a note that lands on the right paragraph</title>
+<!--
+  Drives the real drive.html in a real browser.
+
+  The jsdom suite (test/chunker-parity.selftest.js) proves the drive player
+  cuts a document in the same places the reader does, which is what keeps
+  already-paid-for audio free. It cannot prove any of the things below, because
+  they are all about a real audio element:
+
+  1. CACHE PARITY, END TO END. The chunks drive.html actually ASKS for are
+     compared against what the reader's own js/tts.js computes for the same
+     document, in the same browser — not against a second copy of the rule.
+
+  2. THE JOINED FILE. Every chunk's MP3 is concatenated into one source. If
+     that did not produce one continuous playable file the whole design would
+     be wrong, and on a locked iPhone it would be wrong silently. Here the
+     duration of the joined file is checked against the sum of its parts.
+
+  3. THE LOCK SCREEN. play, pause and the two fifteen-second skips must be
+     registered, and previoustrack/nexttrack must NOT be — iOS shows track
+     buttons INSTEAD of skip buttons when both exist, and track buttons are
+     the wrong gesture for a document.
+
+  4. A NOTE LANDS ON THE RIGHT PARAGRAPH. Seek to a known second, dictate, and
+     check the comment is attached to a highlight quoting the paragraph that
+     was actually being read at that second.
+
+  5. NOTHING SPOKEN IS EVER LOST. A failed transcription must leave the audio
+     in IndexedDB and say so; a later success must turn it into a note and
+     empty the outbox.
+
+  Audio is faked with hand-built silent MP3 frames rather than bought from
+  Speechify: the test must not cost money, must not need a key, and must be
+  able to run on a train.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DOC = "doc_drive_probe";
+
+/*
+ * MPEG-1 Layer III, 128 kbit/s, 44.1 kHz. A 417-byte frame carries 1152
+ * samples, so 38.28 frames is a second. The payload is zeroes, which every
+ * decoder renders as silence — all this test needs is real, decodable,
+ * measurable duration.
+ */
+const FRAME = 417;
+const FRAMES_PER_SEC = 44100 / 1152;
+function silentMp3(seconds) {
+  const n = Math.round(seconds * FRAMES_PER_SEC);
+  const b = new Uint8Array(FRAME * n);
+  for (let i = 0; i < n; i++) {
+    const o = i * FRAME;
+    b[o] = 0xFF; b[o + 1] = 0xFB; b[o + 2] = 0x90; b[o + 3] = 0x00;
+  }
+  return new Blob([b], { type: "audio/mpeg" });
+}
+const FAKE_CHUNK_SECONDS = 12;
+
+/*
+ * A document long enough to be cut into many chunks, with paragraphs that are
+ * individually identifiable — the note-anchoring assertion has to be able to
+ * say WHICH paragraph it landed on, so each one is numbered.
+ */
+function buildBlocks() {
+  const blocks = [{ type: "header", data: { level: 1, text: "Drive Probe Document" } }];
+  for (let i = 0; i < 46; i++) {
+    blocks.push({ type: "paragraph", data: { text:
+      "Paragraph " + i + " begins here and is deliberately given several sentences so " +
+      "the sentence segmenter has real work to do. It carries a marker, PARA" + i + "END, " +
+      "which lets a test say exactly which paragraph a dictated note was filed " +
+      "against. It then runs on a little further so that the chunk boundaries fall " +
+      "in varied places rather than at every paragraph." } });
+  }
+  return blocks;
+}
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Drive Probe Document", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  localStorage.setItem("folio_doc_" + DOC,
+    JSON.stringify({ time: Date.now(), blocks: buildBlocks() }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  localStorage.setItem("folio_reads_" + DOC, "[]");
+  localStorage.removeItem("folio_drive_position");
+
+  // ------------------------------------------------------------------------
+  // What the READER would ask for, from the reader's own code.
+  // ------------------------------------------------------------------------
+  const rf = document.createElement("iframe");
+  rf.style.cssText = "width:1200px;height:800px;border:0";
+  const rLoaded = new Promise((res) => { rf.onload = res; });
+  rf.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(rf);
+  await rLoaded;
+  await wait(3000);
+  let readerChunks = [];
+  try {
+    rf.contentWindow.eval("window.__tts = TTS;");
+    readerChunks = rf.contentWindow.__tts.debugChunks()
+      .map((c) => ({ ds: c.ds, de: c.de }));
+  } catch (e) { say("FAIL could not read the reader's chunks  -> " + e.message); }
+  ok("the reader produced chunks to compare against", readerChunks.length > 3,
+     "n=" + readerChunks.length);
+  rf.remove();
+
+  // ------------------------------------------------------------------------
+  // The drive page.
+  // ------------------------------------------------------------------------
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:430px;height:900px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/drive.html";
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(600);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  // The modules are declared with `const`, which does not put them on window,
+  // so they are lifted across deliberately.
+  w.eval("window.__Drive = Drive; window.__Chunker = Chunker; " +
+         "window.__Speechify = SpeechifyProvider; window.__Voice = Voice; window.__Store = FolioStore;");
+  const Drive = w.__Drive, Store = w.__Store;
+
+  // ---- the picker -------------------------------------------------------
+  const rows = d.querySelectorAll(".drive-doc");
+  ok("the picker lists the document", rows.length === 1, "rows=" + rows.length);
+  ok("the row names the document",
+     rows[0] && /Drive Probe Document/.test(rows[0].textContent),
+     rows[0] ? rows[0].textContent.slice(0, 60) : "no row");
+  ok("the row says how long it is",
+     rows[0] && /\d+ words · about \d+ min/.test(rows[0].textContent),
+     rows[0] ? rows[0].textContent : "");
+
+  // ---- stub the paid and permissioned bits ------------------------------
+  const requested = [];
+  w.__Speechify.hasKey = () => true;
+  w.__Speechify.keyWasRejected = () => false;
+  w.__Speechify.currentVoiceId = () => "probe-voice";
+  w.__Speechify.fetchChunk = function (text) {
+    requested.push(text);
+    return Promise.resolve({ blob: silentMp3(FAKE_CHUNK_SECONDS), marks: [], url: null });
+  };
+
+  let transcript = "This bit about incentives is the part I want to come back to.";
+  let failNext = 0;
+  const recorded = [];
+  w.__Voice.hasKey = () => true;
+  w.__Voice.startRecording = () => Promise.resolve({ probe: true });
+  w.__Voice.stopRecordingRaw = () => Promise.resolve(
+    new Blob([new Uint8Array(4096)], { type: "audio/mp4" }));
+  w.__Voice.isRetryable = (e) => /network/i.test(e && e.message ? e.message : "");
+  w.__Voice.transcribe = function (blob) {
+    recorded.push(blob);
+    if (failNext > 0) { failNext--; return Promise.reject(new Error("Network error contacting Groq")); }
+    return Promise.resolve(transcript);
+  };
+
+  // Watch what gets put on the lock screen.
+  const handlers = {};
+  if (w.navigator.mediaSession) {
+    const real = w.navigator.mediaSession.setActionHandler.bind(w.navigator.mediaSession);
+    w.navigator.mediaSession.setActionHandler = function (name, fn) {
+      handlers[name] = fn;
+      try { real(name, fn); } catch (e) { /* unsupported action */ }
+    };
+  }
+
+  // ---- open it ----------------------------------------------------------
+  rows[0].click();
+  await wait(400);
+
+  ok("the player replaced the picker",
+     d.getElementById("drive-player").classList.contains("active") &&
+     !d.getElementById("drive-picker").classList.contains("active"),
+     "player/picker classes wrong");
+  ok("the title is shown",
+     /Drive Probe Document/.test(d.getElementById("drive-title").textContent),
+     d.getElementById("drive-title").textContent);
+
+  const st0 = Drive._state();
+  ok("the document was cut into several chunks", st0.chunks > 3, "chunks=" + st0.chunks);
+
+  // ---- 1. CACHE PARITY, against the reader's own numbers ----------------
+  const driveChunks = w.__Chunker
+    .plan(d.getElementById("drive-article")).chunks.map((c) => ({ ds: c.ds, de: c.de }));
+  ok("the drive cuts the document into the same NUMBER of chunks as the reader",
+     driveChunks.length === readerChunks.length,
+     "drive=" + driveChunks.length + " reader=" + readerChunks.length);
+  let offsetsMatch = driveChunks.length === readerChunks.length;
+  let firstBad = "";
+  for (let i = 0; i < Math.min(driveChunks.length, readerChunks.length); i++) {
+    if (driveChunks[i].ds !== readerChunks[i].ds || driveChunks[i].de !== readerChunks[i].de) {
+      offsetsMatch = false;
+      firstBad = "chunk " + i + ": drive [" + driveChunks[i].ds + "," + driveChunks[i].de +
+                 ") reader [" + readerChunks[i].ds + "," + readerChunks[i].de + ")";
+      break;
+    }
+  }
+  ok("every chunk begins and ends exactly where the reader's does — so cached audio is reused",
+     offsetsMatch, firstBad);
+
+  // Wait for every chunk to be fetched and joined.
+  for (let i = 0; i < 80; i++) {
+    const s = Drive._state();
+    if (s.ready === s.chunks && s.stitched === s.chunks) break;
+    await wait(250);
+  }
+  const st1 = Drive._state();
+  ok("every chunk was fetched", st1.ready === st1.chunks, st1.ready + "/" + st1.chunks);
+  ok("every fetched chunk is in the file being played",
+     st1.stitched === st1.chunks, st1.stitched + "/" + st1.chunks);
+  ok("it asked for exactly one piece of audio per chunk",
+     requested.length === st1.chunks, "requests=" + requested.length + " chunks=" + st1.chunks);
+  ok("it says it is safe to lock the screen",
+     /safe to lock/i.test(d.getElementById("drive-status").textContent),
+     d.getElementById("drive-status").textContent);
+
+  // ---- 2. THE JOINED FILE ----------------------------------------------
+  const audio = d.getElementById("drive-audio");
+  ok("there is exactly one audio element", d.querySelectorAll("audio").length === 1,
+     "n=" + d.querySelectorAll("audio").length);
+  ok("its source is a single joined blob",
+     audio && /^blob:/.test(audio.src), audio ? audio.src.slice(0, 40) : "no element");
+
+  const expected = st1.chunks * FAKE_CHUNK_SECONDS;
+  ok("the joined file is as long as all its parts added together — the parts really did join",
+     audio && Math.abs(audio.duration - expected) < 1.5,
+     "duration=" + (audio ? audio.duration.toFixed(2) : "?") + " expected≈" + expected);
+
+  // ---- 3. PLAYBACK AND THE LOCK SCREEN ---------------------------------
+  d.getElementById("drive-play").click();
+  await wait(900);
+  ok("pressing play starts it", audio && !audio.paused, "paused=" + (audio && audio.paused));
+  ok("the play button shows that it is playing",
+     d.getElementById("drive-play").classList.contains("playing"), "class missing");
+
+  ok("the lock screen gets play", typeof handlers.play === "function");
+  ok("the lock screen gets pause", typeof handlers.pause === "function");
+  ok("the lock screen gets back fifteen seconds", typeof handlers.seekbackward === "function");
+  ok("the lock screen gets forward fifteen seconds", typeof handlers.seekforward === "function");
+  /*
+   * iOS shows EITHER track buttons or the skip pair. Registering track handlers
+   * would replace the skips with buttons that mean nothing for a document, so
+   * their absence is the assertion.
+   */
+  ok("it does NOT ask for previous/next track, which would hide the skip buttons",
+     !handlers.previoustrack && !handlers.nexttrack,
+     "prev=" + !!handlers.previoustrack + " next=" + !!handlers.nexttrack);
+  ok("the lock screen is told it is playing",
+     !w.navigator.mediaSession || w.navigator.mediaSession.playbackState === "playing",
+     w.navigator.mediaSession ? w.navigator.mediaSession.playbackState : "n/a");
+  ok("the lock screen knows the document's title",
+     !w.navigator.mediaSession || !w.navigator.mediaSession.metadata ||
+     /Drive Probe Document/.test(w.navigator.mediaSession.metadata.title),
+     w.navigator.mediaSession && w.navigator.mediaSession.metadata
+       ? w.navigator.mediaSession.metadata.title : "n/a");
+
+  // ---- skip and speed ---------------------------------------------------
+  audio.currentTime = 60;
+  await wait(150);
+  d.getElementById("drive-fwd").click();
+  await wait(250);
+  ok("forward fifteen seconds moves forward about fifteen seconds",
+     audio.currentTime > 72 && audio.currentTime < 78, "t=" + audio.currentTime.toFixed(2));
+  d.getElementById("drive-back").click();
+  await wait(250);
+  ok("back fifteen seconds comes back", audio.currentTime > 57 && audio.currentTime < 63,
+     "t=" + audio.currentTime.toFixed(2));
+
+  // The same handler the lock screen would call.
+  if (handlers.seekforward) {
+    const before = audio.currentTime;
+    handlers.seekforward({ seekOffset: 30 });
+    await wait(250);
+    ok("the lock screen's skip honours the interval iOS asks for",
+       audio.currentTime > before + 25, "before=" + before.toFixed(1) + " after=" + audio.currentTime.toFixed(1));
+  }
+
+  const rateBefore = audio.playbackRate;
+  d.getElementById("drive-faster").click();
+  await wait(150);
+  ok("faster really is faster", audio.playbackRate > rateBefore,
+     rateBefore + " -> " + audio.playbackRate);
+  ok("the speed is shown on screen", /×/.test(d.getElementById("drive-rate").textContent),
+     d.getElementById("drive-rate").textContent);
+  d.getElementById("drive-slower").click();
+  await wait(150);
+  ok("slower goes back", Math.abs(audio.playbackRate - rateBefore) < 0.001,
+     "rate=" + audio.playbackRate);
+
+  // ---- 4. A NOTE LANDS ON THE RIGHT PARAGRAPH --------------------------
+  /*
+   * Park the clock at a known second, so which paragraph "is being read" is a
+   * fact and not a guess. The chunk it falls in is known from the fake
+   * durations, and the paragraph from the chunk's character range.
+   */
+  const targetChunk = 3;
+  audio.currentTime = targetChunk * FAKE_CHUNK_SECONDS + FAKE_CHUNK_SECONDS / 2;
+  await wait(300);
+
+  const anchor = Drive._anchorHere();
+  ok("the anchor quotes a real paragraph of the document",
+     /PARA\d+END/.test(anchor.text), (anchor.text || "").slice(0, 70));
+  const expectedPara = w.__Chunker
+    .plan(d.getElementById("drive-article"));
+  const midChunk = expectedPara.chunks[targetChunk];
+  const midPos = Math.round(midChunk.ds + 0.5 * (midChunk.de - midChunk.ds));
+  const expectedBlock = w.__Chunker.blockAt(expectedPara.blocks, midPos);
+  ok("the anchor is the paragraph that was being read at that second",
+     expectedBlock && anchor.text === expectedBlock.el.textContent,
+     "anchor=" + (anchor.text || "").slice(0, 40) +
+     " expected=" + (expectedBlock ? expectedBlock.el.textContent.slice(0, 40) : "none"));
+
+  const rec = d.getElementById("drive-record");
+  rec.click();                                   // start recording
+  await wait(350);
+  ok("recording shows on the button", rec.classList.contains("recording"), rec.className);
+  ok("recording pauses the reading", audio.paused, "still playing");
+  ok("the label counts the recording up",
+     /Recording/.test(d.getElementById("drive-record-label").textContent),
+     d.getElementById("drive-record-label").textContent);
+
+  rec.click();                                   // stop, save, transcribe
+  await wait(1500);
+  ok("the reading starts again by itself", !audio.paused, "still paused");
+  ok("the button went back to normal", !rec.classList.contains("recording"), rec.className);
+
+  const comments = Store.getComments(DOC);
+  ok("the note was written as a comment", comments.length === 1, "n=" + comments.length);
+  ok("the comment holds what was said",
+     comments[0] && comments[0].text === transcript,
+     comments[0] ? comments[0].text : "no comment");
+  ok("the comment is attached to a highlight, not left floating",
+     comments[0] && comments[0].highlightId && !comments[0].isGeneral,
+     comments[0] ? "highlightId=" + comments[0].highlightId + " general=" + comments[0].isGeneral : "");
+  ok("the comment records where in the audio it was spoken",
+     comments[0] && typeof comments[0].driveAudioTime === "number" && comments[0].driveAudioTime > 1,
+     comments[0] ? String(comments[0].driveAudioTime) : "");
+
+  const hls = Store.getHighlights(DOC);
+  ok("a highlight was created for it", hls.length === 1, "n=" + hls.length);
+  ok("the highlight quotes the paragraph that was being read",
+     hls[0] && /PARA\d+END/.test(hls[0].text), hls[0] ? hls[0].text.slice(0, 60) : "");
+  ok("the highlight is the one the comment points at",
+     hls[0] && comments[0] && hls[0].id === comments[0].highlightId);
+  ok("the highlight carries a read, which is what the export groups on",
+     hls[0] && hls[0].readId, hls[0] ? String(hls[0].readId) : "");
+  ok("the highlight stores where in the article it is, so the reader can re-find it",
+     hls[0] && typeof hls[0].startNodeIndex === "number" && hls[0].endNodeIndex >= hls[0].startNodeIndex,
+     hls[0] ? hls[0].startNodeIndex + ".." + hls[0].endNodeIndex : "");
+  /*
+   * The stored node indices must resolve in the READER's article, not just in
+   * the drive page's hidden copy — that is the whole point of rendering the
+   * document with the reader's own converter.
+   */
+  const driveNodes = w.__Chunker.textNodes(d.getElementById("drive-article"));
+  ok("the quoted text is exactly what those node indices cover",
+     hls[0] && driveNodes[hls[0].startNodeIndex] &&
+     (driveNodes[hls[0].startNodeIndex].nodeValue || "").indexOf(hls[0].text.slice(0, 20)) === 0,
+     hls[0] && driveNodes[hls[0].startNodeIndex]
+       ? JSON.stringify(driveNodes[hls[0].startNodeIndex].nodeValue.slice(0, 40))
+       : "index did not resolve");
+
+  // ---- 5. NOTHING SPOKEN IS EVER LOST ----------------------------------
+  failNext = 1;                       // the next upload fails, retryably
+  transcript = "The second thought, saved after the connection came back.";
+  rec.click(); await wait(300);
+  rec.click(); await wait(1500);
+
+  ok("a failed upload does not lose the note",
+     /waiting to send/.test(d.getElementById("drive-outbox").textContent),
+     d.getElementById("drive-outbox").textContent);
+  ok("the outbox is visible when something is in it",
+     d.getElementById("drive-outbox").classList.contains("visible"));
+  const afterFail = Store.getComments(DOC);
+  ok("a failed upload writes no comment yet", afterFail.length === 1, "n=" + afterFail.length);
+  ok("the audio is being held, not thrown away", Drive._state().outboxCount === 1,
+     "outbox=" + Drive._state().outboxCount);
+
+  // The held audio must survive a RELOAD, which is the case memory cannot cover.
+  const reloaded = new Promise((res) => { f.onload = res; });
+  f.contentWindow.location.reload();
+  await reloaded;
+  await wait(800);
+  const w2 = f.contentWindow;
+  w2.eval("window.__Drive = Drive; window.__Voice = Voice; window.__Store = FolioStore;");
+  ok("the held recording is still there after a reload",
+     w2.__Drive._state().outboxCount === 1, "outbox=" + w2.__Drive._state().outboxCount);
+
+  // Now let it succeed.
+  w2.__Voice.hasKey = () => true;
+  w2.__Voice.transcribe = () => Promise.resolve(transcript);
+  w2.__Voice.isRetryable = () => true;
+  await w2.__Drive._flushOutbox();
+  await wait(700);
+
+  const finalComments = w2.__Store.getComments(DOC);
+  ok("once the connection is back the held note becomes a comment",
+     finalComments.length === 2, "n=" + finalComments.length);
+  ok("it is the right text",
+     finalComments.some((c) => c.text === transcript),
+     finalComments.map((c) => c.text.slice(0, 25)).join(" | "));
+  ok("the outbox empties once everything is sent",
+     w2.__Drive._state().outboxCount === 0, "outbox=" + w2.__Drive._state().outboxCount);
+  ok("the held note kept its paragraph through the reload",
+     finalComments.every((c) => c.highlightId && !c.isGeneral),
+     finalComments.map((c) => String(c.highlightId)).join(" | "));
+
+  // ---- 5b. STOPPING FOR PETROL -----------------------------------------
+  /*
+   * A drive gets interrupted. Coming back to the beginning of a forty minute
+   * document because the tab was closed at a services would be worse than no
+   * resume at all, because you would not notice until you had re-heard ten
+   * minutes of it.
+   */
+  // The frame was reloaded by the outbox test above, so it is showing the
+  // picker again. Open the document afresh — which is also what a real
+  // interrupted drive does.
+  const w2a = f.contentWindow, d2a = f.contentDocument;
+  w2a.eval("window.__Drive = Drive; window.__Speechify = SpeechifyProvider; window.__Voice = Voice;");
+  w2a.__Speechify.hasKey = () => true;
+  w2a.__Speechify.keyWasRejected = () => false;
+  w2a.__Speechify.currentVoiceId = () => "probe-voice";
+  w2a.__Speechify.fetchChunk = () => Promise.resolve(
+    { blob: silentMp3(FAKE_CHUNK_SECONDS), marks: [], url: null });
+  d2a.querySelector(".drive-doc").click();
+  for (let i = 0; i < 100; i++) {
+    const s2 = w2a.__Drive._state();
+    if (s2.chunks && s2.stitched === s2.chunks) break;
+    await wait(200);
+  }
+  d2a.getElementById("drive-play").click();
+  await wait(500);
+  const audio2 = d2a.getElementById("drive-audio");
+  let savedAt = 0;
+  ok("the document re-opened so the resume can be tested at all", !!audio2);
+  if (audio2) {
+    audio2.currentTime = 95;
+    savedAt = 95;
+    await wait(2600);                  // the position is written at most once every 2s
+  }
+  const stored = JSON.parse(w2a.localStorage.getItem("folio_drive_position") || "null");
+  ok("where you had got to is remembered",
+     stored && stored.docId === DOC && Math.abs(stored.time - savedAt) < 4,
+     JSON.stringify(stored));
+
+  const back = new Promise((res) => { f.onload = res; });
+  f.contentWindow.location.reload();
+  await back;
+  await wait(700);
+  const w3 = f.contentWindow, d3 = f.contentDocument;
+  w3.eval("window.__Drive = Drive; window.__Speechify = SpeechifyProvider; window.__Voice = Voice;");
+  ok("the page you were on is offered first",
+     /resumes at/.test(d3.querySelector(".drive-doc").textContent),
+     d3.querySelector(".drive-doc").textContent);
+
+  // ---- 5c. WITH NO SPEECHIFY KEY ---------------------------------------
+  /*
+   * The system voice cannot play with the screen locked, so a drive without
+   * Speechify is not a degraded drive, it is no drive. Saying that plainly
+   * beats a play button that silently does nothing.
+   */
+  w3.__Speechify.hasKey = () => false;
+  d3.querySelector(".drive-doc").click();
+  await wait(600);
+  ok("with no Speechify key it says exactly what is missing and why",
+     /Speechify key/.test(d3.getElementById("drive-status").textContent) &&
+     /locked/.test(d3.getElementById("drive-status").textContent),
+     d3.getElementById("drive-status").textContent);
+
+  // ---- 6. A PHONE THAT HAS NEVER SEEN FOLIO ----------------------------
+  /*
+   * The storage is per browser, so a new phone starts with no pages AND no
+   * keys. If the picker cannot take a backup, the drive screen on that phone
+   * is an empty list with no way forward — so both halves are checked: that it
+   * says what to do, and that doing it works.
+   */
+  const g = document.createElement("iframe");
+  const gLoaded = new Promise((res) => { g.onload = res; });
+  // A different port-less path on the same origin still shares localStorage,
+  // so the store is emptied first to stage a genuinely new device.
+  // The keys are the half of this that is easy to forget: a phone can have
+  // every page and still be unable to say a word or save a note.
+  localStorage.setItem("folio_speechify_key", "sk_probe_speechify");
+  localStorage.setItem("folio_groq_key", "gsk_probe_groq");
+  const backup = JSON.parse(JSON.stringify(Store.exportAll()));
+  Object.keys(localStorage).filter((k) => k.indexOf("folio_") === 0)
+    .forEach((k) => localStorage.removeItem(k));
+  g.src = "/drive.html";
+  document.getElementById("host").appendChild(g);
+  await gLoaded;
+  await wait(500);
+  const gd = g.contentDocument, gw = g.contentWindow;
+
+  ok("a phone with nothing on it says so rather than showing an empty screen",
+     /Import a backup/.test(gd.getElementById("drive-doc-list").textContent),
+     gd.getElementById("drive-doc-list").textContent.slice(0, 80));
+  ok("the import control is on the picker", !!gd.getElementById("drive-import"));
+
+  ok("the backup carries the voice keys, which a new phone has none of",
+     backup.folio_speechify_key === "sk_probe_speechify" &&
+     backup.folio_groq_key === "gsk_probe_groq",
+     "speechify=" + backup.folio_speechify_key + " groq=" + backup.folio_groq_key);
+
+  gw.eval("window.__Store = FolioStore;");
+  /*
+   * Driven through the real file input, not by calling the store.
+   *
+   * The first version of this called FolioStore.importAll directly and passed
+   * while the actual button was still leaving the phone with no voice keys —
+   * the test was exercising the library, not the feature.
+   */
+  const dt = new DataTransfer();
+  dt.items.add(new File([JSON.stringify(backup)], "folio-backup.json",
+                        { type: "application/json" }));
+  const input = gd.getElementById("drive-import");
+  input.files = dt.files;
+  input.dispatchEvent(new gw.Event("change", { bubbles: true }));
+  for (let i = 0; i < 40; i++) {
+    if (gd.querySelectorAll(".drive-doc").length) break;
+    await wait(150);
+  }
+  ok("importing a backup puts the pages back",
+     gd.querySelectorAll(".drive-doc").length > 0,
+     "rows=" + gd.querySelectorAll(".drive-doc").length);
+  ok("the imported document is readable again",
+     (gw.__Store.readPage(DOC) || {}).blocks &&
+     gw.__Store.readPage(DOC).blocks.length > 10,
+     "blocks=" + ((gw.__Store.readPage(DOC) || {}).blocks || []).length);
+  ok("the notes made on the drive came back with it",
+     gw.__Store.getComments(DOC).length === 2,
+     "n=" + gw.__Store.getComments(DOC).length);
+  ok("the voice keys arrived on the new phone, so it can read and can listen",
+     gw.localStorage.getItem("folio_speechify_key") === "sk_probe_speechify" &&
+     gw.localStorage.getItem("folio_groq_key") === "gsk_probe_groq",
+     "speechify=" + gw.localStorage.getItem("folio_speechify_key") +
+     " groq=" + gw.localStorage.getItem("folio_groq_key"));
+
+  say("DONE");
+}
+
+main().catch((e) => { say("FAIL probe threw  -> " + (e && e.stack ? e.stack.split("\n")[0] : e)); say("DONE"); });
+</script>
