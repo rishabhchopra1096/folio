@@ -86,6 +86,9 @@ const Drive = (function () {
   // your place.
   const POS_KEY = "folio_drive_position";
 
+  // Which of the two views was last chosen.
+  const VIEW_KEY = "folio_drive_view";
+
   // ==========================================================================
   // STATE
   // ==========================================================================
@@ -100,6 +103,14 @@ const Drive = (function () {
 
   let parts = [];             // parts[i] = Blob of chunk i's MP3, or undefined
   let durations = [];         // durations[i] = chunk i's length in seconds
+  /*
+   * marks[i] = when each word of chunk i is spoken: { t0 (ms into the chunk),
+   * cs, ce (characters into the chunk's text) }. Speechify returns these with
+   * the audio and they cost nothing extra. They are what turns "we are 412
+   * seconds in" into "we are on this sentence", which is the whole basis of
+   * the words view and of filing a note against the right line.
+   */
+  let marks = [];
   let ready = 0;              // how many chunks, from the start, we have in hand
   let stitched = 0;           // how many of those are in the file now playing
   let fetching = false;
@@ -119,6 +130,12 @@ const Drive = (function () {
   let outboxCount = 0;
   let ticker = null;
 
+  // "focus" = the one big button. "words" = the sentence being read.
+  let viewMode = "focus";
+  let lyricEls = [];          // one element per sentence, in order
+  let lyricIdx = -1;          // which one is lit
+  let scrollHeldUntil = 0;    // a thumb on the list stops it scrolling itself
+
   // ==========================================================================
   // DOM
   // ==========================================================================
@@ -131,6 +148,7 @@ const Drive = (function () {
       "drive-play", "drive-back", "drive-fwd", "drive-rate", "drive-slower",
       "drive-faster", "drive-record", "drive-record-label", "drive-note",
       "drive-outbox", "drive-exit", "drive-article", "drive-wake", "drive-import",
+      "drive-lyrics", "drive-view", "drive-record-inline",
     ].forEach((id) => { el[id.replace(/^drive-/, "").replace(/-(\w)/g, (m, c) => c.toUpperCase())] = document.getElementById(id); });
   }
 
@@ -384,11 +402,16 @@ const Drive = (function () {
 
     parts = new Array(plan.chunks.length);
     durations = new Array(plan.chunks.length).fill(0);
+    marks = new Array(plan.chunks.length);
+    buildLyrics();
     ready = 0; stitched = 0; fetchFailed = null;
 
     el.title.textContent = docTitle;
     el.picker.classList.remove("active");
     el.player.classList.add("active");
+    let saved = "focus";
+    try { saved = localStorage.getItem(VIEW_KEY) || "focus"; } catch { /* default */ }
+    setMode(saved);
     updateMediaMetadata();
 
     const resume = lastPosition();
@@ -452,6 +475,7 @@ const Drive = (function () {
         if (docId !== myDoc) break;
         if (!got || !got.blob) throw new Error("no audio came back");
         parts[i] = got.blob;
+        marks[i] = got.marks || null;
         durations[i] = await durationOf(got.blob);
       } catch (err) {
         /*
@@ -679,6 +703,7 @@ const Drive = (function () {
     });
     audio.addEventListener("timeupdate", function () {
       updateTimes();
+      updateLyrics();
       rememberPosition();
     });
     audio.addEventListener("ended", function () {
@@ -811,6 +836,194 @@ const Drive = (function () {
     }, 1000);
   }
   function stopTicker() { if (ticker) clearInterval(ticker); ticker = null; }
+
+  // ==========================================================================
+  // WHERE WE ARE IN THE WORDS
+  // ==========================================================================
+
+  /*
+   * Turning a moment in the audio into a position in the text, and back.
+   *
+   * Speechify hands back, with every chunk, the time each word is spoken and
+   * where that word sits in the chunk's text. Two binary searches over that
+   * turn "412 seconds in" into "this sentence" and "this sentence" into "jump
+   * to 389 seconds" — which is what makes the words view follow along, and
+   * what makes tapping a line work.
+   *
+   * Both fall back to spreading the chunk evenly across its own duration when
+   * marks are missing. That is accurate to a sentence or two rather than to a
+   * word, which is enough to file a note against the right paragraph.
+   */
+  function markAtTime(ms, m) {
+    let lo = 0, hi = m.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (m[mid].t0 <= ms) { best = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return best;
+  }
+
+  function markAtChar(cs, m) {
+    let lo = 0, hi = m.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (m[mid].cs >= cs) { best = mid; hi = mid - 1; } else lo = mid + 1;
+    }
+    return best;
+  }
+
+  function chunkIndexAtTime(t) {
+    let i = 0, acc = 0;
+    while (i < durations.length - 1 && acc + (durations[i] || 0) <= t) { acc += durations[i] || 0; i++; }
+    return { i: i, base: acc };
+  }
+
+  // Which character of the document is being spoken right now.
+  function charAtTime(t) {
+    if (!plan || !plan.chunks.length) return 0;
+    const at = chunkIndexAtTime(t);
+    const chunk = plan.chunks[at.i];
+    if (!chunk) return 0;
+    const m = marks[at.i];
+    if (m && m.length) {
+      const k = markAtTime((t - at.base) * 1000, m);
+      if (k >= 0 && m[k]) return chunk.ds + m[k].cs;
+    }
+    const dur = durations[at.i] || 1;
+    const frac = Math.min(1, Math.max(0, (t - at.base) / dur));
+    return Math.round(chunk.ds + frac * (chunk.de - chunk.ds));
+  }
+
+  // And the inverse: when is this character spoken.
+  function timeAtChar(ch) {
+    if (!plan || !plan.chunks.length) return 0;
+    let i = 0;
+    while (i < plan.chunks.length - 1 && ch >= plan.chunks[i].de) i++;
+    const chunk = plan.chunks[i];
+    const base = startOfChunk(i);
+    const m = marks[i];
+    if (m && m.length) {
+      const k = markAtChar(ch - chunk.ds, m);
+      if (k >= 0 && m[k]) return base + m[k].t0 / 1000;
+    }
+    const span = Math.max(1, chunk.de - chunk.ds);
+    return base + ((ch - chunk.ds) / span) * (durations[i] || 0);
+  }
+
+  // ==========================================================================
+  // THE WORDS VIEW
+  // ==========================================================================
+
+  /*
+   * WHAT THIS DOES:
+   * Lays the document out one sentence per line, so the line being read can be
+   * lit and the rest dimmed — the same idea as a music app's lyrics screen.
+   *
+   * WHY A SENTENCE AND NOT A PARAGRAPH OR A WORD:
+   * A paragraph is too big to tell you anything at a glance; a word moves too
+   * fast to be worth looking at and would invite you to watch it. A sentence
+   * changes every few seconds, which is roughly how often it is safe to look
+   * at anything.
+   *
+   * Every sentence is rendered once, up front, rather than windowed as you
+   * move. A long document is a few thousand short elements, which costs
+   * nothing to hold and means scrolling ahead to see what is coming — or back
+   * to find the line you want to jump to — is just scrolling.
+   */
+  function buildLyrics() {
+    lyricEls = [];
+    lyricIdx = -1;
+    if (!el.lyrics) return;
+    el.lyrics.textContent = "";
+    if (!plan || !plan.sentences.length) return;
+
+    const frag = document.createDocumentFragment();
+    // Spacers, so the first and last lines can still sit where the eye expects
+    // them. They are content and not padding, deliberately: see css/drive.css.
+    const padTop = document.createElement("div");
+    padTop.className = "lyric-pad-top";
+    frag.appendChild(padTop);
+
+    plan.sentences.forEach(function (sen) {
+      const text = plan.docText.slice(sen.ds, sen.de).trim();
+      if (!text) return;
+      const b = document.createElement("button");
+      b.className = "lyric";
+      b.textContent = text;
+      b.dataset.ds = String(sen.ds);
+      frag.appendChild(b);
+      lyricEls.push(b);
+    });
+    const padBottom = document.createElement("div");
+    padBottom.className = "lyric-pad-bottom";
+    frag.appendChild(padBottom);
+    el.lyrics.appendChild(frag);
+  }
+
+  /*
+   * Light the sentence being read and move it into view.
+   *
+   * Only touches the DOM when the line actually CHANGES. This runs on every
+   * timeupdate, which is four times a second, and rewriting a few thousand
+   * class names at that rate would make the scroll stutter — on the one screen
+   * where stutter is the whole problem.
+   */
+  function updateLyrics() {
+    if (viewMode !== "words" || !lyricEls.length || !audio) return;
+    const ch = charAtTime(audio.currentTime || 0);
+
+    let lo = 0, hi = lyricEls.length - 1, idx = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(lyricEls[mid].dataset.ds) <= ch) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    if (idx === lyricIdx) return;
+
+    if (lyricIdx >= 0) {
+      for (let k = Math.max(0, lyricIdx - 2); k <= Math.min(lyricEls.length - 1, lyricIdx + 2); k++) {
+        lyricEls[k].classList.remove("is-now", "is-near", "is-past");
+      }
+    }
+    lyricIdx = idx;
+    for (let k = Math.max(0, idx - 2); k <= Math.min(lyricEls.length - 1, idx + 2); k++) {
+      lyricEls[k].classList.remove("is-now", "is-near", "is-past");
+      if (k === idx) lyricEls[k].classList.add("is-now");
+      else if (k < idx) lyricEls[k].classList.add("is-past");
+      else lyricEls[k].classList.add("is-near");
+    }
+    // Everything before the current line stays dimmed as "already said".
+    if (idx > 2) lyricEls[idx - 3].classList.add("is-past");
+
+    /*
+     * Do not fight a thumb. If the list was touched in the last few seconds
+     * the reader is looking ahead deliberately, and yanking it back to the
+     * current line is the most annoying thing this screen could do.
+     */
+    if (Date.now() < scrollHeldUntil) return;
+    const reduce = window.matchMedia &&
+                   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    try {
+      lyricEls[idx].scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    } catch { lyricEls[idx].scrollIntoView(false); }
+  }
+
+  /*
+   * Switch between the big button and the words, and remember which.
+   *
+   * Both views keep the same transport at the bottom and the same one-button
+   * recording, so switching never changes what a control does — only how much
+   * of the screen the words are allowed.
+   */
+  function setMode(mode) {
+    viewMode = (mode === "words") ? "words" : "focus";
+    el.player.classList.toggle("mode-words", viewMode === "words");
+    try { localStorage.setItem(VIEW_KEY, viewMode); } catch { /* not important enough to fail on */ }
+    if (viewMode === "words") {
+      lyricIdx = -1;             // force a repaint and a scroll into place
+      scrollHeldUntil = 0;
+      updateLyrics();
+    }
+  }
 
   // ==========================================================================
   // THE LOCK SCREEN
@@ -984,7 +1197,7 @@ const Drive = (function () {
     el.record.classList.remove("recording");
     el.record.classList.add("working");
     if (micTimer) { clearInterval(micTimer); micTimer = null; }
-    el.recordLabel.textContent = "Saving…";
+    sayOnButton("Saving…");
 
     const h = micHandle;
     const anchor = micAnchor;
@@ -1023,14 +1236,25 @@ const Drive = (function () {
   function micIdle() {
     micState = "idle";
     el.record.classList.remove("recording", "working");
-    el.recordLabel.textContent = "Hold a thought";
+    sayOnButton("Hold a thought");
     updateMediaMetadata();
   }
 
   function updateMicLabel() {
     if (micState !== "recording") return;
     const s = Math.floor((Date.now() - micStartedAt) / 1000);
-    el.recordLabel.textContent = "Recording  " + mmss(s) + "  ·  tap to save";
+    sayOnButton("Recording  " + mmss(s) + "  ·  tap to save");
+  }
+
+  /*
+   * The button's caption lives in two places — under the circle in the focus
+   * view, inside the bar in the words view — and exactly one of them is ever
+   * visible. Writing both means the caption is right the instant the view is
+   * switched, with no state to keep in step.
+   */
+  function sayOnButton(text) {
+    if (el.recordLabel) el.recordLabel.textContent = text;
+    if (el.recordInline) el.recordInline.textContent = text;
   }
 
   /*
@@ -1329,6 +1553,46 @@ const Drive = (function () {
     el.faster.addEventListener("click", () => setRate(rateIdx + 1));
     el.record.addEventListener("click", toggleMic);
     el.exit.addEventListener("click", leave);
+
+    if (el.view) {
+      el.view.addEventListener("click", function () {
+        setMode(viewMode === "words" ? "focus" : "words");
+      });
+    }
+
+    if (el.lyrics) {
+      /*
+       * Tap a line to go there. This is the one thing the words view can do
+       * that the big-button view cannot: "go back to where he started talking
+       * about pricing" is a glance and a tap, instead of hammering the fifteen
+       * second button and listening for it.
+       */
+      el.lyrics.addEventListener("click", function (e) {
+        const line = e.target.closest ? e.target.closest(".lyric") : null;
+        if (!line || !audio || !audio.src) return;
+        const t = timeAtChar(Number(line.dataset.ds));
+        const max = Math.max(0, (audio.duration || 0) - 0.25);
+        audio.currentTime = Math.min(max, Math.max(0, t));
+        scrollHeldUntil = 0;
+        lyricIdx = -1;
+        updateTimes();
+        updateLyrics();
+        publishPosition();
+        if (audio.paused) play();
+      });
+
+      /*
+       * A thumb on the list means someone is deliberately looking somewhere
+       * else, so stop dragging the view back to the current line until they
+       * have finished. Without this, reading ahead is impossible: every few
+       * seconds it would snatch the list back.
+       */
+      ["touchstart", "pointerdown", "wheel"].forEach(function (ev) {
+        el.lyrics.addEventListener(ev, function () {
+          scrollHeldUntil = Date.now() + 6000;
+        }, { passive: true });
+      });
+    }
     if (el.import) {
       el.import.addEventListener("change", function () {
         const f = el.import.files && el.import.files[0];

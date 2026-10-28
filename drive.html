@@ -69,6 +69,14 @@
       <div class="drive-topbar">
         <button id="drive-exit" aria-label="Back to the list">&#8592;</button>
         <div id="drive-title">—</div>
+        <button id="drive-view" class="drive-view-btn" aria-label="Switch between the big button and the words">
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-lyrics">
+            <path d="M4 5h16v2H4zM4 10h12v2H4zM4 15h16v2H4zM4 20h9v2H4z"/>
+          </svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-focus">
+            <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>
+          </svg>
+        </button>
         <label class="drive-wake-wrap" title="Stop the screen going to sleep">
           <input type="checkbox" id="drive-wake" checked />
           awake
@@ -83,15 +91,26 @@
         </div>
       </div>
 
-      <!-- The one control this page was built for. -->
-      <div class="drive-record-wrap">
-        <button id="drive-record" aria-label="Record a thought">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15z"/>
-            <path d="M18.5 11.5a.9.9 0 0 0-1.8 0 4.7 4.7 0 0 1-9.4 0 .9.9 0 0 0-1.8 0 6.5 6.5 0 0 0 5.6 6.4V21h-2.3a.9.9 0 0 0 0 1.8h5.4a.9.9 0 0 0 0-1.8h-2.3v-3.1a6.5 6.5 0 0 0 5.6-6.4z"/>
-          </svg>
-        </button>
-        <div id="drive-record-label">Hold a thought</div>
+      <!--
+        The stage. In "focus" it is the one enormous button and nothing else.
+        In "words" it is the sentence being read, large, with the ones either
+        side of it dimmed — the same idea as the lyrics view in a music app,
+        for the same reason: at a standstill you can see where you are without
+        reading a page, and tapping a line jumps there.
+      -->
+      <div class="drive-stage">
+        <div id="drive-lyrics" aria-live="off"></div>
+
+        <div class="drive-record-wrap">
+          <button id="drive-record" aria-label="Record a thought">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15z"/>
+              <path d="M18.5 11.5a.9.9 0 0 0-1.8 0 4.7 4.7 0 0 1-9.4 0 .9.9 0 0 0-1.8 0 6.5 6.5 0 0 0 5.6 6.4V21h-2.3a.9.9 0 0 0 0 1.8h5.4a.9.9 0 0 0 0-1.8h-2.3v-3.1a6.5 6.5 0 0 0 5.6-6.4z"/>
+            </svg>
+            <span id="drive-record-inline">Hold a thought</span>
+          </button>
+          <div id="drive-record-label">Hold a thought</div>
+        </div>
       </div>
 
       <!-- Transport. Big enough to find without looking. -->
