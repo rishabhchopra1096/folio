@@ -120,29 +120,12 @@ const Drive = (function () {
   let wakeLock = null;
 
   // Recording
-  let micState = "idle";      // 'idle' | 'starting' | 'recording' | 'working'
+  let micState = "idle";      // 'idle' | 'recording' | 'working'
   let micHandle = null;
   let micAnchor = null;
   let micResume = false;
   let micStartedAt = 0;
   let micTimer = null;
-  let micWarmTimer = null;    // when to let the microphone go again
-
-  /*
-   * How long the microphone stays open after a note.
-   *
-   * WHY IT IS HELD AT ALL: asking iOS for the microphone while audio is
-   * playing costs about two seconds, because the phone has to reconfigure its
-   * audio session from playback to record-and-play. Paid on every press, that
-   * is two seconds of a screen that has not changed while he is already
-   * talking. Held open, the second note in a burst and every one after starts
-   * the instant he presses.
-   *
-   * WHY IT IS NOT HELD FOR EVER: an open microphone shows iOS's orange
-   * indicator and can change how playback is routed. Ninety seconds covers
-   * "and another thing" without leaving the mic open across a whole drive.
-   */
-  const MIC_WARM_MS = 90000;
 
   let outboxCount = 0;
   let ticker = null;
@@ -590,7 +573,6 @@ const Drive = (function () {
 
   function leave() {
     pause();
-    dropMicWarm();
     releaseWakeLock();
     stopTicker();
     showScreen("picker");
@@ -1117,135 +1099,6 @@ const Drive = (function () {
     padBottom.className = "lyric-pad-bottom";
     frag.appendChild(padBottom);
     el.lyrics.appendChild(frag);
-
-    // Notes already taken against this document go back where they were said.
-    restoreNotesInLyrics();
-    updateOutbox();
-  }
-
-  /* ==========================================================================
-   * NOTES, IN THE WORDS VIEW
-   *
-   * WHY HERE RATHER THAN A LIST SOMEWHERE: he asked for it in exactly these
-   * terms — "I never see what was transcribed. So I like the lyrics view. We
-   * have to figure out how I can see what was transcribed." A note belongs
-   * where it was said. Put under the sentence that was being read, it needs no
-   * screen of its own, no navigation, and no explanation of what it refers to:
-   * scroll back and the thought is sitting next to what prompted it.
-   * ======================================================================== */
-
-  /*
-   * Which lyric line covers a character position in the document's text.
-   * Returns -1 when there is nothing sensible to attach to.
-   */
-  function lyricIndexForPos(pos) {
-    if (!lyricEls.length || typeof pos !== "number" || !isFinite(pos)) return -1;
-    let lo = 0, hi = lyricEls.length - 1, idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (Number(lyricEls[mid].dataset.ds) <= pos) { idx = mid; lo = mid + 1; } else hi = mid - 1;
-    }
-    return idx;
-  }
-
-  /*
-   * Put one note under its line.
-   *
-   * Inserted after the line rather than inside it, so the line itself stays a
-   * single button with one job — tapping it still seeks, and the note is not
-   * part of what lights up as "being read now".
-   */
-  function showNoteInLyrics(text, anchor) {
-    if (!el.lyrics || !text) return false;
-    const idx = lyricIndexForPos(anchor && anchor.docPos);
-    const el0 = idx >= 0 ? lyricEls[idx] : null;
-
-    const row = document.createElement("div");
-    row.className = "lyric-note";
-    const what = document.createElement("span");
-    what.className = "lyric-note-text";
-    what.textContent = text;
-    row.appendChild(what);
-
-    if (el0 && el0.parentNode) {
-      /*
-       * After any notes already sitting under this line, so several thoughts
-       * about one sentence stay in the order they were spoken.
-       */
-      let after = el0;
-      while (after.nextSibling && after.nextSibling.classList &&
-             after.nextSibling.classList.contains("lyric-note")) {
-        after = after.nextSibling;
-      }
-      el0.parentNode.insertBefore(row, after.nextSibling);
-    } else {
-      // No line to attach to — a note taken before anything was read. Still
-      // worth showing, at the top, rather than silently dropping it.
-      const first = el.lyrics.firstChild;
-      el.lyrics.insertBefore(row, first ? first.nextSibling : null);
-    }
-    return true;
-  }
-
-  /*
-   * Rebuild every note this document already has, in the order they were said.
-   *
-   * Reads the same comments the desktop reader shows, so a note dictated on a
-   * drive and a note typed at the laptop appear here identically — there is no
-   * second store of "drive notes" to drift out of step.
-   */
-  function restoreNotesInLyrics() {
-    if (!docId || !el.lyrics) return;
-    let comments = [];
-    try { comments = FolioStore.getComments(docId) || []; } catch { return; }
-    if (!comments.length) return;
-
-    const highlights = (function () {
-      try { return FolioStore.getHighlights(docId) || []; } catch { return []; }
-    })();
-    const byId = {};
-    highlights.forEach(function (h) { byId[h.id] = h; });
-
-    comments
-      .slice()
-      .sort(function (a, b) { return (a.createdAt || "") < (b.createdAt || "") ? -1 : 1; })
-      .forEach(function (c) {
-        if (!c.text) return;
-        /*
-         * Where it goes. The HIGHLIGHT first: it names the paragraph exactly,
-         * and it was written at the moment the note was made.
-         *
-         * The spoken time is only the fallback, and only once the audio has
-         * been measured. Converting a time to a position needs the measured
-         * length of every chunk before it, and this runs when the document
-         * opens — before any of that exists. Used blindly it maps every note
-         * into the first chunk, which would quietly stack the whole of a long
-         * drive's thinking at the top of the page and look entirely plausible.
-         */
-        let pos = null;
-        const h = byId[c.highlightId];
-        if (h && typeof h.startNodeIndex === "number") pos = posOfNode(h.startNodeIndex);
-        if (pos === null && typeof c.driveAudioTime === "number" && c.driveAudioTime > 0 &&
-            durations.length && durations.some(function (d) { return d > 0; })) {
-          pos = charAtTime(c.driveAudioTime);
-        }
-        showNoteInLyrics(c.text, { docPos: pos });
-      });
-  }
-
-  /*
-   * The character position in the document's text where a given text node
-   * begins. The chunker's plan already walked the same nodes in the same
-   * order, so this is a lookup rather than a second measurement.
-   */
-  function posOfNode(nodeIndex) {
-    if (!plan || !nodes || nodeIndex < 0 || nodeIndex >= nodes.length) return null;
-    const node = nodes[nodeIndex];
-    for (let i = 0; i < plan.blocks.length; i++) {
-      const b = plan.blocks[i];
-      if (b.el && b.el.contains(node)) return b.ds;
-    }
-    return null;
   }
 
   /*
@@ -1288,36 +1141,11 @@ const Drive = (function () {
      * current line is the most annoying thing this screen could do.
      */
     if (Date.now() < scrollHeldUntil) return;
-    centreLyric(idx);
-  }
-
-  /*
-   * Put line `idx` in the middle of the list.
-   *
-   * WHY THIS IS NOT scrollIntoView({ block: "center" }). That method asks EVERY
-   * scrollable ancestor to move, and Safari on iOS handles it badly inside a
-   * nested scrolling box: it will scroll the page instead, or do nothing, and
-   * it fails silently either way. It worked in headless Chrome, so nothing
-   * caught it, and he found it on the road — "it just doesn't auto scroll,
-   * basically, to center the sentence that I have to read" (28 October 2026).
-   *
-   * Setting the container's own scrollTop can only move the container. The
-   * offset is measured from the two boxes rather than offsetTop, so it does not
-   * depend on which element happens to be the positioned ancestor.
-   */
-  function centreLyric(idx) {
-    const box = el.lyrics, target = lyricEls[idx];
-    if (!box || !target) return;
-    const delta = target.getBoundingClientRect().top - box.getBoundingClientRect().top;
-    const want = box.scrollTop + delta - (box.clientHeight - target.offsetHeight) / 2;
-    const top = Math.max(0, Math.min(want, box.scrollHeight - box.clientHeight));
     const reduce = window.matchMedia &&
                    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (box.scrollTo) {
-      try { box.scrollTo({ top: top, behavior: reduce ? "auto" : "smooth" }); return; }
-      catch { /* older Safari: no options object */ }
-    }
-    box.scrollTop = top;
+    try {
+      lyricEls[idx].scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    } catch { lyricEls[idx].scrollIntoView(false); }
   }
 
   /*
@@ -1474,32 +1302,9 @@ const Drive = (function () {
    * because the one unacceptable outcome is losing what you said.
    */
   async function toggleMic() {
-    // "starting" is the window while the OS is granting the microphone. A press
-    // in there is him checking whether it heard him, not asking to stop.
-    if (micState === "working" || micState === "starting") return;
+    if (micState === "working") return;
     if (micState === "recording") return stopNote();
     return startNote();
-  }
-
-  /*
-   * Hold the microphone open for a while after a note, then let it go.
-   * Re-armed by every note, so a burst keeps it warm and a quiet stretch does
-   * not.
-   */
-  function holdMicWarm() {
-    if (micWarmTimer) clearTimeout(micWarmTimer);
-    micWarmTimer = setTimeout(function () {
-      micWarmTimer = null;
-      if (micState === "idle" && typeof Voice !== "undefined" && Voice.releaseMic) {
-        Voice.releaseMic();
-      }
-    }, MIC_WARM_MS);
-  }
-
-  /* Let it go now — leaving the player, or the tab going away. */
-  function dropMicWarm() {
-    if (micWarmTimer) { clearTimeout(micWarmTimer); micWarmTimer = null; }
-    if (typeof Voice !== "undefined" && Voice.releaseMic) Voice.releaseMic();
   }
 
   async function startNote() {
@@ -1507,25 +1312,6 @@ const Drive = (function () {
       flash("Add your Groq key in Settings on the desktop to dictate.", 4000);
       return;
     }
-    /*
-     * SAY SOMETHING ON THE PRESS ITSELF, before the await.
-     *
-     * The old order wrote the button only after the microphone was granted, so
-     * for about two seconds the largest control on the screen did nothing
-     * visible — and the only way to find out whether it had heard you was to
-     * watch it, which is the one thing he should not be doing in a car. His
-     * words, 28 October 2026: "I have to wait 2 seconds till it starts
-     * recording. That is the problem."
-     *
-     * Now the press changes the button immediately, and the label changes
-     * again, differently, at the exact moment the microphone is live. He never
-     * has to guess which of the two states he is in.
-     */
-    micState = "starting";
-    el.record.classList.add("working");
-    const instant = Voice.isMicWarm && Voice.isMicWarm();
-    sayOnButton(instant ? "Listening…" : "Getting the mic…");
-
     micResume = !!(audio && !audio.paused && !audio.ended);
     if (micResume) audio.pause();
     micAnchor = anchorHere();
@@ -1534,14 +1320,12 @@ const Drive = (function () {
       micHandle = await Voice.startRecording();
     } catch (err) {
       micHandle = null;
-      micIdle();
       flash(err && err.message ? err.message : "Could not start recording", 4000);
       if (micResume && audio) audio.play().catch(() => {});
       return;
     }
     micState = "recording";
     micStartedAt = Date.now();
-    el.record.classList.remove("working");
     el.record.classList.add("recording");
     updateMicLabel();
     updateMediaMetadata();
@@ -1595,9 +1379,6 @@ const Drive = (function () {
     el.record.classList.remove("recording", "working");
     sayOnButton("Hold a thought");
     updateMediaMetadata();
-    // Having just taken one note is the best available evidence that another is
-    // coming, so this is where the warm window starts counting.
-    holdMicWarm();
   }
 
   function updateMicLabel() {
@@ -1669,10 +1450,6 @@ const Drive = (function () {
       endNodeIndex: last,
       endOffset: (nodes[last].nodeValue || "").length,
       audioTime: t,
-      // Where in the document's own text this was, so the words view can put
-      // the note back under the sentence it was spoken against. It was being
-      // computed and thrown away.
-      docPos: pos,
     };
   }
 
@@ -1844,20 +1621,7 @@ const Drive = (function () {
             await outboxDelete(rec.id);
             outboxCount = Math.max(0, outboxCount - 1);
             updateOutbox();
-            /*
-             * SHOW THE WORDS. The toast used to say: Note saved to "How the
-             * Pitch Gets Written" — which tells him a note exists and nothing
-             * about whether it is the note he meant. Dictation mishears things,
-             * and a wrong note you never see is worse than no note, because you
-             * drive on believing the thought is safe. His words, 28 October
-             * 2026: "I never see what was transcribed."
-             *
-             * Six seconds rather than two and a half: this is the one message
-             * on this screen that is worth actually reading.
-             */
-            flash("“" + text.trim() + "”", 6000);
-            showNoteInLyrics(text.trim(), rec.anchor);
-            updateOutbox();
+            flash("Note saved to “" + shortTitle(rec.anchor) + "”", 2500);
           } else {
             // Nothing was said. Keeping it forever would be a permanent
             // nag about an empty recording.
@@ -1895,37 +1659,12 @@ const Drive = (function () {
     return titleOf(id);
   }
 
-  /*
-   * The note counter.
-   *
-   * WHY IT SHOWS THE SAVED ONES TOO: it used to appear only when something was
-   * stuck, which meant that on a normal drive — everything sending fine — the
-   * screen said nothing at all about notes, and the only evidence a thought had
-   * been kept was a toast that had already gone. His words, mid-drive on
-   * 28 October 2026: "I have this anxiety that I will just [be] taking notes
-   * and they're not getting saved." A number that goes up when he speaks is the
-   * cheapest possible answer to that.
-   */
   function updateOutbox() {
     if (!el.outbox) return;
-    const saved = savedNoteCount();
-    const parts = [];
-    if (saved > 0) parts.push(saved === 1 ? "1 note saved" : saved + " notes saved");
-    if (outboxCount > 0) {
-      parts.push(outboxCount === 1 ? "1 waiting to send"
-                                   : outboxCount + " waiting to send");
-    }
-    el.outbox.classList.toggle("visible", parts.length > 0);
-    el.outbox.classList.toggle("is-waiting", outboxCount > 0);
-    el.outbox.textContent = parts.join("  ·  ");
-  }
-
-  /* How many notes this document already carries. Cheap: one read, no parse of
-     the page itself. */
-  function savedNoteCount() {
-    if (!docId) return 0;
-    try { return (FolioStore.getComments(docId) || []).filter((c) => c.text).length; }
-    catch { return 0; }
+    el.outbox.classList.toggle("visible", outboxCount > 0);
+    el.outbox.textContent = outboxCount === 1
+      ? "1 note waiting to send"
+      : outboxCount + " notes waiting to send";
   }
 
   // ==========================================================================
@@ -1970,12 +1709,6 @@ const Drive = (function () {
        * second button and listening for it.
        */
       el.lyrics.addEventListener("click", function (e) {
-        /*
-         * Any tap in here means he is looking at this list on purpose, so stop
-         * holding the scroll — INCLUDING a tap that hit no line at all, which
-         * is the case the early return below used to leave frozen.
-         */
-        scrollHeldUntil = 0;
         const line = e.target.closest ? e.target.closest(".lyric") : null;
         if (!line || !audio || !audio.src) return;
         const t = timeAtChar(Number(line.dataset.ds));
@@ -1995,35 +1728,11 @@ const Drive = (function () {
        * have finished. Without this, reading ahead is impossible: every few
        * seconds it would snatch the list back.
        */
-      /*
-       * Hold the auto-scroll when the list is DRAGGED, not when it is touched.
-       *
-       * The first version armed on touchstart and pointerdown, so a stationary
-       * tap froze the view for six seconds — and a tap that landed between two
-       * lines never cleared it, because the clearing lived in the handler that
-       * had already returned. The symptom is the one he reported from the road:
-       * "it doesn't auto scroll sometimes when I have messed with it."
-       *
-       * A tap is not a request to stop following. Only moving is.
-       */
-      let dragFrom = null;
-      el.lyrics.addEventListener("pointerdown", function (e) {
-        dragFrom = { x: e.clientX, y: e.clientY };
-      }, { passive: true });
-      el.lyrics.addEventListener("pointermove", function (e) {
-        if (!dragFrom) return;
-        // Four points of slop: a thumb is never perfectly still on a tap.
-        if (Math.abs(e.clientY - dragFrom.y) > 4 || Math.abs(e.clientX - dragFrom.x) > 4) {
+      ["touchstart", "pointerdown", "wheel"].forEach(function (ev) {
+        el.lyrics.addEventListener(ev, function () {
           scrollHeldUntil = Date.now() + 6000;
-          dragFrom = null;
-        }
-      }, { passive: true });
-      ["pointerup", "pointercancel"].forEach(function (ev) {
-        el.lyrics.addEventListener(ev, function () { dragFrom = null; }, { passive: true });
+        }, { passive: true });
       });
-      el.lyrics.addEventListener("wheel", function () {
-        scrollHeldUntil = Date.now() + 6000;
-      }, { passive: true });
     }
     if (el.addBtn) el.addBtn.addEventListener("click", () => showScreen("add"));
     if (el.addBack) el.addBack.addEventListener("click", () => showScreen("picker"));
@@ -2046,15 +1755,7 @@ const Drive = (function () {
      * dropped, and top up the audio file if more has arrived.
      */
     document.addEventListener("visibilitychange", function () {
-      /*
-       * Going away releases the microphone at once. Holding one open in a tab
-       * he has switched away from is both a battery cost and, with iOS's orange
-       * indicator on the whole time, an alarming one.
-       */
-      if (document.visibilityState !== "visible") {
-        if (micState === "idle") dropMicWarm();
-        return;
-      }
+      if (document.visibilityState !== "visible") return;
       if (audio && audio.src) { wireMediaSession(); updateMediaState(); }
       maybeRestitch();
       if (!fetching && ready < (plan ? plan.chunks.length : 0) && !fetchFailed) fetchAll();

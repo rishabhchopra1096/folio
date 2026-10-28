@@ -424,35 +424,6 @@ body {
 .lyric-pad-top { height: 34vh; }
 .lyric-pad-bottom { height: 46vh; }
 
-/*
- * A NOTE, SITTING WHERE IT WAS SAID.
- *
- * Deliberately not styled like a lyric: smaller, lighter, indented behind a
- * rule, so scrolling the words view never leaves any doubt about which marks
- * are the document and which are his own voice. It is always fully legible —
- * notes do not dim with distance the way sentences do, because the whole point
- * of them is to be findable later.
- */
-.lyric-note {
-  display: flex;
-  gap: 0.55rem;
-  margin: 0.15rem 0 0.55rem;
-  padding: 0.5rem 0 0.5rem 0.75rem;
-  border-left: 3px solid var(--d-accent);
-  font-size: 1.02rem;
-  line-height: 1.45;
-  color: var(--d-dim);
-}
-.lyric-note::before {
-  content: "\201C";
-  flex: 0 0 auto;
-  font-size: 1.5rem;
-  line-height: 1;
-  color: var(--d-accent);
-  opacity: 0.8;
-}
-.lyric-note-text { flex: 1 1 auto; }
-
 .lyric {
   display: block;
   width: 100%;
@@ -626,19 +597,12 @@ body {
   line-height: 1.45;
   color: var(--d-dim);
 }
-/*
- * Amber used to mean "this line exists at all", because the line only appeared
- * when something was stuck. Now it also carries the ordinary good news — how
- * many notes are saved — so the colour has to carry the difference instead:
- * quiet by default, amber only while something is genuinely waiting.
- */
 #drive-outbox {
   display: none;
   font-size: 0.86rem;
-  color: var(--d-dim);
+  color: #ffd166;
 }
 #drive-outbox.visible { display: block; }
-#drive-outbox.is-waiting { color: #ffd166; }
 
 /* A transient message — "+15s", "Note saved". Floats so it never reflows the
    controls under a thumb that is mid-press. */

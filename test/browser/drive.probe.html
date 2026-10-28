@@ -59,22 +59,6 @@ function charOf(w, d, t) {
   return c ? c.ds : 0;
 }
 function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
-/*
- * Wait until a scrolling box stops moving.
- *
- * Smooth scrolling is an animation, so reading scrollTop a fixed number of
- * milliseconds after asking for it measures the animation, not the app. Two
- * assertions failed that way and both were the test's fault.
- */
-async function settled(box, ms) {
-  let last = NaN, still = 0;
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-    if (box.scrollTop === last) { still += 50; if (still >= (ms || 250)) return box.scrollTop; }
-    else { still = 0; last = box.scrollTop; }
-  }
-  return box.scrollTop;
-}
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const DOC = "doc_drive_probe";
@@ -162,9 +146,6 @@ async function main() {
   const w = f.contentWindow, d = f.contentDocument;
   // The modules are declared with `const`, which does not put them on window,
   // so they are lifted across deliberately.
-  w.__problems = [];
-  w.addEventListener("error", (e) => w.__problems.push(String(e.message)));
-  w.addEventListener("unhandledrejection", (e) => w.__problems.push("rejected: " + String(e.reason && e.reason.message || e.reason)));
   w.eval("window.__Drive = Drive; window.__Chunker = Chunker; " +
          "window.__Speechify = SpeechifyProvider; window.__Voice = Voice; window.__Store = FolioStore;");
   const Drive = w.__Drive, Store = w.__Store;
@@ -279,21 +260,8 @@ async function main() {
   d.getElementById("drive-play").click();
   await wait(900);
   ok("pressing play starts it", audio && !audio.paused, "paused=" + (audio && audio.paused));
-  /*
-   * WAIT FOR THE EVENT, do not sample once. The button's class, the lock-screen
-   * handlers and the Now Playing state are all written by the `playing` event,
-   * which fires some time after play() resolves. Checking 900ms after the click
-   * passed for months and then failed the day an unrelated change added a few
-   * milliseconds of work to opening a document — a flaky assertion that had
-   * been reporting on the clock, not on the app.
-   */
-  for (let i = 0; i < 60; i++) {
-    if (d.getElementById("drive-play").classList.contains("playing")) break;
-    await wait(100);
-  }
   ok("the play button shows that it is playing",
-     d.getElementById("drive-play").classList.contains("playing"),
-     "class missing; page errors: " + JSON.stringify(w.__problems || []));
+     d.getElementById("drive-play").classList.contains("playing"), "class missing");
 
   ok("the lock screen gets play", typeof handlers.play === "function");
   ok("the lock screen gets pause", typeof handlers.pause === "function");
@@ -417,67 +385,6 @@ async function main() {
   });
   ok("in the words view nothing overlaps anything else", overlap === "", overlap);
 
-  /*
-   * IT MUST ACTUALLY SCROLL, AND KEEP THE LIT LINE IN THE MIDDLE.
-   *
-   * There was no assertion for this at all. The view was checked for lighting
-   * the right line and for tapping to seek; nothing ever measured whether the
-   * box moved, so "it just doesn't auto scroll" (28 October 2026) went to the
-   * road unnoticed. A missing check, not a failing one.
-   */
-  {
-    const box = d.getElementById("drive-lyrics");
-    const centreError = function () {
-      const now = d.querySelector(".lyric.is-now");
-      if (!now) return null;
-      const r = now.getBoundingClientRect(), b = box.getBoundingClientRect();
-      return Math.abs((r.top + r.height / 2) - (b.top + b.height / 2));
-    };
-    // Far enough along that the line it lands on is well past the first screenful.
-    audio.currentTime = (audio.duration || 0) * 0.6;
-    for (let i = 0; i < 40; i++) { await wait(100); if (box.scrollTop > 0) break; }
-    await settled(box);
-    ok("the list scrolled rather than staying at the top", box.scrollTop > 0,
-       "scrollTop=" + Math.round(box.scrollTop));
-    const err1 = centreError();
-    ok("the lit line is near the middle of the list",
-       err1 !== null && err1 < box.clientHeight * 0.25,
-       "off centre by " + Math.round(err1 || -1) + "px of " + box.clientHeight);
-
-    /*
-     * A STATIONARY TAP MUST NOT FREEZE IT. The hold used to arm on pointerdown,
-     * so a tap that landed between two lines stopped the view following for six
-     * seconds with nothing on screen to say so — his "it doesn't auto scroll
-     * sometimes when I have messed with it".
-     */
-    const before = box.scrollTop;
-    /*
-     * WITH THE JITTER A REAL THUMB HAS. The first version of this sent
-     * pointerdown and pointerup at identical coordinates and no pointermove at
-     * all — so breaking the movement threshold on purpose changed nothing and
-     * the mutation passed. No finger is that still; two pixels is a tap.
-     */
-    box.dispatchEvent(new w.PointerEvent("pointerdown", { clientX: 10, clientY: 300, bubbles: true }));
-    box.dispatchEvent(new w.PointerEvent("pointermove", { clientX: 11, clientY: 302, bubbles: true }));
-    box.dispatchEvent(new w.PointerEvent("pointerup", { clientX: 11, clientY: 302, bubbles: true }));
-    audio.currentTime = (audio.duration || 0) * 0.8;
-    for (let i = 0; i < 40; i++) { await wait(100); if (box.scrollTop !== before) break; }
-    await settled(box);
-    ok("a tap that moves nothing does not stop it following",
-       box.scrollTop !== before, "still at " + Math.round(box.scrollTop));
-
-    /* A DRAG MUST freeze it — that part was right and must stay right. */
-    const held = await settled(box);
-    box.dispatchEvent(new w.PointerEvent("pointerdown", { clientX: 10, clientY: 300, bubbles: true }));
-    box.dispatchEvent(new w.PointerEvent("pointermove", { clientX: 10, clientY: 240, bubbles: true }));
-    audio.currentTime = (audio.duration || 0) * 0.35;
-    await wait(900);
-    ok("but a drag does stop it, so looking ahead is not snatched back",
-       Math.abs(box.scrollTop - held) < 2,
-       "moved to " + Math.round(box.scrollTop) + " from " + Math.round(held));
-    box.dispatchEvent(new w.PointerEvent("pointerup", { clientX: 10, clientY: 240, bubbles: true }));
-  }
-
   const foot = d.querySelector(".drive-foot").getBoundingClientRect();
   ok("the last row is still on the screen",
      foot.bottom <= w.innerHeight + 1,
@@ -525,47 +432,6 @@ async function main() {
      " expected=" + (expectedBlock ? expectedBlock.el.textContent.slice(0, 40) : "none"));
 
   const rec = d.getElementById("drive-record");
-  /*
-   * THE PRESS MUST CHANGE THE BUTTON BEFORE THE MICROPHONE ARRIVES.
-   *
-   * On iOS, granting a microphone while audio is playing costs about two
-   * seconds — the phone has to reconfigure its audio session. The old code
-   * wrote the button only after that resolved, so pressing the biggest control
-   * on the screen did nothing visible for two seconds and the only way to find
-   * out whether it had heard you was to watch it. From the road, 28 October
-   * 2026: "I have to wait 2 seconds till it starts recording. That is the
-   * problem."
-   *
-   * Simulated here by making the grant slow on purpose, and read DURING it.
-   */
-  const realStart = w.__Voice.startRecording;
-  w.__Voice.startRecording = () => new Promise((r) => setTimeout(() => r({ probe: true }), 900));
-  rec.click();
-  await wait(200);                               // mid-grant: the mic is not live yet
-  ok("the button changes on the press, not when the microphone arrives",
-     /mic|listen/i.test(d.getElementById("drive-record-label").textContent),
-     JSON.stringify(d.getElementById("drive-record-label").textContent));
-  ok("and it is visibly not idle while that is happening",
-     rec.classList.contains("working") && !rec.classList.contains("recording"),
-     rec.className);
-  ok("pressing again mid-grant does not count as stopping",
-     (function () { rec.click(); return !rec.classList.contains("recording"); })(),
-     rec.className);
-  await wait(1000);                              // the grant lands
-  ok("and it says, differently, when the microphone is actually live",
-     /Recording/.test(d.getElementById("drive-record-label").textContent) &&
-     rec.classList.contains("recording") && !rec.classList.contains("working"),
-     JSON.stringify(d.getElementById("drive-record-label").textContent) + " " + rec.className);
-  rec.click();                                   // discard that one
-  await wait(1200);
-  Store.saveComments(DOC, []);
-  Store.saveHighlights(DOC, []);
-  // ...and the line it drew in the words view, which clearing the store does
-  // not touch. Without this the next assertion counts two notes and blames the
-  // app for the test's leftovers.
-  Array.prototype.forEach.call(d.querySelectorAll(".lyric-note"), (n) => n.remove());
-  w.__Voice.startRecording = realStart;
-
   rec.click();                                   // start recording
   await wait(350);
   ok("recording shows on the button", rec.classList.contains("recording"), rec.className);
@@ -590,32 +456,6 @@ async function main() {
   ok("the comment records where in the audio it was spoken",
      comments[0] && typeof comments[0].driveAudioTime === "number" && comments[0].driveAudioTime > 1,
      comments[0] ? String(comments[0].driveAudioTime) : "");
-
-  /*
-   * AND HE MUST BE ABLE TO SEE IT. "I never see what was transcribed" — the
-   * toast used to name the document and not the words, so a mis-heard note
-   * looked exactly like a good one.
-   */
-  ok("the toast shows the words that were heard, not just that a note exists",
-     d.getElementById("drive-note").textContent.indexOf(transcript) >= 0,
-     JSON.stringify(d.getElementById("drive-note").textContent));
-  d.getElementById("drive-view").click();        // into the words view
-  await wait(400);
-  {
-    const live = d.querySelectorAll(".lyric-note");
-    ok("the note appears in the words view the moment it is saved",
-       live.length === 1, "found " + live.length);
-    ok("it is under a sentence, where it was said",
-       live.length === 1 && live[0].previousElementSibling &&
-       live[0].previousElementSibling.classList.contains("lyric"),
-       live.length ? String(live[0].previousElementSibling &&
-                            live[0].previousElementSibling.className) : "none");
-    ok("the counter says a note is saved, so the screen never looks empty-handed",
-       /1 note saved/.test(d.getElementById("drive-outbox").textContent),
-       JSON.stringify(d.getElementById("drive-outbox").textContent));
-  }
-  d.getElementById("drive-view").click();        // back to the big button
-  await wait(300);
 
   const hls = Store.getHighlights(DOC);
   ok("a highlight was created for it", hls.length === 1, "n=" + hls.length);
@@ -993,88 +833,6 @@ async function main() {
        !gd.getElementById("drive-add").classList.contains("active"),
        "rows=" + gd.querySelectorAll(".drive-doc").length +
        " onAddScreen=" + gd.getElementById("drive-add").classList.contains("active"));
-  }
-
-  // ==========================================================================
-  // THE NOTES ARE SAFE, AND HE CAN SEE THEM
-  //
-  // His words, mid-drive: "I have this anxiety that I will just [be] taking
-  // notes and they're not getting saved." Three things have to be true for that
-  // anxiety to be unfounded, and none of them were asserted before.
-  // ==========================================================================
-  {
-    const g2 = document.createElement("iframe");
-    g2.style.cssText = "width:393px;height:852px;border:0";
-    const l2 = new Promise((r) => { g2.onload = r; });
-    g2.src = "/drive.html";
-    document.getElementById("host").appendChild(g2);
-    await l2;
-    await wait(400);
-    const nw = g2.contentWindow, nd = g2.contentDocument;
-    nw.eval("window.__Drive = Drive; window.__Store = FolioStore; " +
-            "window.__Speechify = SpeechifyProvider; window.__Voice = Voice;");
-    nw.__Speechify.hasKey = () => true;
-    nw.__Speechify.keyWasRejected = () => false;
-    nw.__Speechify.currentVoiceId = () => "probe-voice";
-    nw.__Speechify.fetchChunk = () => Promise.resolve(
-      { blob: silentMp3(FAKE_CHUNK_SECONDS), marks: [], url: null });
-
-    /*
-     * A note shaped exactly as the version now on his phone writes them —
-     * a comment with a highlight and no docPos, because docPos did not exist
-     * when it was saved. A deploy must not lose or misplace it.
-     */
-    const docs = nw.__Store.listDocuments();
-    const target = docs[0];
-    const hl = {
-      id: "hl_before_deploy", color: "yellow", readId: null,
-      startNodeIndex: 4, startOffset: 0, endNodeIndex: 4, endOffset: 10,
-      text: "whatever paragraph it was", createdAt: "2026-10-28T19:00:00.000Z",
-    };
-    nw.__Store.saveHighlights(target.id, [hl]);
-    nw.__Store.saveComments(target.id, [{
-      id: "cm_before_deploy", highlightId: "hl_before_deploy", isGeneral: false,
-      readId: null, text: "The thought I had on the motorway.",
-      createdAt: "2026-10-28T19:00:01.000Z", updatedAt: "2026-10-28T19:00:01.000Z",
-      driveAudioTime: 212.5,
-    }]);
-
-    nd.querySelector(".drive-doc").click();
-    for (let i = 0; i < 100; i++) {
-      if (nw.__Drive._state().chunks) break;
-      await wait(100);
-    }
-    nd.getElementById("drive-view").click();
-    await wait(500);
-
-    const notes = nd.querySelectorAll(".lyric-note");
-    ok("a note saved before this deploy is still there after it",
-       notes.length === 1, "found " + notes.length);
-    ok("and it shows the words, not just that a note exists",
-       notes.length === 1 && /The thought I had on the motorway\./.test(notes[0].textContent),
-       notes.length ? notes[0].textContent.slice(0, 60) : "none");
-    ok("it sits under a sentence rather than piling up at the top",
-       notes.length === 1 && notes[0].previousElementSibling &&
-       notes[0].previousElementSibling.classList.contains("lyric"),
-       notes.length ? String(notes[0].previousElementSibling &&
-                             notes[0].previousElementSibling.className) : "none");
-    /*
-     * It must not dim with distance the way the sentences do. A note you cannot
-     * read when you scroll back to it has not really been shown to you.
-     */
-    if (notes.length === 1) {
-      const op = parseFloat(nw.getComputedStyle(notes[0]).opacity);
-      ok("and it stays readable wherever the reading has got to", op > 0.9, "opacity=" + op);
-    }
-
-    /* The store it came from is the one the main app reads. Same key, same origin. */
-    ok("it is an ordinary comment, so the full app on the same phone shows it too",
-       (JSON.parse(nw.localStorage.getItem("folio_comments_" + target.id)) || [])
-         .some((c) => c.id === "cm_before_deploy"),
-       "not in folio_comments_" + target.id);
-
-    nd.getElementById("drive-exit").click();
-    await wait(200);
   }
 
   say("DONE");
