@@ -543,7 +543,7 @@ async function main() {
   rec.click();
   await wait(200);                               // mid-grant: the mic is not live yet
   ok("the button changes on the press, not when the microphone arrives",
-     /mic|listen/i.test(d.getElementById("drive-record-label").textContent),
+     /mic/i.test(d.getElementById("drive-record-label").textContent),
      JSON.stringify(d.getElementById("drive-record-label").textContent));
   ok("and it is visibly not idle while that is happening",
      rec.classList.contains("working") && !rec.classList.contains("recording"),

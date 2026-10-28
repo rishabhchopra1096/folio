@@ -126,23 +126,6 @@ const Drive = (function () {
   let micResume = false;
   let micStartedAt = 0;
   let micTimer = null;
-  let micWarmTimer = null;    // when to let the microphone go again
-
-  /*
-   * How long the microphone stays open after a note.
-   *
-   * WHY IT IS HELD AT ALL: asking iOS for the microphone while audio is
-   * playing costs about two seconds, because the phone has to reconfigure its
-   * audio session from playback to record-and-play. Paid on every press, that
-   * is two seconds of a screen that has not changed while he is already
-   * talking. Held open, the second note in a burst and every one after starts
-   * the instant he presses.
-   *
-   * WHY IT IS NOT HELD FOR EVER: an open microphone shows iOS's orange
-   * indicator and can change how playback is routed. Ninety seconds covers
-   * "and another thing" without leaving the mic open across a whole drive.
-   */
-  const MIC_WARM_MS = 90000;
 
   let outboxCount = 0;
   let ticker = null;
@@ -590,7 +573,6 @@ const Drive = (function () {
 
   function leave() {
     pause();
-    dropMicWarm();
     releaseWakeLock();
     stopTicker();
     showScreen("picker");
@@ -1481,26 +1463,6 @@ const Drive = (function () {
     return startNote();
   }
 
-  /*
-   * Hold the microphone open for a while after a note, then let it go.
-   * Re-armed by every note, so a burst keeps it warm and a quiet stretch does
-   * not.
-   */
-  function holdMicWarm() {
-    if (micWarmTimer) clearTimeout(micWarmTimer);
-    micWarmTimer = setTimeout(function () {
-      micWarmTimer = null;
-      if (micState === "idle" && typeof Voice !== "undefined" && Voice.releaseMic) {
-        Voice.releaseMic();
-      }
-    }, MIC_WARM_MS);
-  }
-
-  /* Let it go now — leaving the player, or the tab going away. */
-  function dropMicWarm() {
-    if (micWarmTimer) { clearTimeout(micWarmTimer); micWarmTimer = null; }
-    if (typeof Voice !== "undefined" && Voice.releaseMic) Voice.releaseMic();
-  }
 
   async function startNote() {
     if (typeof Voice === "undefined" || !Voice.hasKey()) {
@@ -1520,11 +1482,15 @@ const Drive = (function () {
      * Now the press changes the button immediately, and the label changes
      * again, differently, at the exact moment the microphone is live. He never
      * has to guess which of the two states he is in.
+     *
+     * The two seconds themselves are still there. Removing them means holding
+     * the microphone open between notes, which was tried on 28 October 2026
+     * and stopped the iPhone playing audio at all — see js/voice.js. Knowing
+     * when to speak turned out to be most of what he was asking for anyway.
      */
     micState = "starting";
     el.record.classList.add("working");
-    const instant = Voice.isMicWarm && Voice.isMicWarm();
-    sayOnButton(instant ? "Listening…" : "Getting the mic…");
+    sayOnButton("Getting the mic…");
 
     micResume = !!(audio && !audio.paused && !audio.ended);
     if (micResume) audio.pause();
@@ -1595,9 +1561,6 @@ const Drive = (function () {
     el.record.classList.remove("recording", "working");
     sayOnButton("Hold a thought");
     updateMediaMetadata();
-    // Having just taken one note is the best available evidence that another is
-    // coming, so this is where the warm window starts counting.
-    holdMicWarm();
   }
 
   function updateMicLabel() {
@@ -2046,15 +2009,7 @@ const Drive = (function () {
      * dropped, and top up the audio file if more has arrived.
      */
     document.addEventListener("visibilitychange", function () {
-      /*
-       * Going away releases the microphone at once. Holding one open in a tab
-       * he has switched away from is both a battery cost and, with iOS's orange
-       * indicator on the whole time, an alarming one.
-       */
-      if (document.visibilityState !== "visible") {
-        if (micState === "idle") dropMicWarm();
-        return;
-      }
+      if (document.visibilityState !== "visible") return;
       if (audio && audio.src) { wireMediaSession(); updateMediaState(); }
       maybeRestitch();
       if (!fetching && ready < (plan ? plan.chunks.length : 0) && !fetchFailed) fetchAll();

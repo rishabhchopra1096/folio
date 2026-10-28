@@ -10,12 +10,13 @@ waiting on him.
 
 | id | cat | his words | status |
 |---|---|---|---|
-| DRIVE-1 | FN | "as soon as I press the microphone, it takes like about 2 seconds to start recording" | BUILT |
-| DRIVE-2 | FN | "if I just have a small thing to say, it sometimes doesn't get recorded" | BUILT |
+| DRIVE-1 | FN | "as soon as I press the microphone, it takes like about 2 seconds to start recording" | **OPEN** |
+| DRIVE-2 | FN | "if I just have a small thing to say, it sometimes doesn't get recorded" | **OPEN** |
 | DRIVE-3 | UX | "I have to wait 2 seconds till it starts recording. That is the problem." | BUILT |
 | DRIVE-4 | UX | "I never see what was transcribed. So I like the lyrics view. We have to figure out how I can see what was transcribed." | BUILT |
 | DRIVE-5 | LIKED | "I like the lyrics view." | LIKED |
 | DRIVE-6 | LIKED | "it's working well. It's actually working well." | LIKED |
+| DRIVE-8 | FN | "it was working just fine, and now it shows that the phone will not play audio. It is not supported. What the fuck is happening? It was just working before this deployment." | BUILT |
 | DRIVE-7 | FN | "It just doesn't auto scroll... to center the sentence that I have to read" — then: "It is auto scrolling. I don't know why it was not. Maybe... when I have messed with it or like scrolled manually." | BUILT |
 
 ---
@@ -40,8 +41,15 @@ session is in a playback configuration; granting a microphone forces it into a
 record-and-play configuration, and that switch is what costs the time. It happens on
 **every** press, not just the first.
 
-**Status: BUILT.** The microphone is now kept warm between notes, so only the first press
-in a burst pays for the switch. See FIXES.md.
+**~~Status: BUILT. The microphone is now kept warm between notes.~~**
+
+**Status: OPEN, and the attempted fix caused DRIVE-8.** Holding the microphone open between
+notes removed the wait in Chrome and stopped his iPhone playing audio at all within half an
+hour. The two seconds are still there and are not going away without an iPhone to test on.
+
+**What WAS fixed is DRIVE-3**, which turned out to be most of what he was asking for: he
+now knows the exact moment it starts listening, instead of staring at a button that does
+not change.
 
 ## DRIVE-2 — a short thought is sometimes not recorded at all
 
@@ -54,11 +62,13 @@ with: DRIVE-1 is an annoyance, this is a thought that is gone. He begins speakin
 as he has pressed, which is the only sensible thing to do, and the first two seconds of
 what he says are not being captured by anything.
 
+**Status: OPEN.** Same cause as DRIVE-1 and the same failed fix.
+
 **He is right that it is the lesser of the two**, in his words *"which is okay, I will
 never have a 2 second voice note"* — but it also means every note he does make is missing
 its opening words, which is not visible from a toast that says the note was saved.
 
-**Status: BUILT**, by the same fix.
+
 
 ## DRIVE-3 — the waiting itself is the problem
 
@@ -139,3 +149,36 @@ container's `scrollTop` directly instead of calling `scrollIntoView({ block: "ce
 That method asks every scrollable ancestor to move and can scroll the page rather than the
 list. It was not what he was seeing, but it is a real hazard on iOS and the direct version
 can only ever move the one box.
+
+## DRIVE-8 — the deploy stopped the iPhone playing audio at all
+
+**His words:** *"it was working just fine, and now it shows that the phone will not play
+audio. It is not supported. What the fuck is happening? It was just working before this
+deployment."*
+
+**Screenshot:** the status line reading *"The phone would not start audio: The operation is
+not supported."*
+
+**I caused this, and the failure is not subtle.** The fix for DRIVE-1 held the microphone
+open for ninety seconds after each note, so that the next note would start instantly. An
+open capture stream puts iOS's audio session into a record-and-play configuration, and an
+`<audio>` element asked to start in that state can be refused outright —
+`NotSupportedError`, which is the message he saw.
+
+**Why no test caught it.** Headless Chrome has no audio session to misconfigure. All 115
+browser assertions passed, including every one about playback, because the thing that
+breaks does not exist in the test environment. This was in the written "what only your
+phone can tell us" list — *"playback is not quieter or re-routed after a recording"* — and
+I built a change that lands squarely in it anyway, and shipped it.
+
+**What was done.**
+1. **Reverted within minutes**, before diagnosing, so he was not stuck mid-drive.
+2. Then re-applied everything from that deploy EXCEPT the warm microphone — the note
+   display, the scroll-hold fix, the counter and the instant button feedback are all pure
+   DOM and cannot touch the audio session.
+3. `js/voice.js` now carries the reason in the file itself, where the next person to think
+   this is a good idea will read it: **do not reintroduce it without an iPhone in hand.**
+
+**The rule this buys:** a change that can only be validated on the device is not shipped
+with "the tests pass" as its evidence. There was no evidence. There was an absence of a
+test that could possibly have failed.
