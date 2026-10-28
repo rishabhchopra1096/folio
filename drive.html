@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover is what lets the layout reach under the notch and the
+      home bar, which the CSS then pads back out with env(safe-area-inset-*).
+      Without it there is a dead band at the bottom where a button would be
+      unpressable.
+
+      user-scalable=no asks the browser not to let a stray pinch leave the
+      controls somewhere unpredictable. iOS Safari has IGNORED that request
+      since iOS 10, deliberately, so on the phone this is actually aimed at it
+      does nothing — it is kept only for Android. Nothing here relies on zoom
+      being off; the smallest text on the screen is already 13px.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)" />
+    <title>Folio — Drive</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚗</text></svg>" />
+
+    <!--
+      NOT apple-mobile-web-app-capable, on purpose.
+
+      Added to the home screen, an iPhone runs this as a standalone web app —
+      and standalone is the mode where WebKit's background-audio restrictions
+      bite hardest. Several reports have background playback working in a
+      Safari tab and failing in the standalone copy of the same page. So this
+      is meant to be used as a Safari tab, and nothing here invites iOS to
+      treat it otherwise.
+    -->
+
+    <link rel="stylesheet" href="css/drive.css" />
+  </head>
+  <body>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- PICKER — every page, one tap each                                   -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="drive-picker" class="screen active">
+      <div class="drive-head">
+        <h1>Drive</h1>
+        <span>pick something to listen to</span>
+      </div>
+      <div id="drive-doc-list"></div>
+
+      <!--
+        Folio keeps everything in the browser's own storage, and that storage
+        belongs to one browser on one device. So a phone that has never opened
+        Folio has no pages and no keys, however full the laptop is. A backup
+        carries both — every folio_* value, the Speechify and Groq keys
+        included — which makes this the one control the drive screen cannot do
+        without.
+      -->
+      <div class="drive-picker-foot">
+        <label class="drive-import">
+          Import a backup
+          <input type="file" id="drive-import" accept="application/json,.json" />
+        </label>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- PLAYER                                                              -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="drive-player" class="screen">
+
+      <div class="drive-topbar">
+        <button id="drive-exit" aria-label="Back to the list">&#8592;</button>
+        <div id="drive-title">—</div>
+        <label class="drive-wake-wrap" title="Stop the screen going to sleep">
+          <input type="checkbox" id="drive-wake" checked />
+          awake
+        </label>
+      </div>
+
+      <div class="drive-progress">
+        <div class="drive-track"><div id="drive-progress-fill"></div></div>
+        <div class="drive-times">
+          <span id="drive-elapsed">0:00</span>
+          <span id="drive-remaining">—</span>
+        </div>
+      </div>
+
+      <!-- The one control this page was built for. -->
+      <div class="drive-record-wrap">
+        <button id="drive-record" aria-label="Record a thought">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15z"/>
+            <path d="M18.5 11.5a.9.9 0 0 0-1.8 0 4.7 4.7 0 0 1-9.4 0 .9.9 0 0 0-1.8 0 6.5 6.5 0 0 0 5.6 6.4V21h-2.3a.9.9 0 0 0 0 1.8h5.4a.9.9 0 0 0 0-1.8h-2.3v-3.1a6.5 6.5 0 0 0 5.6-6.4z"/>
+          </svg>
+        </button>
+        <div id="drive-record-label">Hold a thought</div>
+      </div>
+
+      <!-- Transport. Big enough to find without looking. -->
+      <div class="drive-transport">
+        <button class="drive-btn" id="drive-back" aria-label="Back fifteen seconds">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
+          <small>15s</small>
+        </button>
+        <button class="drive-btn" id="drive-play" aria-label="Play">
+          <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <button class="drive-btn" id="drive-fwd" aria-label="Forward fifteen seconds">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/></svg>
+          <small>15s</small>
+        </button>
+      </div>
+
+      <div class="drive-speed">
+        <button class="drive-btn" id="drive-slower" aria-label="Slower">&minus;</button>
+        <div id="drive-rate">1×</div>
+        <button class="drive-btn" id="drive-faster" aria-label="Faster">+</button>
+      </div>
+
+      <div class="drive-foot">
+        <div id="drive-status">—</div>
+        <div id="drive-outbox"></div>
+      </div>
+    </div>
+
+    <!-- Transient messages: "+15s", "Note saved". -->
+    <div id="drive-note"></div>
+
+    <!--
+      The document, rendered with the reader's own converter and hidden.
+
+      It is here because the chunker decides where the audio is cut by walking
+      real markup, and the cut has to land in exactly the same places the
+      reader's would, or audio already paid for is bought again. See
+      js/chunker.js.
+    -->
+    <div id="drive-article"></div>
+
+    <!--
+      Stubs js/reader.js reaches for at load time.
+
+      reader.js is loaded for one function — blocksToHtml — but it caches its
+      DOM in module scope and sets a property on the progress ring as it loads,
+      which throws if the ring is missing. Five empty elements is a far smaller
+      price than a second copy of the block-to-HTML converter that could drift
+      away from the reader's.
+    -->
+    <div hidden>
+      <div id="progress-bar"></div>
+      <div id="progress-ring-wrap"><svg><circle id="ring-fill"></circle></svg></div>
+      <span id="ring-pct"></span>
+      <div id="article"></div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- SCRIPTS — the smallest set that can do this job                     -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- Pages are stored compressed; store.js cannot read one without this. -->
+    <script src="vendor/lz-string.min.js"></script>
+    <script src="js/store.js"></script>
+    <script src="js/voice.js"></script>
+    <script src="js/reader.js"></script>
+    <script src="js/speechify.js"></script>
+    <script src="js/chunker.js"></script>
+    <script src="js/drive.js"></script>
+  </body>
+</html>

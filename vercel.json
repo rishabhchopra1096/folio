@@ -2,6 +2,7 @@
   "buildCommand": "",
   "outputDirectory": ".",
   "rewrites": [
+    { "source": "/drive", "destination": "/drive.html" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

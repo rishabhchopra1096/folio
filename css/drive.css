@@ -1,0 +1,429 @@
+/*
+ * =============================================================================
+ * DRIVE.CSS — the look of Folio with a steering wheel in your hands
+ * =============================================================================
+ * Every rule in here answers one of three questions:
+ *
+ *   Can it be hit without aiming?   Nothing interactive is under 72px tall,
+ *                                   and the record button is 15% of the screen.
+ *   Can it be read at a glance?     Few words, large, very high contrast, dark
+ *                                   by default because most driving that needs
+ *                                   this is at night.
+ *   Does it ever need a reply?      No. There are no dialogs and no forms.
+ *
+ * Deliberately NOT importing the rest of Folio's stylesheets. They are built
+ * for a 1400px reading column with a sidebar, and inheriting them would mean
+ * fighting them. This page shares the app's data, not its layout.
+ * =============================================================================
+ */
+
+/* ===========================================================================
+   TOKENS
+   =========================================================================== */
+:root {
+  --d-bg: #0a0a0c;
+  --d-surface: #16161a;
+  --d-surface-2: #212128;
+  --d-line: #32323c;
+  --d-text: #f4f4f6;
+  --d-dim: #9a9aa8;
+  --d-accent: #6ea8fe;       /* playing / progress */
+  --d-rec: #ff4a4a;          /* recording */
+  --d-ok: #4ade80;
+
+  --d-tap: 76px;             /* the floor for anything you press */
+  --d-radius: 18px;
+}
+
+/* ===========================================================================
+   FRAME
+   =========================================================================== */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--d-bg);
+  color: var(--d-text);
+  font-family: -apple-system, BlinkMacSystemFont, "DM Sans", "Segoe UI", system-ui, sans-serif;
+  /* No bounce. A rubber-banding page under a thumb that was aiming for a
+     button is how you end up looking at the screen for two seconds. */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  /* Respect the notch and the home bar; a button under the home indicator is
+     a button you cannot press. */
+  padding:
+    env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* The rendered document. Present because the chunker has to walk real markup
+   to decide where the audio is cut, and invisible because reading is not what
+   this screen is for. Kept in the layout (not display:none) so text nodes and
+   element containment behave exactly as they do in the reader. */
+#drive-article {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+
+.screen { display: none; }
+.screen.active { display: flex; flex-direction: column; min-height: 100dvh; }
+
+/* ===========================================================================
+   THE PICKER
+   =========================================================================== */
+.drive-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 1.4rem 1.1rem 0.9rem;
+}
+.drive-head h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.drive-head span {
+  color: var(--d-dim);
+  font-size: 0.95rem;
+}
+
+#drive-doc-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 0.75rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.drive-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 100%;
+  min-height: var(--d-tap);
+  padding: 1.05rem 1.15rem;
+  background: var(--d-surface);
+  border: 1px solid var(--d-line);
+  border-radius: var(--d-radius);
+  color: var(--d-text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.drive-doc:active { background: var(--d-surface-2); transform: scale(0.985); }
+.drive-doc-title {
+  font-size: 1.18rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.drive-doc-meta {
+  font-size: 0.92rem;
+  color: var(--d-dim);
+}
+.drive-empty { color: var(--d-dim); padding: 1.5rem 1.15rem; line-height: 1.6; }
+
+/* Import lives at the bottom of the list: needed once per device, then never
+   again, so it must be findable without competing with the pages above it. */
+.drive-picker-foot {
+  padding: 0.4rem 0.75rem calc(1.2rem + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+}
+.drive-import {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  padding: 0 1.4rem;
+  border: 1px dashed var(--d-line);
+  border-radius: var(--d-radius);
+  color: var(--d-dim);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.drive-import:active { background: var(--d-surface); }
+.drive-import input { display: none; }
+
+/* ===========================================================================
+   THE PLAYER
+   =========================================================================== */
+#drive-player { padding-bottom: 0.5rem; }
+
+.drive-topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 0.75rem 0.3rem;
+}
+#drive-exit {
+  flex: 0 0 auto;
+  width: 48px; height: 48px;
+  display: grid; place-items: center;
+  background: none;
+  border: none;
+  color: var(--d-dim);
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+#drive-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 1.02rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--d-text);
+}
+.drive-wake-wrap {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--d-dim);
+  padding: 0.42rem 0.7rem;
+  border: 1px solid var(--d-line);
+  border-radius: 99px;
+  cursor: pointer;
+  user-select: none;
+}
+/* The input still carries the state — drive.js reads .checked — but it is the
+   pill that is seen, not a system checkbox shouting in the accent colour. */
+.drive-wake-wrap input {
+  appearance: none; -webkit-appearance: none;
+  width: 9px; height: 9px; margin: 0;
+  border-radius: 50%;
+  background: var(--d-line);
+  border: none;
+}
+.drive-wake-wrap:has(input:checked) { color: var(--d-text); }
+.drive-wake-wrap:has(input:checked) input { background: var(--d-ok); }
+
+/* Progress: a bar, two numbers. No scrubber — a thin draggable track is the
+   least driveable control there is, and the lock screen has one anyway. */
+.drive-progress { padding: 0.4rem 1.05rem 0; }
+.drive-track {
+  height: 8px;
+  background: var(--d-surface-2);
+  border-radius: 99px;
+  overflow: hidden;
+}
+#drive-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--d-accent);
+  border-radius: 99px;
+  transition: width 0.25s linear;
+}
+.drive-times {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.45rem;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--d-dim);
+}
+
+/* ---------------------------------------------------------------------------
+   THE RECORD BUTTON — the reason this page exists
+   --------------------------------------------------------------------------- */
+.drive-record-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.15rem;
+  padding: 0.75rem 1rem 1.5rem;
+  min-height: 0;
+}
+
+#drive-record {
+  /* Sized against the viewport so it is the obvious target on any phone, and
+     capped so it does not crowd the transport row on a large one. The cap was
+     raised from 240 after looking at a real shot: on a 393x852 screen there
+     was a dead band of about 250px under it, and on this screen unused space
+     is better spent on the one control you press without looking. */
+  width: min(68vw, 272px);
+  height: min(68vw, 272px);
+  border-radius: 50%;
+  border: 3px solid var(--d-line);
+  background:
+    radial-gradient(circle at 50% 38%, var(--d-surface-2), var(--d-surface));
+  color: var(--d-text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.12s ease, border-color 0.2s ease;
+}
+#drive-record svg { width: 34%; height: 34%; fill: currentColor; opacity: 0.9; }
+#drive-record:active { transform: scale(0.96); }
+
+#drive-record.recording {
+  border-color: var(--d-rec);
+  background: radial-gradient(circle at 50% 38%, #3a1414, #230c0c);
+  color: var(--d-rec);
+  animation: drive-pulse 1.4s ease-in-out infinite;
+}
+#drive-record.working {
+  border-color: var(--d-accent);
+  color: var(--d-accent);
+}
+@keyframes drive-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 74, 74, 0.45); }
+  50%      { box-shadow: 0 0 0 22px rgba(255, 74, 74, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #drive-record.recording { animation: none; }
+  #drive-progress-fill { transition: none; }
+}
+
+#drive-record-label {
+  font-size: 1.05rem;
+  color: var(--d-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  min-height: 1.4em;
+}
+
+/* ---------------------------------------------------------------------------
+   TRANSPORT
+   --------------------------------------------------------------------------- */
+.drive-transport {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr 1fr;
+  gap: 0.6rem;
+  padding: 0 0.75rem;
+}
+.drive-btn {
+  min-height: 86px;
+  display: grid;
+  place-items: center;
+  gap: 0.15rem;
+  background: var(--d-surface);
+  border: 1px solid var(--d-line);
+  border-radius: var(--d-radius);
+  color: var(--d-text);
+  font: inherit;
+  cursor: pointer;
+}
+.drive-btn:active { background: var(--d-surface-2); transform: scale(0.97); }
+.drive-btn svg { width: 30px; height: 30px; fill: currentColor; }
+.drive-btn small { font-size: 0.72rem; color: var(--d-dim); letter-spacing: 0.02em; }
+
+#drive-play { background: var(--d-surface-2); }
+#drive-play .icon-pause { display: none; }
+#drive-play.playing .icon-pause { display: block; }
+#drive-play.playing .icon-play { display: none; }
+#drive-play.playing { border-color: var(--d-accent); color: var(--d-accent); }
+
+/* Speed */
+.drive-speed {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem 0;
+}
+.drive-speed .drive-btn { min-height: 72px; font-size: 1.6rem; font-weight: 300; }
+#drive-rate {
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--d-text);
+  font-size: 1.5rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+   STATUS
+   --------------------------------------------------------------------------- */
+.drive-foot {
+  padding: 0.85rem 1.05rem calc(0.6rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+#drive-status {
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--d-dim);
+}
+#drive-outbox {
+  display: none;
+  font-size: 0.86rem;
+  color: #ffd166;
+}
+#drive-outbox.visible { display: block; }
+
+/* A transient message — "+15s", "Note saved". Floats so it never reflows the
+   controls under a thumb that is mid-press. */
+#drive-note {
+  /*
+   * ABOVE the controls, not over them.
+   *
+   * This sat at the bottom of the screen until a screenshot showed it lying
+   * across both the status line and the outbox count — so the one moment you
+   * most want to read "1 note waiting to send" was the moment it was covered
+   * by "Note saved". The band under the clock is empty, never holds a control,
+   * and is where the eye already goes to check the time remaining.
+   */
+  position: fixed;
+  left: 50%;
+  top: calc(env(safe-area-inset-top) + 112px);
+  transform: translateX(-50%) translateY(-8px);
+  max-width: 88vw;
+  padding: 0.7rem 1.1rem;
+  background: rgba(20, 20, 26, 0.96);
+  border: 1px solid var(--d-line);
+  border-radius: 99px;
+  font-size: 0.98rem;
+  color: var(--d-text);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 50;
+  text-align: center;
+}
+#drive-note.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ===========================================================================
+   LIGHT MODE — only because a phone handed to a passenger in daylight is
+   unreadable otherwise. Same sizes, same layout, inverted surfaces.
+   =========================================================================== */
+@media (prefers-color-scheme: light) {
+  :root {
+    --d-bg: #f6f6f8;
+    --d-surface: #ffffff;
+    --d-surface-2: #ececf1;
+    --d-line: #d6d6de;
+    --d-text: #15151a;
+    --d-dim: #61616e;
+    --d-accent: #1a6dff;
+  }
+  #drive-record { background: radial-gradient(circle at 50% 38%, #ffffff, #ececf1); }
+  #drive-record.recording { background: radial-gradient(circle at 50% 38%, #fff0f0, #ffe2e2); }
+  #drive-note { background: rgba(255, 255, 255, 0.97); }
+}
+
+/* Short phones: give the record button less room rather than pushing the
+   transport off the bottom of the screen. */
+@media (max-height: 700px) {
+  #drive-record { width: min(46vw, 180px); height: min(46vw, 180px); }
+  .drive-btn { min-height: 74px; }
+  .drive-speed .drive-btn { min-height: 64px; }
+}
