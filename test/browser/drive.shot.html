@@ -97,6 +97,14 @@ async function main() {
   if (a && isFinite(a.duration)) { a.currentTime = a.duration * 0.34; }
   await wait(400);
 
+  if (STATE === "words" || STATE === "words-recording") {
+    d.getElementById("drive-view").click();
+    await wait(900);
+  }
+  if (STATE === "words-recording") {
+    d.getElementById("drive-record").click();
+    await wait(2600);
+  }
   if (STATE === "recording") {
     d.getElementById("drive-record").click();
     await wait(2600);          // long enough that the counter reads 0:02

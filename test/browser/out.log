@@ -1,22 +1,34 @@
-staged 40 pages; storage at 10.00MB; fill ended with QuotaExceededError
-PASS the disk really is full before the app starts
-PASS ...and there are enough pages to be worth compacting
-after startup: 5.16MB (was 10.00MB)
-PASS EVERY page reads back character for character
-PASS ...including emoji, accents and quotes
-PASS ...and the saving is in the range prose actually compresses to
-PASS every page worth compressing carries the compressed marker
-PASS ...and newlines and backslashes
-PASS ...and still reads back correctly
-PASS a page that compresses no smaller is left uncompressed
-pages went from 1.00MB to 0.16MB — 84% smaller
-PASS ...and is still perfectly readable
-PASS a page whose compression would not round-trip is stored UNCOMPRESSED
-PASS compaction actually ran: the pages are substantially smaller
-PASS the editor opened on a compacted page
-PASS SAVING WORKS AGAIN — which is the whole point
-PASS ...and the new save is itself compressed
-PASS ...and no save-failed banner appeared
-PASS an uncompressed page still reads after the others were compacted
-PASS ...alongside a compressed one, in the same storage
+PASS two highlights were created
+PASS export offers a choice
+PASS there are two of them
+PASS one is the full document
+PASS the other is highlights only
+PASS an export file was produced
+PASS the heading is exported
+PASS every paragraph is exported
+PASS list blocks survive too
+PASS comments are labelled with the day they were written
+PASS ...and the old bare COMMENT prefix is gone
+PASS every note's words are fenced, so none can read as the document
+PASS ...while the document's own paragraphs are NOT fenced
+PASS the first comment follows its own paragraph
+PASS ...with its header immediately after that paragraph
+PASS the third comment follows ITS paragraph, not the first
+PASS and it is not filed under an earlier paragraph
+PASS the quoted passage is named so you know what it refers to
+PASS ...and the old straight-quote wrapper is gone, so a passage cannot close it
+PASS the file explains its own convention before the first note
+PASS both are put under an unattached heading
+PASS EXPORT CHANGED NOTHING IN STORAGE
+PASS ...and counts the notes it holds
+PASS the page level note is kept
+PASS the orphaned comment is kept
+PASS all four comments still exist afterwards
+PASS the chooser appears again
+PASS the digest was produced
+PASS it quotes the highlighted passage
+PASS it carries the comment on that passage
+PASS it keeps the page-level note under its own heading
+PASS it keeps a note whose highlight was deleted
+PASS and it does NOT contain the rest of the document
 DONE

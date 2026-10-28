@@ -38,6 +38,26 @@
 <div id="host"></div>
 <script>
 function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+
+/* Does this sentence range have any visible text? Blank ones get no line. */
+function plainText(w, sen) {
+  const p = w.__planCache || (w.__planCache =
+    w.__Chunker.plan(w.document.getElementById("drive-article")));
+  return p.docText.slice(sen.ds, sen.de).trim();
+}
+/* Which chunk the clock is inside, by the same measured durations drive.js uses. */
+function chunkOf(w, d, t) {
+  const st = w.__Drive._state();
+  const p = w.__Chunker.plan(d.getElementById("drive-article"));
+  const per = st.totalSeconds / p.chunks.length;   // the fakes are all equal length
+  const i = Math.min(p.chunks.length - 1, Math.max(0, Math.floor(t / per)));
+  return p.chunks[i];
+}
+/* Roughly which character the clock is at, for the tap-to-seek check. */
+function charOf(w, d, t) {
+  const c = chunkOf(w, d, t);
+  return c ? c.ds : 0;
+}
 function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -296,6 +316,97 @@ async function main() {
   await wait(150);
   ok("slower goes back", Math.abs(audio.playbackRate - rateBefore) < 0.001,
      "rate=" + audio.playbackRate);
+
+  // ---- 3b. THE WORDS VIEW ----------------------------------------------
+  /*
+   * The second of the two views: the sentence being read, large, with the ones
+   * around it dimmed. Three things have to hold — it follows the audio, it can
+   * be tapped to jump, and it does not shove the controls off the screen,
+   * which is exactly what it did the first time.
+   */
+  const viewBtn = d.getElementById("drive-view");
+  ok("there is a view toggle", !!viewBtn);
+  viewBtn.click();
+  await wait(700);
+  ok("the toggle switches to the words view",
+     d.getElementById("drive-player").classList.contains("mode-words"),
+     d.getElementById("drive-player").className);
+
+  const lines = d.querySelectorAll(".lyric");
+  ok("there is a line for every sentence in the document",
+     lines.length === w.__Chunker.plan(d.getElementById("drive-article")).sentences
+       .filter((x) => plainText(w, x)).length,
+     "lines=" + lines.length);
+  ok("the first line is the document's heading, so headings are lines too",
+     lines.length && /Drive Probe Document/.test(lines[0].textContent),
+     lines.length ? lines[0].textContent.slice(0, 50) : "no lines");
+  ok("the lines carry the document's words",
+     Array.prototype.some.call(lines, (l) => /Paragraph \d+ begins here/.test(l.textContent)),
+     lines.length ? lines[1].textContent.slice(0, 50) : "no lines");
+
+  const lit = d.querySelectorAll(".lyric.is-now");
+  ok("exactly one line is lit", lit.length === 1, "n=" + lit.length);
+  /*
+   * The lit line must be the one actually being spoken. With no word marks in
+   * this test the position is interpolated across the chunk, so the check is
+   * that the lit line falls inside the chunk the clock is in — a wrong line
+   * would be in a different chunk entirely.
+   */
+  if (lit.length === 1) {
+    const litDs = Number(lit[0].dataset.ds);
+    const here = w.__Drive._state();
+    const at = chunkOf(w, d, audio.currentTime);
+    ok("the lit line is inside the chunk being played",
+       at && litDs >= at.ds && litDs < at.de,
+       "line at " + litDs + ", chunk [" + (at && at.ds) + "," + (at && at.de) + ")");
+    void here;
+  }
+
+  /*
+   * NOTHING MAY OVERLAP ANYTHING. The first version of this view used 80vh of
+   * padding, which a flex item cannot shrink below, so the list was 682px tall
+   * inside a 529px box: the words lay across the transport and the record bar
+   * fell off the bottom of the screen. Every control was unreachable and every
+   * functional assertion still passed.
+   */
+  const order = [".drive-topbar", ".drive-progress", "#drive-lyrics",
+                 ".drive-record-wrap", ".drive-transport", ".drive-speed", ".drive-foot"];
+  let overlap = "";
+  let prevBottom = -1, prevName = "the top of the screen";
+  order.forEach(function (sel) {
+    const node = d.querySelector(sel);
+    if (!node) { overlap = overlap || (sel + " is missing"); return; }
+    const r = node.getBoundingClientRect();
+    if (r.top < prevBottom - 1) {
+      overlap = overlap || (sel + " (top " + Math.round(r.top) + ") runs into " +
+                            prevName + " (bottom " + Math.round(prevBottom) + ")");
+    }
+    prevBottom = r.bottom; prevName = sel;
+  });
+  ok("in the words view nothing overlaps anything else", overlap === "", overlap);
+
+  const foot = d.querySelector(".drive-foot").getBoundingClientRect();
+  ok("the last row is still on the screen",
+     foot.bottom <= w.innerHeight + 1,
+     "foot bottom=" + Math.round(foot.bottom) + " viewport=" + w.innerHeight);
+
+  // Tap a line to go there.
+  const target = lines[Math.min(lines.length - 1, 40)];
+  const wantChar = Number(target.dataset.ds);
+  target.click();
+  await wait(500);
+  const landedChar = charOf(w, d, audio.currentTime);
+  ok("tapping a line jumps to roughly where that line is spoken",
+     Math.abs(landedChar - wantChar) < 900,
+     "wanted char " + wantChar + ", landed near " + landedChar);
+
+  // Back to the big button, and the choice is remembered.
+  viewBtn.click();
+  await wait(300);
+  ok("the toggle switches back", !d.getElementById("drive-player").classList.contains("mode-words"));
+  ok("which view you chose is remembered",
+     w.localStorage.getItem("folio_drive_view") === "focus",
+     String(w.localStorage.getItem("folio_drive_view")));
 
   // ---- 4. A NOTE LANDS ON THE RIGHT PARAGRAPH --------------------------
   /*
