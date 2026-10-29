@@ -196,28 +196,51 @@ async function main() {
   ok("two pictures were stored — the two that were in the folder",
      imageBlocks.length === 2, String(imageBlocks.length));
   ok("the one that was missing from the folder is simply absent, not empty",
-     !(stored.blocks || []).some((b) => b.type === "image" && !b.data.url));
+     !(stored.blocks || []).some((b) => b.type === "image" && !b.data.url && !b.data.ref));
   ok("the prose around them survived",
      (stored.blocks || []).some((b) => b.type === "paragraph" && /Closing/.test(b.data.text)));
   ok("and its formatting did",
      (stored.blocks || []).some((b) => b.type === "paragraph" && /<b>prose<\/b>/.test(b.data.text)));
 
-  const urls = imageBlocks.map((b) => String(b.data.url || ""));
-  ok("both are stored as data URLs", urls.every((u) => /^data:image\//.test(u)),
-     urls.map((u) => u.slice(0, 24)).join(" | "));
-  ok("the small PNG was left as a PNG",
-     urls.some((u) => /^data:image\/png/.test(u)),
-     urls.map((u) => u.slice(0, 20)).join(" | "));
   /*
-   * THE COMPRESSION ASSERTION. A 3MB screenshot stored untouched is how the
-   * first import fills the storage ceiling, so the re-encode is not a nicety.
+   * ── THE POINT OF THE WHOLE CHANGE ─────────────────────────────────────────
+   * The page must hold a NAME, not the picture. A real export is 118
+   * screenshots and 12.71MB, about 17.4MB as base64, against a 10.00MB
+   * localStorage ceiling — so a page that holds its pictures cannot be opened
+   * at all. These assertions are what keep that from silently coming back.
    */
-  ok("the big PNG was re-encoded as JPEG on the way in",
-     urls.some((u) => /^data:image\/jpeg/.test(u)),
-     urls.map((u) => u.slice(0, 20)).join(" | "));
-  const biggest = Math.max(...urls.map((u) => u.length));
-  ok("and it got smaller than the file it came from",
-     biggest < bigBytes, biggest + " vs " + bigBytes);
+  const refs = imageBlocks.map((b) => String((b.data && b.data.ref) || ""));
+  ok("both pictures are stored as a reference, not as bytes in the page",
+     refs.every((r) => /^img_[A-Za-z0-9]{8,40}$/.test(r)), JSON.stringify(refs));
+  ok("and no data URL was left behind in the page",
+     imageBlocks.every((b) => !b.data.url), JSON.stringify(imageBlocks.map((b) => Object.keys(b.data))));
+
+  /*
+   * The number that matters. The two pictures are over a megabyte between
+   * them; the page that shows them has to be kilobytes.
+   */
+  const storedBytes = w.eval(
+    "(localStorage.getItem('folio_doc_' + " + JSON.stringify(pages[0].id) + ") || '').length * 2");
+  ok("the saved page is kilobytes, not megabytes",
+     storedBytes < 64 * 1024, (storedBytes / 1024).toFixed(1) + "KB");
+  ok("even though the pictures themselves are over a megabyte",
+     bigBytes > 1024 * 1024, (bigBytes / 1048576).toFixed(2) + "MB");
+
+  /* And the pictures really are in the picture store, by count and by size. */
+  const stats = await w.eval("FolioImages.stats()");
+  ok("the picture store opened in this browser", stats.available, JSON.stringify(stats));
+  ok("it holds both pictures", stats.count === 2, String(stats.count));
+  ok("and their bytes, stored as bytes rather than as base64",
+     stats.bytes > 100 * 1024 && stats.bytes < bigBytes * 1.1,
+     (stats.bytes / 1024).toFixed(0) + "KB against a source of " + (bigBytes / 1024).toFixed(0) + "KB");
+
+  /*
+   * THE COMPRESSION ASSERTION. A multi-megabyte screenshot kept at full size
+   * is how a generous budget becomes a full one, so the re-encode still has to
+   * happen on the way in — it just happens before the blob is stored now.
+   */
+  ok("the big picture was compressed on the way in, not stored whole",
+     stats.bytes < bigBytes, stats.bytes + " vs " + bigBytes);
 
   ok("the captions came from the alt text",
      imageBlocks.some((b) => b.data.caption === "a small diagram") &&
@@ -257,6 +280,311 @@ async function main() {
      /a small diagram/.test(d.getElementById("article").textContent),
      "no caption text");
 
+  // ── EDITING THE PAGE MUST NOT LOSE THE PICTURES ────────────────────────────
+  /*
+   * THE LIKELIEST WAY TO LOSE A PICTURE AFTER AN IMPORT.
+   *
+   * Editor.js re-saves EVERY block on every save, by calling each tool's
+   * save(). So typing one character into an imported page rewrites all 118 of
+   * its image blocks — and if the image tool's save() returned a url field it
+   * no longer has, or dropped the ref, every picture in the document would be
+   * replaced by an empty block the next time anybody typed.
+   *
+   * Asserting the shape right after an import does not catch that: the blocks
+   * are still the ones the import wrote. This types into the page, waits for
+   * the debounced save, and then looks.
+   */
+  w.location.hash = "#/doc/" + pages[0].id + "/edit";
+  await wait(3000);
+  const typed = w.eval(`(function () {
+    var blocks = document.querySelectorAll("#editorjs .ce-paragraph");
+    if (!blocks.length) return "no-paragraph";
+    var el = blocks[0];
+    el.focus();
+    el.textContent = el.textContent + " Edited.";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return "typed";
+  })()`);
+  ok("there was a paragraph to type into", typed === "typed", String(typed));
+  /* The editor's auto-save is debounced; wait past it, then force one. */
+  await wait(3000);
+  await w.eval("Editor.debouncedSave ? (Editor.debouncedSave(), true) : false");
+  await wait(2500);
+
+  const afterEdit = w.eval("window.__probe.blocksOf(" + JSON.stringify(pages[0].id) + ")");
+  const afterEditImgs = ((afterEdit && afterEdit.blocks) || []).filter((b) => b.type === "image");
+  ok("the edit was saved", /Edited\./.test(JSON.stringify(afterEdit)),
+     "the typing did not reach storage");
+  ok("both pictures are still in the page after an edit",
+     afterEditImgs.length === 2, String(afterEditImgs.length));
+  ok("and they still carry their reference, not an empty block",
+     afterEditImgs.every((b) => /^img_/.test(String(b.data.ref || ""))),
+     JSON.stringify(afterEditImgs.map((b) => b.data)));
+  ok("no data URL crept back into the page",
+     afterEditImgs.every((b) => !b.data.url));
+
+  // ── A PICTURE THAT IS NOT IN THIS BROWSER ──────────────────────────────────
+  /*
+   * Pictures live in IndexedDB now, which is per browser. So a page opened in
+   * a different browser, or after storage was cleared, genuinely does not have
+   * them — and that has to read as a statement rather than as a bug. An <img>
+   * with no src collapses to nothing; a broken one shows the torn-paper icon.
+   * Neither tells anybody what happened.
+   */
+  const GHOST = "doc_ghost_ref";
+  w.eval(`(function () {
+    FolioStore.createDocument("A page from another browser", { time: Date.now(), blocks: [
+      { type: "paragraph", data: { text: "Before the picture." } },
+      { type: "image", data: { ref: "img_deadbeefdeadbeefdeadbeef", caption: "a lost diagram" } },
+    ]}, null);
+    return true;
+  })()`);
+  const ghostId = w.eval(`JSON.parse(localStorage.getItem("folio_documents"))
+    .filter(function (p) { return p.title === "A page from another browser"; })[0].id`);
+  w.location.hash = "#/doc/" + ghostId;
+  await wait(2000);
+  ok("a picture that is not stored here says so, in words",
+     !!d.querySelector("#article .folio-image-missing"),
+     d.getElementById("article").innerHTML.slice(0, 160));
+  ok("and it is not left as a broken image",
+     !d.querySelector("#article figure.folio-image img[data-folio-ref]"),
+     "a src-less img survived");
+  ok("the caption beside it still says what is missing",
+     /a lost diagram/.test(d.getElementById("article").textContent));
+
+  // ── THE DOCUMENT THAT COULD NOT BE OPENED BEFORE ───────────────────────────
+  /*
+   * THE ASSERTION THIS WHOLE CHANGE EXISTS FOR.
+   *
+   * His real export: 118 screenshots, median 98KB, 12.71MB on disk, about
+   * 17.4MB as base64 — against a 10.00MB ceiling for the whole of
+   * localStorage. Stored in the page it could not be imported at all; the
+   * import correctly refused and rolled back. So this builds a document of
+   * that shape and size and asserts it now goes in.
+   *
+   * 120 pictures rather than 118, and generated from noise so they do not
+   * compress away into something that would have fitted anyway.
+   */
+  w.location.hash = "#/";
+  await wait(600);
+
+  const big = await w.eval(`(function () {
+    return (async function () {
+      const files = [];
+      const names = [];
+      for (var i = 0; i < 120; i++) {
+        var cv = document.createElement("canvas");
+        cv.width = 170; cv.height = 290;
+        var ctx = cv.getContext("2d");
+        var data = ctx.createImageData(cv.width, cv.height);
+        for (var j = 0; j < data.data.length; j += 4) {
+          data.data[j] = (Math.random() * 255) | 0;
+          data.data[j + 1] = (Math.random() * 255) | 0;
+          data.data[j + 2] = (Math.random() * 255) | 0;
+          data.data[j + 3] = 255;
+        }
+        ctx.putImageData(data, 0, 0);
+        var blob = await new Promise(function (r) { cv.toBlob(r, "image/png"); });
+        var name = "Screenshot " + i + ".png";
+        names.push(name);
+        files.push(new File([blob], name, { type: "image/png" }));
+      }
+      var bytes = files.reduce(function (n, f) { return n + f.size; }, 0);
+
+      var md = "# A big export\\n\\n" + names.map(function (n) {
+        return "![" + n + "](A%20big%20export/" + encodeURIComponent(n) + ")";
+      }).join("\\n\\n") + "\\n";
+
+      var fileEntry = function (name, file) {
+        return { isFile: true, isDirectory: false, name: name, file: function (cb) { cb(file); } };
+      };
+      var dirEntry = function (name, children) {
+        return { isFile: false, isDirectory: true, name: name, createReader: function () {
+          var done = false;
+          return { readEntries: function (cb) { cb(done ? [] : children); done = true; } };
+        } };
+      };
+      window.__probe.bigTree = dirEntry("A big export", [
+        dirEntry("A big export", files.map(function (f) { return fileEntry(f.name, f); })),
+        fileEntry("A big export.md", new File([md], "A big export.md", { type: "text/markdown" })),
+      ]);
+      return { bytes: bytes, count: files.length };
+    })();
+  })()`);
+
+  ok("the test document is bigger than localStorage could ever hold",
+     big.bytes > 10 * 1024 * 1024,
+     (big.bytes / 1048576).toFixed(2) + "MB across " + big.count + " pictures");
+
+  const beforeBig = w.eval("window.__probe.pageCount()");
+  w.eval(`SidebarUI.handleDrop({ items: [{ webkitGetAsEntry: function () { return window.__probe.bigTree; } }], files: [] })`);
+  /* 120 pictures is real work: hashing, storing and saving each one. */
+  for (let i = 0; i < 40; i++) {
+    await wait(1500);
+    if (w.eval("window.__probe.pageCount()") > beforeBig) break;
+  }
+
+  const bigPages = w.eval("window.__probe.pages()").filter((p) => p.title === "A big export");
+  ok("a 12MB document now imports, where before it could not be saved at all",
+     bigPages.length === 1, JSON.stringify(w.eval("window.__probe.pages()").map((p) => p.title)));
+
+  if (bigPages.length) {
+    const bigDoc = w.eval("window.__probe.blocksOf(" + JSON.stringify(bigPages[0].id) + ")");
+    const bigImgs = (bigDoc.blocks || []).filter((b) => b.type === "image");
+    ok("every one of its pictures arrived", bigImgs.length === big.count,
+       bigImgs.length + " of " + big.count);
+    ok("all of them as references", bigImgs.every((b) => /^img_/.test(String(b.data.ref || ""))));
+
+    const bigStoredBytes = w.eval(
+      "(localStorage.getItem('folio_doc_' + " + JSON.stringify(bigPages[0].id) + ") || '').length * 2");
+    ok("and the page itself is a few kilobytes",
+       bigStoredBytes < 64 * 1024,
+       (bigStoredBytes / 1024).toFixed(1) + "KB for " + big.count + " pictures");
+
+    const bigStats = await w.eval("FolioImages.stats()");
+    ok("the pictures are all in the picture store",
+       bigStats.count >= big.count, String(bigStats.count));
+    ok("holding more than localStorage's entire ceiling",
+       bigStats.bytes > 10 * 1024 * 1024, (bigStats.bytes / 1048576).toFixed(2) + "MB");
+
+    /* And they are real pictures, not just rows: open it and look. */
+    w.location.hash = "#/doc/" + bigPages[0].id;
+    await wait(4000);
+    const shown = Array.from(d.querySelectorAll("#article figure.folio-image img[src]"));
+    await Promise.all(shown.slice(0, 8).map((i) => (i.decode ? i.decode().catch(() => {}) : null)));
+    ok("and they draw on screen", shown.length > 0 && shown.slice(0, 8).every((i) => i.naturalWidth > 0),
+       shown.length + " shown");
+
+    // ── DELETING THE PAGE TAKES ITS PICTURES WITH IT ─────────────────────────
+    /*
+     * Otherwise the budget only ever grows: 250MB is generous, not infinite,
+     * and a document imported, looked at and deleted would leave its 12MB
+     * behind for good.
+     */
+    w.location.hash = "#/";
+    await wait(600);
+    const beforeDelete = (await w.eval("FolioImages.stats()")).count;
+    w.eval("FolioStore.deleteDocument(" + JSON.stringify(bigPages[0].id) + ")");
+    for (let i = 0; i < 25; i++) {
+      await wait(1000);
+      if ((await w.eval("FolioImages.stats()")).count < beforeDelete - 50) break;
+    }
+    const afterDelete = await w.eval("FolioImages.stats()");
+    ok("deleting the page released its pictures",
+       afterDelete.count <= beforeDelete - big.count,
+       beforeDelete + " -> " + afterDelete.count);
+    ok("and left the first import's pictures alone",
+       afterDelete.count >= 2, String(afterDelete.count));
+  }
+
+  // ── THE COLLECTOR: KEEPS WHAT IS USED, DROPS WHAT IS NOT ───────────────────
+  /*
+   * The one way this feature could lose somebody's work: a collector that
+   * reads the pages wrongly, sees a store full of orphans, and deletes every
+   * picture in Folio. It runs on idle at every startup, so being right matters
+   * more here than anywhere else in this file.
+   *
+   * THE RECORDS ARE AGED FIRST, deliberately. Everything in the store was
+   * written seconds ago and the collector leaves anything younger than ten
+   * minutes alone — so without ageing them the grace period does the
+   * protecting and this proves nothing about the reference check it is named
+   * after. Backdating them by an hour removes that protection and leaves only
+   * the real question: does it know what the pages refer to.
+   *
+   * An orphan is planted too, because "deletes nothing" is also what a
+   * collector that does nothing at all would do.
+   */
+  /*
+   * FIRST: a picture written seconds ago survives a collection.
+   *
+   * This is the in-flight import. An import stores its pictures and then
+   * saves the page; between those two moments nothing in storage references
+   * them, and the collector runs on idle at every startup. Without the grace
+   * period it would delete the pictures of the import currently happening —
+   * so this plants a brand-new unreferenced picture and asserts a collection
+   * leaves it alone.
+   *
+   * Removing the grace period passed every other assertion in this file.
+   */
+  const freshRef = await w.eval(`(function () {
+    var cv = document.createElement("canvas");
+    cv.width = 32; cv.height = 32;
+    var ctx = cv.getContext("2d");
+    ctx.fillStyle = "#ff8800"; ctx.fillRect(0, 0, 32, 32);
+    return FolioImages.putDataUrl(cv.toDataURL("image/png"), null);
+  })()`);
+  ok("a picture was stored with no page referring to it yet",
+     /^img_/.test(String(freshRef)), String(freshRef));
+  await w.eval("FolioImages.collectGarbage()");
+  ok("a collection does NOT take a picture written moments ago — the import in flight",
+     (await w.eval("FolioImages.url(" + JSON.stringify(freshRef) + ")")) !== null,
+     "the collector ate an in-flight picture");
+
+  const aged = await w.eval(`(function () {
+    return new Promise(function (resolve) {
+      var req = indexedDB.open("folio-images");
+      req.onsuccess = function () {
+        var db = req.result;
+        var store = db.transaction("pictures", "readwrite").objectStore("pictures");
+        var all = store.getAll();
+        all.onsuccess = function () {
+          var recs = all.result || [];
+          var old = Date.now() - 60 * 60 * 1000;
+          var s2 = db.transaction("pictures", "readwrite").objectStore("pictures");
+          recs.forEach(function (r) { r.createdAt = old; r.lastUsed = old; s2.put(r); });
+          s2.transaction.oncomplete = function () { resolve(recs.length); };
+        };
+      };
+      req.onerror = function () { resolve(-1); };
+    });
+  })()`);
+  ok("the stored pictures were aged past the collector's grace period", aged > 0, String(aged));
+
+  /* An orphan: in the store, referenced by no page, and old enough to collect. */
+  const orphanRef = await w.eval(`(function () {
+    return (async function () {
+      var cv = document.createElement("canvas");
+      cv.width = 64; cv.height = 64;
+      cv.getContext("2d").fillStyle = "#abcdef";
+      cv.getContext("2d").fillRect(0, 0, 64, 64);
+      var ref = await FolioImages.putDataUrl(cv.toDataURL("image/png"), null);
+      await new Promise(function (resolve) {
+        var req = indexedDB.open("folio-images");
+        req.onsuccess = function () {
+          var s = req.result.transaction("pictures", "readwrite").objectStore("pictures");
+          var g = s.get(ref);
+          g.onsuccess = function () {
+            var r = g.result;
+            r.createdAt = Date.now() - 60 * 60 * 1000;
+            s.put(r);
+          };
+          s.transaction.oncomplete = resolve;
+        };
+      });
+      return ref;
+    })();
+  })()`);
+  ok("an orphan was planted", /^img_/.test(String(orphanRef)), String(orphanRef));
+
+  const liveBefore = (await w.eval("FolioImages.stats()")).count;
+  const gc = await w.eval("FolioImages.collectGarbage()");
+  const liveAfter = await w.eval("FolioImages.stats()");
+  ok("the collector ran", gc && gc.ran === true, JSON.stringify(gc));
+  ok("it deleted the orphan nothing refers to", gc.deleted >= 1, JSON.stringify(gc));
+  ok("and kept every picture a page still refers to",
+     liveAfter.count === liveBefore - gc.deleted && liveAfter.count >= 2,
+     liveBefore + " -> " + liveAfter.count + ", deleted " + gc.deleted);
+  ok("the orphan is really gone",
+     (await w.eval("FolioImages.url(" + JSON.stringify(orphanRef) + ")")) === null,
+     "its url still resolves");
+  w.location.hash = "#/doc/" + pages[0].id;
+  await wait(2500);
+  const stillThere = Array.from(d.querySelectorAll("#article figure.folio-image img[src]"));
+  await Promise.all(stillThere.map((i) => (i.decode ? i.decode().catch(() => {}) : null)));
+  ok("the first import's pictures still draw after a collection",
+     stillThere.length === 2 && stillThere.every((i) => i.naturalWidth > 0),
+     stillThere.length + " shown");
+
   // ── THE OLD WAY IN STILL WORKS ─────────────────────────────────────────────
   /*
    * Dragging a single .md file is the oldest way into Folio. Teaching the drop
@@ -265,11 +593,18 @@ async function main() {
    */
   w.location.hash = "#/";
   await wait(800);
+  /*
+   * Counted relative to whatever is there now, not against a fixed number:
+   * the first version asserted "=== 2" and broke the moment a section was
+   * added above it, which is a test failing for a reason that has nothing to
+   * do with what it is testing.
+   */
+  const beforeLone = w.eval("window.__probe.pageCount()");
   w.eval("window.__probe.dropLoneFile()");
   await wait(1500);
   const after = w.eval("window.__probe.pageCount()");
-  ok("a single dropped .md file still makes exactly one more page", after === 2,
-     String(after));
+  ok("a single dropped .md file still makes exactly one more page",
+     after === beforeLone + 1, beforeLone + " -> " + after);
 
   // ── AND THE WELCOME DROPZONE DOES NOT DOUBLE UP ────────────────────────────
   /*
@@ -292,6 +627,63 @@ async function main() {
   const afterZone = w.eval("window.__probe.pageCount()");
   ok("dropping on the welcome screen imports once, not twice",
      afterZone === before + 1, before + " -> " + afterZone);
+
+  // ── A PASTED SCREENSHOT GOES THE SAME WAY ──────────────────────────────────
+  /*
+   * Pasting a screenshot is much older than importing a folder, and it has
+   * been putting base64 into pages for months — against the same 10.00MB
+   * ceiling that stopped saving in October. It now takes the same route out of
+   * the page, so this asserts the route rather than the feature: a pasted
+   * picture must end up as a reference, must still be visible, and must not
+   * leave a data URL behind in the page.
+   */
+  const pasteDoc = w.eval(`(function () {
+    return FolioStore.createDocument("A pasted screenshot", { time: Date.now(),
+      blocks: [{ type: "paragraph", data: { text: "Before the paste." } }] }, null).id;
+  })()`);
+  w.location.hash = "#/doc/" + pasteDoc + "/edit";
+  await wait(3000);
+
+  const pasted = w.eval(`(function () {
+    var cv = document.createElement("canvas");
+    cv.width = 240; cv.height = 180;
+    var ctx = cv.getContext("2d");
+    ctx.fillStyle = "#3366cc"; ctx.fillRect(0, 0, 240, 180);
+    var b64 = cv.toDataURL("image/png").split(",")[1];
+    var bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
+    var file = new File([bytes], "pasted.png", { type: "image/png" });
+
+    var holder = document.getElementById("editorjs");
+    if (!holder) return "no-editor";
+    var ev = new Event("paste", { bubbles: true, cancelable: true });
+    /* What editor.js reads: clipboardData.items, each with kind and getAsFile. */
+    ev.clipboardData = {
+      items: [{ kind: "file", type: "image/png", getAsFile: function () { return file; } }],
+      files: [file],
+      types: ["Files"],
+      getData: function () { return ""; },
+    };
+    holder.dispatchEvent(ev);
+    return "pasted";
+  })()`);
+  ok("the editor was open to paste into", pasted === "pasted", String(pasted));
+  await wait(4000);
+
+  const pasteBlocks = w.eval("window.__probe.blocksOf(" + JSON.stringify(pasteDoc) + ")");
+  const pastedImg = ((pasteBlocks && pasteBlocks.blocks) || []).filter((b) => b.type === "image");
+  ok("the pasted screenshot became an image block", pastedImg.length === 1,
+     JSON.stringify(((pasteBlocks && pasteBlocks.blocks) || []).map((b) => b.type)));
+  ok("stored as a reference, not as base64 in the page",
+     pastedImg.length === 1 && /^img_/.test(String(pastedImg[0].data.ref || "")),
+     pastedImg.length ? JSON.stringify(Object.keys(pastedImg[0].data)) : "none");
+  ok("and no data URL was left in the page",
+     pastedImg.length === 1 && !pastedImg[0].data.url);
+
+  const pastedOnScreen = Array.from(d.querySelectorAll("#editorjs img[src]"));
+  await Promise.all(pastedOnScreen.map((i) => (i.decode ? i.decode().catch(() => {}) : null)));
+  ok("it is visible in the editor straight after pasting",
+     pastedOnScreen.length >= 1 && pastedOnScreen.every((i) => i.naturalWidth > 0),
+     pastedOnScreen.map((i) => i.naturalWidth + "x" + i.naturalHeight).join(" | "));
 
   // ── AND WHEN IT DOES NOT FIT ───────────────────────────────────────────────
   /*

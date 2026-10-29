@@ -17,11 +17,16 @@ can view them and comment while viewing them will be enough."*
   and let the converter resolve a relative path against the files that came with it.
 - **The pictures are stored inside the page, as data URLs** — the same way a pasted
   screenshot already is. This is the quick route, chosen deliberately.
-- **MEASURED AGAINST THE REAL EXPORTS AFTERWARDS, and the quick route does not fit
-  the big ones.** Every path matched — 118 of 118 in one export, 59 of 59 in another
-  — but that export is 12.71MB of pictures, about 17.4MB once base64 has added its
-  third, against a 10.00MB ceiling for the whole app. Small exports work today; the
-  big ones need the pictures out of the page. See **What the real exports measured**.
+- **MEASURED AGAINST THE REAL EXPORTS, and the quick route did not fit the big ones.**
+  Every path matched — 118 of 118 in one export, 59 of 59 in another — but that export
+  is 12.71MB of pictures, about 17.4MB once base64 has added its third, against a
+  10.00MB ceiling for the whole app. See **What the real exports measured**.
+- **SO THE PICTURES WERE MOVED OUT OF THE PAGE.** They are blobs in IndexedDB now
+  (`js/images.js`, 250MB budget) and a page holds a 36-character reference instead.
+  A document of 120 screenshots and 12MB imports, saves as a 5KB page, and draws —
+  proven in a real browser, not reasoned about. See **Pictures live outside the page**.
+- **Pasted screenshots take the same route**, because they were eating the same 10MB
+  budget. Pages that already hold pasted pictures are untouched and still render.
 
 ## Document map
 
@@ -29,6 +34,7 @@ can view them and comment while viewing them will be enough."*
 - **What happens when you drop the folder** — the path a picture takes to the screen.
 - **Matching a path to a file** — why three keys are tried, and not one.
 - **The storage ceiling** — the 10MB limit, what fills it, and what happens when it does.
+- **Pictures live outside the page** — the store, the two data shapes, and the lifecycle.
 - **What the real exports measured** — four of his own exports, run through the matcher.
 - **What saving a page of pictures cost** — the typing freeze this uncovered, and the fix.
 - **What was changed** — every file touched, and why.
@@ -184,6 +190,63 @@ picture at all is rejected by one `indexOf` in half a millisecond.
 Three mutations prove the rule: never firing, always firing, and firing on a bare
 substring match each break the test.
 
+## Pictures live outside the page
+
+**A picture is a blob in IndexedDB and a page holds its name.** That is the whole
+change, and it is what makes a 12MB document openable.
+
+**The two shapes a page can hold, both permanent:**
+
+```
+{ type: "image", data: { ref: "img_a3f2c1...", caption: "..." } }   in the store
+{ type: "image", data: { url: "data:image/...", caption: "..." } }  in the page
+```
+
+Everything written from now on is the first. Every page written before today is the
+second, **and no page is migrated** — both renderers accept either, so nothing has to
+be opened to be rescued and nothing can be broken by a migration that goes wrong.
+
+**Why it looks like `js/speechify.js`.** That file already solved this for read-aloud
+audio: a blob store, a request for durable storage, eviction oldest-first, and a
+graceful collapse to nothing in private browsing. Copying a shape that has been in use
+for weeks is worth more than a cleverer one invented today.
+
+**The name is a hash of the bytes**, so the same screenshot in two places costs once.
+That is not a micro-optimisation on a Notion export — a before-and-after pair, or a
+diagram referred to twice, genuinely stores once — and the hash is free because a
+stable name was needed anyway.
+
+**Resolution happens after render, in both views.** Editor.js requires `render()` to
+return a node synchronously and the reader builds its HTML in one string; reading a
+blob is asynchronous. So the `<img>` goes out with `data-folio-ref` and no `src`, and
+`FolioImages.attach` fills it. A reference that is not in this browser — a page opened
+elsewhere, storage cleared — leaves a short note where the picture would be, because an
+`<img>` with no `src` collapses to nothing and a broken one shows the torn-paper icon,
+and neither tells anybody what happened.
+
+**Three things delete pictures, in order of reliability:**
+
+1. **Deleting a page** releases the pictures recorded against it.
+2. **The collector**, on idle at startup, deletes anything no page refers to. It
+   refuses to delete at all if it cannot read the pages, because an empty reference set
+   from a failed read is indistinguishable from a store full of orphans — and it leaves
+   alone anything written in the last ten minutes, so an import in flight is safe.
+3. **The sweep**, after an import, holds the store under 250MB oldest-used first.
+
+**One optimisation measured and deliberately NOT made.** A picture goes File → data
+URL (through the shared compressor) → Blob, which round-trips through base64 for no
+reason on the common case where the compressor leaves the file alone — which is all
+118 of his. Timed before changing anything: 12ms of CPU across 118 pictures, plus a
+22MB string and one `fetch` each. Skipping it would mean a second path through the
+compressor and a second place that knows the 500KB threshold, to save 12ms. Left as
+it is.
+
+**The race that the probe caught.** Claiming 120 pictures for a page was 240 separate
+IndexedDB transactions, fire-and-forget. It finished, but slowly enough that a page
+deleted immediately afterwards ran its cleanup while a few pictures were still
+unclaimed — and an unclaimed picture is one that cleanup cannot find. Measured: 119 of
+120 released, one left behind. It is one transaction now, and awaited.
+
 ## What was changed
 
 | File | Why |
@@ -194,13 +257,23 @@ substring match each break the test.
 | `js/sidebar.js` | The drop handler reads folders; single `.md` files behave exactly as before |
 | `js/app.js` | The welcome dropzone calls the same import path instead of its own copy |
 | `index.html`, `index-electron.html` | Load the new module |
+| `js/images.js` | New. The picture store: blobs in IndexedDB, references in pages |
+| `js/reader.js` | Draws a reference; also escapes attributes, which it did not |
+| `css/editor.css` | A note where a picture that is not in this browser would be |
 | `test/notion-folder-import.selftest.js` | New. Path keying and resolution |
+| `test/picture-pages-skip-compression.selftest.js` | New. Prose still compresses, pictures do not |
+| `test/browser/notionfolder.probe.html` | New. 63 assertions in a real browser |
 | `test/markdown-import.selftest.js` | Relative paths resolve; unresolvable ones stay refused |
 
 ## What this does NOT do
 
-- **Pictures are not stored outside the page**, so the 10MB ceiling above applies.
-  This was the explicit choice: working today, better later.
+- **Pages written before today still hold their pictures inline**, so those pages
+  still count against the 10MB ceiling. They render exactly as they always did;
+  nothing was migrated, on purpose. Moving them out would free real space and is
+  worth doing deliberately rather than as a side effect of this.
+- **Pictures are per browser.** They are in IndexedDB, so a page opened in a
+  different browser, or after storage is cleared, shows a note where each picture
+  was rather than the picture. Nothing syncs them.
 - **Dropping a `.zip` straight from Notion does not work.** It has to be unzipped
   first. Folio has no zip library and adding one was not worth it today.
 - **Subpages come in flat.** A Notion export of a page with children has several
@@ -212,8 +285,14 @@ substring match each break the test.
 - **Safari's drop may not give a folder.** `webkitGetAsEntry` is the API this uses;
   it works in Chrome and in the Electron panel. Dropping loose files still works
   everywhere.
-- **Not tried on a real export yet** at the time of writing — see the progress note
-  at the end for what has actually been run.
+- **The markdown export still drops images entirely.** It did before this too — an
+  image block falls through to the default case and produces an empty string — so
+  nothing was made worse, but nothing was fixed either. Doing it properly means
+  writing the picture files out beside the markdown.
+- **Not dragged in by hand from a real folder.** The matcher has been run over four
+  real exports on disk and the drop has been driven in a real browser with real File
+  objects, but a human dragging a folder from Finder is the one step no test here
+  performs.
 
 ## What was actually run
 
@@ -234,6 +313,9 @@ that was not executed.
   the lookup allowed to return any source at all.
 - **The real exports.** Four of his own, run through the real matcher and the real
   converter — the table above.
+- **Every other probe that touches what changed**, after the picture store landed:
+  `import` 18, `editorsaves` 13, `compaction` 18, `storagefull` 22, `pastevanishes`
+  17, `staleeditor` 8, `readsedit` 30, `highlightcomment` 12 — all 0 failed.
 
 **One test caught a real bug while being written**: the sidebar's one-line forwarder
 to the converter took a single argument, so the picture lookup was silently dropped
@@ -258,3 +340,10 @@ nothing about the key it was named after. A decoy `Untitled.png` in a second fol
   picture-dominated pages.
 - 29 Oct: measured four real exports. Paths: perfect. Sizes: the two big ones do not
   fit, and cannot be made to fit by compressing harder. Raised with him.
+- 29 Oct: pushed the folder import live and verified by hashing the served files.
+- 29 Oct: his call — build the picture store now. Did: `js/images.js`, both renderers
+  taught to resolve a reference, deletion and a collector, and pasted screenshots on
+  the same route. A 120-picture, 12MB document now imports and draws.
+- 29 Oct: the probe caught the claim race (119 of 120 released on delete) and the fact
+  that two of its own assertions were being carried by the grace period rather than by
+  what they claimed to test. Both fixed, both now fail when the code is broken.
