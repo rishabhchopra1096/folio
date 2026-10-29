@@ -39,9 +39,14 @@ Every file in `js/` is a vanilla-JS IIFE that exports a single namespace on `win
 
 When wiring a new feature, follow the same pattern: IIFE + `return { publicFn, ... }` at the bottom. `App.init()` in `js/app.js:224` is the single entry point that initializes every module on `DOMContentLoaded`.
 
-### Data model — all in localStorage
+### Data model — localStorage, plus two blob stores
 
-There is no backend. Keys under `folio_*`:
+There is no backend. Text is in localStorage under `folio_*` keys; binary is in
+IndexedDB (`folio-images` for pictures, see `js/images.js`; a separate one for
+read-aloud audio, see `js/speechify.js`), because localStorage is capped at 10MB
+for the whole origin.
+
+Keys under `folio_*`:
 
 - `folio_documents` — array of doc metadata (`{id, title, icon, parentId, order, createdAt, updatedAt}`)
 - `folio_doc_{id}` — Editor.js JSON blocks for each doc (this is the source of truth, **not** markdown)
@@ -50,6 +55,10 @@ There is no backend. Keys under `folio_*`:
 - `folio_notion_token`, `folio_notion_pages` — Electron-only Notion sync state
 
 Nested pages are modeled by `parentId` on the metadata record. `null` parent = top-level. `SidebarUI.renderPageTree()` recurses over this.
+
+Image blocks inside `folio_doc_{id}` hold a reference (`{ ref: "img_..." }`) rather
+than the picture; `js/images.js` resolves it to an object URL after render. Pages from
+before 29 Oct 2026 hold the picture inline as a data URL and still work untouched.
 
 **Content format is Editor.js JSON, not markdown.** When importing `.md` files (drag-and-drop or "Add from Notion"), convert markdown → blocks via `SidebarUI.markdownToBlocks`. When pushing to Notion, convert blocks → markdown. Never store markdown as the canonical representation.
 
@@ -82,4 +91,6 @@ The three view containers (`#view-welcome`, `#view-editor`, `#view-reader`) shar
 - Keep the narrative teaching-style comments that exist throughout — this codebase uses the full-file-header + section-banner convention already. New files should follow it.
 - Add new Electron IPC in both `electron/main.js` (handler) and `electron/preload.js` (bridge) — they must stay in sync.
 - When editing a JS module, remember both HTML entry points load it. Check `index.html` **and** `index-electron.html` when changing the DOM contract (element IDs, order of `<script>` tags).
-- localStorage is the only persistence. Don't introduce IndexedDB or a service worker without discussing — the whole app assumes synchronous reads from `FolioStore`.
+- **Text lives in localStorage; bytes live in IndexedDB.** Keep it that way. Every module reads text from `FolioStore` expecting an answer immediately, so that side must stay synchronous — don't make `FolioStore` async and don't add a service worker without discussing. But localStorage is capped at **10.00MB for the whole origin**, and it has already filled once (17 Oct 2026) and stopped saving across the app. So anything binary — audio, pictures — goes to IndexedDB and localStorage keeps only a reference to it. The two existing stores are the pattern to copy: `js/speechify.js` for read-aloud audio and `js/images.js` for pictures.
+- **Pictures are not stored in pages.** An image block holds `{ ref: "img_...", caption }` and the bytes are in `js/images.js`. The old shape `{ url: "data:image/..." }` is still rendered by both the editor and the reader, because every page written before 29 Oct 2026 holds it — so accept either and never assume one. A 118-screenshot Notion export is 12.71MB, about 17.4MB as base64, which is why this split exists.
+- **The store does not compress a page that is mostly pictures.** lz-string is synchronous and base64 of already-compressed bytes yields almost nothing, so it cost over a second of frozen editor per save to win about 2%. See the measurements in `js/store.js`.
