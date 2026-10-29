@@ -34,6 +34,7 @@ can view them and comment while viewing them will be enough."*
 - **What happens when you drop the folder** — the path a picture takes to the screen.
 - **Matching a path to a file** — why three keys are tried, and not one.
 - **The storage ceiling** — the 10MB limit, what fills it, and what happens when it does.
+- **How big a picture is on the page** — the height cap, his call, and the unit that lied.
 - **Pictures live outside the page** — the store, the two data shapes, and the lifecycle.
 - **What the real exports measured** — four of his own exports, run through the matcher.
 - **What saving a page of pictures cost** — the typing freeze this uncovered, and the fix.
@@ -247,6 +248,33 @@ deleted immediately afterwards ran its cleanup while a few pictures were still
 unclaimed — and an unclaimed picture is one that cleanup cannot find. Measured: 119 of
 120 released, one left behind. It is one transaction now, and awaited.
 
+## How big a picture is on the page
+
+**Capped in height, at his call, because everything that arrives here is
+portrait.** A phone screenshot from a Notion export and a 9:16 illustration from
+the story outlines are both about a screen tall at the full column width, so a
+document with a picture after every section read as a screen of picture, a screen
+of prose, a screen of picture — and the writing stopped being the spine of it.
+
+Shown to him both ways before anything in `css/` was touched, rendered from his
+own story outline rather than from a mock-up. His answer: *"Smaller, so two beats
+fit a screen."*
+
+`--picture-max-height: 520px` in `css/variables.css`, used by the editor and the
+reader so the two can never disagree. The number was chosen by looking: at that
+size a phone screenshot is still legible down to the words on its buttons, and
+two sections fit in one screen instead of one. A landscape picture at this column
+width is around 340px tall, so it never reaches the cap and nothing about it
+changes.
+
+**The trap this walked into first.** The candidate was staged as `62vh`, and the
+screenshot came back identical to the uncapped one. `vh` is measured against the
+viewport, and the screenshot harness renders the app in a deliberately 5200px-tall
+iframe so the whole article is captured — 62% of which is larger than any picture
+in the document. The cap was real; the unit made it unreachable. **A styling
+candidate staged inside the shot harness has to avoid viewport units, or it is
+being measured against the harness rather than the app.**
+
 ## What was changed
 
 | File | Why |
@@ -259,7 +287,8 @@ unclaimed — and an unclaimed picture is one that cleanup cannot find. Measured
 | `index.html`, `index-electron.html` | Load the new module |
 | `js/images.js` | New. The picture store: blobs in IndexedDB, references in pages |
 | `js/reader.js` | Draws a reference; also escapes attributes, which it did not |
-| `css/editor.css` | A note where a picture that is not in this browser would be |
+| `css/editor.css` | A note where a missing picture would be; the height cap in both views |
+| `css/variables.css` | `--picture-max-height`, so the editor and the reader cannot disagree |
 | `test/notion-folder-import.selftest.js` | New. Path keying and resolution |
 | `test/picture-pages-skip-compression.selftest.js` | New. Prose still compresses, pictures do not |
 | `test/browser/notionfolder.probe.html` | New. 63 assertions in a real browser |
@@ -347,3 +376,8 @@ nothing about the key it was named after. A decoy `Untitled.png` in a second fol
 - 29 Oct: the probe caught the claim race (119 of 120 released on delete) and the fact
   that two of its own assertions were being carried by the grace period rather than by
   what they claimed to test. Both fixed, both now fail when the code is broken.
+- 29 Oct: imported his two brighter-day story outlines — 65 real illustrations, 36.64MB,
+  which as base64 would have been 50.20MB. Both pages, every picture drawn. Checked the
+  folders first: the mapping from "Picture for beat N" to D3-NN.png was already perfect
+  in both, 37 of 37 and 28 of 28, so nothing needed reorganising — only linking.
+- 29 Oct: showed him the result at two picture sizes and capped the height at his answer.

@@ -28,6 +28,20 @@
   --shadow: rgba(44, 36, 22, 0.08);
   --font-body: "Lora", Georgia, serif;
   --font-ui: "DM Sans", sans-serif;
+
+  /*
+   * How tall a picture is allowed to be, in any theme.
+   *
+   * Here rather than beside the rule in editor.css because the editor and the
+   * reader both use it and they must never disagree, and because it is the one
+   * number in this decision worth being able to change in a single place.
+   *
+   * 520px chosen by looking: at that size a 9:16 phone screenshot is still
+   * legible down to the words on its buttons, and two sections of a document
+   * fit in one screen instead of one. A landscape picture at this column width
+   * is around 340px tall, so it never reaches the cap.
+   */
+  --picture-max-height: 520px;
 }
 
 /* Warm dark theme — rich sepia tones */

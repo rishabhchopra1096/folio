@@ -187,8 +187,27 @@
   margin: 1.2em 0;
   text-align: center;
 }
+/*
+ * A PICTURE IS CAPPED IN HEIGHT, NOT JUST IN WIDTH.
+ *
+ * Everything that arrives in a Folio page is portrait: phone screenshots from
+ * a Notion export, and 9:16 illustrations from the story outlines. At the full
+ * column width one of those is about a screen tall, so a document with a
+ * picture after every section became a screen of picture, a screen of prose,
+ * a screen of picture — and the writing stopped being the spine of it.
+ *
+ * Capping the HEIGHT fixes that without touching anything else: a landscape
+ * picture at this column width is already around 340px tall, so it never
+ * reaches the cap and is unaffected. Only the tall ones come down, and at this
+ * size a phone screenshot is still legible — the speech bubble and the buttons
+ * in a staged app screen read fine, which is what it was checked against.
+ *
+ * `width: auto` is what lets the aspect ratio hold while the height leads.
+ */
 .folio-image-block img {
   max-width: 100%;
+  max-height: var(--picture-max-height);
+  width: auto;
   height: auto;
   border-radius: 8px;
   display: inline-block;
@@ -243,6 +262,10 @@
 }
 .folio-image img {
   max-width: 100%;
+  /* The same cap the editor uses — see the note above it. Reading a document
+   * and editing it must not disagree about how big its pictures are. */
+  max-height: var(--picture-max-height);
+  width: auto;
   height: auto;
   border-radius: 8px;
   box-shadow: 0 2px 12px var(--shadow);
