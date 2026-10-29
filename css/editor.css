@@ -207,6 +207,26 @@
   color: var(--ink-faint);
   opacity: 0.5;
 }
+/*
+ * A picture that is not in this browser.
+ *
+ * Pictures live in IndexedDB now (js/images.js), which is per browser — so a
+ * page opened somewhere else, or after storage was cleared, genuinely does not
+ * have them. An <img> with no src collapses to nothing and a broken one shows
+ * the browser's torn-paper icon; both leave someone wondering whether the
+ * document ever had a picture there. This says so instead, in the same quiet
+ * register as a caption.
+ */
+.folio-image-missing {
+  border: 1.5px dashed var(--line);
+  border-radius: 8px;
+  padding: 18px 20px;
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.85em;
+  text-align: center;
+}
+
 .folio-image-placeholder {
   border: 1.5px dashed var(--line);
   border-radius: 8px;

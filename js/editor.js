@@ -34,7 +34,21 @@
  * roll our own tiny one — it accepts a data URL (or any URL) and renders an
  * <img> + an editable caption. ~40 lines, no dependency.
  *
- * Data shape: { url: "data:image/jpeg;base64,...", caption: "" }
+ * TWO DATA SHAPES, BOTH PERMANENT:
+ *
+ *   { ref: "img_a3f2c1...", caption: "" }   the picture is in IndexedDB
+ *   { url: "data:image/...", caption: "" }  the picture is in the page
+ *
+ * `ref` is what everything new writes, because 118 screenshots from a Notion
+ * export come to about 17.4MB as base64 against a 10MB ceiling for the whole
+ * of localStorage — see js/images.js for the measurements. `url` is what every
+ * page written before that holds, and it keeps working untouched: no
+ * migration, no rewrite, no page that has to be opened to be rescued.
+ *
+ * A `ref` is resolved AFTER this node is built, because Editor.js requires
+ * render() to return a node synchronously and reading a blob out of IndexedDB
+ * is asynchronous. The <img> goes in with no src and FolioImages.attach fills
+ * it, or replaces it with a short note if the picture is not in this browser.
  */
 class FolioImageTool {
   static get toolbox() {
@@ -50,6 +64,7 @@ class FolioImageTool {
   constructor({ data }) {
     this.data = {
       url: (data && data.url) || "",
+      ref: (data && data.ref) || "",
       caption: (data && data.caption) || "",
     };
     this.wrapper = null;
@@ -60,7 +75,19 @@ class FolioImageTool {
     const wrapper = document.createElement("figure");
     wrapper.className = "folio-image-block";
 
-    if (this.data.url) {
+    if (this.data.ref) {
+      const img = document.createElement("img");
+      /* No src yet — attach() puts one here once it has read the blob. */
+      img.setAttribute("data-folio-ref", this.data.ref);
+      img.alt = this.data.caption || "";
+      wrapper.appendChild(img);
+      /*
+       * Works on a detached node, which this still is: querySelectorAll does
+       * not care, and the src lands before or shortly after Editor.js inserts
+       * the figure. Deliberately not awaited — render() must return a node.
+       */
+      if (typeof FolioImages !== "undefined") FolioImages.attach(wrapper);
+    } else if (this.data.url) {
       const img = document.createElement("img");
       img.src = this.data.url;
       img.alt = this.data.caption || "";
@@ -84,15 +111,21 @@ class FolioImageTool {
     return wrapper;
   }
 
+  /*
+   * Save back whichever shape came in.
+   *
+   * Writing both fields would put the data URL back into a page that had
+   * successfully got it out, which is the whole point of the reference — so a
+   * picture stored in IndexedDB saves a ref and nothing else.
+   */
   save() {
-    return {
-      url: this.data.url,
-      caption: this.captionEl ? this.captionEl.textContent : this.data.caption,
-    };
+    const caption = this.captionEl ? this.captionEl.textContent : this.data.caption;
+    return this.data.ref ? { ref: this.data.ref, caption }
+                         : { url: this.data.url, caption };
   }
 
   validate(savedData) {
-    return !!(savedData && savedData.url);
+    return !!(savedData && (savedData.url || savedData.ref));
   }
 }
 
@@ -379,16 +412,39 @@ const Editor = (function () {
    * Image paste flow:
    *   1. Read the file as a data URL
    *   2. Pass through compressImage() — resizes >1800px, JPEG-encodes >500KB
-   *   3. Insert as an image block at the caret
-   *   4. Run a soft-quota check; warn if localStorage is near full
+   *   3. Move it OUT of the page into the picture store, keeping a reference
+   *   4. Insert as an image block at the caret
+   *   5. Run a soft-quota check; warn if localStorage is near full
+   *
+   * STEP 3 IS NEW, and it is the same change a dragged-in Notion export got.
+   * A pasted screenshot used to go into the page as base64, which is a third
+   * larger than the bytes it carries and counts against the 10.00MB this
+   * origin gets for everything. That ceiling has already stopped saving once,
+   * in October, with 7.49MB of pages and no pictures at all — pastes have been
+   * quietly eating into the same budget ever since.
+   *
+   * In the picture store it has 250MB and no base64 third. If the store will
+   * not open — private browsing, some lockdown modes — the picture goes into
+   * the page exactly as it always did, because a screenshot inline is worth
+   * much more than a paste that does nothing.
+   *
+   * Pages already holding pasted pictures are not touched. They still render,
+   * they just still count against the small budget.
    */
   async function handleImagePaste(file) {
     if (!editorInstance) return;
     try {
       const dataUrl = await compressImage(file);
+
+      let data = { url: dataUrl, caption: "" };
+      if (typeof FolioImages !== "undefined") {
+        const ref = await FolioImages.putDataUrl(dataUrl, currentDocId);
+        if (ref) data = { ref, caption: "" };
+      }
+
       const idx = editorInstance.blocks.getCurrentBlockIndex();
       const insertAt = idx >= 0 ? idx + 1 : editorInstance.blocks.getBlocksCount();
-      editorInstance.blocks.insert("image", { url: dataUrl, caption: "" }, {}, insertAt, true);
+      editorInstance.blocks.insert("image", data, {}, insertAt, true);
       debouncedSave();
       checkStorageQuota();
     } catch (err) {

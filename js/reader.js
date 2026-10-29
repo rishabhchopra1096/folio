@@ -128,12 +128,35 @@ const Reader = (function () {
       }
 
       case "image": {
-        // Pasted images use the simpleImage tool's data shape: { url, caption }
+        /*
+         * Two shapes, both permanent (see js/images.js):
+         *   { ref }  the picture is in IndexedDB — the <img> goes out with NO
+         *            src and FolioImages.attach fills it after this string has
+         *            been put in the page, because reading a blob is
+         *            asynchronous and this function builds HTML in one go.
+         *   { url }  the picture is in the page, which is every page written
+         *            before refs existed. Unchanged, forever.
+         */
+        const cap = data.caption ? `<figcaption>${escapeHtml(String(data.caption))}</figcaption>` : "";
+        const alt = escapeAttr(data.caption);
+
+        if (typeof FolioImages !== "undefined" && FolioImages.isRef(data.ref)) {
+          return `<figure class="folio-image">
+            <img data-folio-ref="${escapeAttr(data.ref)}" alt="${alt}" loading="lazy" />
+            ${cap}
+          </figure>`;
+        }
+
         const url = data.url || (data.file && data.file.url) || "";
         if (!url) return "";
-        const cap = data.caption ? `<figcaption>${data.caption}</figcaption>` : "";
+        /*
+         * The src is escaped now. It was interpolated raw, so a caption or a
+         * url carrying a quote could close the attribute and add its own —
+         * which for a value that arrives from an imported file is worth not
+         * leaving to chance.
+         */
         return `<figure class="folio-image">
-          <img src="${url}" alt="${data.caption || ""}" loading="lazy" />
+          <img src="${escapeAttr(url)}" alt="${alt}" loading="lazy" />
           ${cap}
         </figure>`;
       }
@@ -151,6 +174,20 @@ const Reader = (function () {
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+  }
+
+  /*
+   * For a value going inside an attribute, where the quote matters.
+   *
+   * escapeHtml above leaves " and ' alone, which is right for text content
+   * and wrong for `alt="..."` — a caption carrying a quote closes the
+   * attribute and whatever follows is read as markup. Captions arrive from
+   * imported files now, so this is no longer a value worth trusting.
+   */
+  function escapeAttr(str) {
+    return escapeHtml(String(str == null ? "" : str))
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   // ==========================================================================
@@ -220,6 +257,20 @@ const Reader = (function () {
     // transcript. No-op on documents without one.
     if (typeof Video !== "undefined") {
       Video.attach();
+    }
+
+    /*
+     * Fill in any picture that lives in IndexedDB rather than in the page.
+     *
+     * AFTER applyHighlights and TTS.attach, not before: those two walk and
+     * rewrap the text nodes, and this only ever touches <img> attributes, so
+     * the order cannot matter to them — but putting it last keeps the one
+     * asynchronous step out of the way of the two that must see a settled DOM.
+     * No-op on a document whose pictures are inline, and on every document
+     * written before pictures moved out of pages.
+     */
+    if (typeof FolioImages !== "undefined") {
+      FolioImages.attach(article);
     }
   }
 
