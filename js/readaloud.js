@@ -112,6 +112,20 @@ const ReadAloud = (function () {
   let rate = 1;
   let wordHL = null, sentHL = null;
 
+  /*
+   * Does the panel follow the spoken paragraph? Off the moment the text is
+   * scrolled by hand. Same rule, same reason, as maybeScroll in js/tts.js:
+   * this used to re-centre on every word the voice reported, so scrolling to
+   * read ahead was impossible — the panel took the view straight back.
+   *
+   * There is no Follow chip here, as there is in the document reader. This
+   * panel is 400px of borrowed text under a three-button transport, and a chip
+   * would be a quarter of its width; scrolling back to the paragraph being
+   * spoken is the way back, and that is the gesture people already make.
+   */
+  let following = true;
+  let armed = false;         // has the paragraph left the band since the hand-off?
+
   function el(id) { return document.getElementById(id); }
 
   function init() {
@@ -127,6 +141,18 @@ const ReadAloud = (function () {
       sentHL = new Highlight();
       CSS.highlights.set("ra-sentence", sentHL);
     }
+
+    /*
+     * A wheel or a touch-drag on the text means "I am reading somewhere else".
+     * Gestures rather than the scroll event, because our own smooth scroll
+     * fires scroll events that no code can tell apart from a reader's.
+     */
+    ["wheel", "touchmove"].forEach(function (ev) {
+      body.addEventListener(ev, function () {
+        following = false;
+        armed = false;
+      }, { passive: true });
+    });
 
     el("readaloud-play").addEventListener("click", toggle);
     el("readaloud-close").addEventListener("click", close);
@@ -175,6 +201,8 @@ const ReadAloud = (function () {
     docText = String(payload.text || "").replace(/\r\n/g, "\n").trim();
     if (!docText) return;
 
+    following = true;                // new text; nobody has scrolled it yet
+    armed = false;
     render(payload);                 // builds the DOM the highlight needs
     chunks = chunkText(docText);
     chunkIdx = 0;
@@ -235,11 +263,52 @@ const ReadAloud = (function () {
       r.setStart(a.node, a.off);
       r.setEnd(b.node, b.off + 1);
       wordHL.add(r);
-      const rect = a.node.parentElement && a.node.parentElement.getBoundingClientRect();
-      if (rect && (rect.top < 60 || rect.bottom > window.innerHeight - 80)) {
-        a.node.parentElement.scrollIntoView({ block: "center", behavior: "smooth" });
-      }
+      follow(a.node.parentElement);
     } catch { /* the range fell outside; the next word will correct it */ }
+  }
+
+  /*
+   * Keep the spoken paragraph on screen, unless the reader has taken over.
+   *
+   * Resuming on VISIBLE rather than on centred, and not scrolling on the tick
+   * that resumes, is what stops the return being a jolt: scroll back to the
+   * voice and the panel simply picks you up, and the next paragraph does the
+   * centring.
+   *
+   * The box's own scrollTop, not scrollIntoView: that method asks every
+   * scrolling ancestor to move, which is unreliable inside a nested scroller
+   * like this one — the lesson written up against centreLyric in js/drive.js.
+   */
+  function follow(p) {
+    if (!p || !body) return;
+    const r = p.getBoundingClientRect();
+    const box = body.getBoundingClientRect();
+    if (!r.height && !r.top) return;
+
+    const outside = r.top < box.top + 60 || r.bottom > box.bottom - 80;
+
+    if (!following) {
+      /*
+       * Two steps to come back, for the reason spelled out against maybeScroll
+       * in js/tts.js: a one-step rule resumes instantly after a small scroll,
+       * because a small scroll leaves the paragraph exactly where the rule is
+       * already satisfied. The paragraph has to leave the band first; only
+       * then does arriving back in it mean the reader wants to be carried
+       * along again. Resuming therefore never needs to scroll.
+       */
+      if (outside) { armed = true; return; }
+      if (armed) { following = true; armed = false; }
+      return;
+    }
+    if (!outside) return;
+
+    const want = body.scrollTop + (r.top - box.top) - (body.clientHeight - r.height) / 2;
+    const top = Math.max(0, Math.min(want, body.scrollHeight - body.clientHeight));
+    if (body.scrollTo) {
+      try { body.scrollTo({ top: top, behavior: "smooth" }); return; }
+      catch { /* no options object: fall through */ }
+    }
+    body.scrollTop = top;
   }
 
   // ==========================================================================
@@ -353,6 +422,8 @@ const ReadAloud = (function () {
     if (handle) { handle.stop(); handle = null; }
     if (wordHL) wordHL.clear();
     chunkIdx = 0;
+    following = true;
+    armed = false;
     updateBar();
     // The shortcut is a toggle, and the main process owns that state.
     if (was && window.folio && window.folio.readingEnded) window.folio.readingEnded();

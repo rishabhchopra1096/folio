@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Scrolling while it reads is the reader's, not the player's</title>
+<!--
+  WHAT ONLY THIS LAYER CAN PROVE.
+
+  The jsdom suite (test/tts-scroll-handoff) proves the DECISION: given a word
+  at a position and a hand-off, does the player scroll or not. It calls the
+  module's own functions directly, so it cannot tell whether those functions
+  are ever reached in the real app.
+
+  Three things need the real page:
+    - that the wheel/touch/key listeners are actually attached by init(),
+    - that the Follow chip exists in the shipped HTML, is laid out where it was
+      meant to go, and really is clickable,
+    - that clicking it really moves the page.
+
+  A wheel event here is a genuine WheelEvent dispatched at the window, which is
+  what a trackpad delivers. Nothing is spoken: headless Chrome has no voices, so
+  the playhead is placed with the player's own seek API instead, which is the
+  same state a spoken word leaves behind.
+-->
+<div id="host"></div>
+<script>
+function say(m) { new Image().src = "/r?" + encodeURIComponent(String(m)) + "&_=" + Math.random(); }
+function ok(name, cond, extra) { say((cond ? "PASS " : "FAIL ") + name + (cond ? "" : "  -> " + extra)); }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/*
+ * css/variables.css sets `scroll-behavior: smooth` on the root, so EVERY
+ * scroll on this page animates — including the probe's own scrollTo. Reading
+ * scrollY after a fixed delay caught the animation half way and reported 520
+ * where 4000 was asked for. So wait for the page to stop moving instead.
+ */
+async function settled(w, tries) {
+  let last = NaN;
+  for (let i = 0; i < (tries || 40); i++) {
+    await wait(60);
+    if (w.scrollY === last) return w.scrollY;
+    last = w.scrollY;
+  }
+  return w.scrollY;
+}
+
+const DOC = "doc_scroll_follow";
+
+async function main() {
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "Long Read", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+
+  // Long enough that the page genuinely scrolls — the whole subject here.
+  const blocks = [];
+  for (let i = 0; i < 60; i++) {
+    blocks.push({ type: "paragraph", data: { text:
+      "Paragraph " + i + ". " +
+      "This sentence exists to give the page height so that scrolling is a real " +
+      "thing that can happen and be measured. It is long on purpose. " +
+      "Another sentence follows it to make the paragraph taller still." } });
+  }
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: blocks }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1100px;height:800px;border:0";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow, d = f.contentDocument;
+  const chip = d.getElementById("tts-follow");
+  const bar  = d.getElementById("tts-bar");
+  const seen = () => chip.classList.contains("visible");
+
+  // ── The chip ships, in the real HTML ──
+  ok("the Follow chip is in the page", !!chip);
+  ok("it says what it does", /Follow/.test(chip.textContent), chip.textContent);
+  ok("it starts out hidden", !seen());
+  ok("and hidden means unclickable",
+     w.getComputedStyle(chip).pointerEvents === "none",
+     w.getComputedStyle(chip).pointerEvents);
+
+  // ── Put a playhead on the document, as a spoken word would ──
+  w.eval("window.__tts = TTS;");
+  w.__tts.seekToChar(40);
+  await settled(w);
+  ok("the player bar is up", bar.classList.contains("visible"));
+  ok("a playhead alone does not summon the chip", !seen());
+
+  // ── A real wheel gesture hands the page over ──
+  w.dispatchEvent(new w.WheelEvent("wheel", { deltaY: 240, bubbles: true }));
+  await wait(120);
+  ok("a wheel event turns following off and shows the chip", seen(),
+     "chip classes: " + chip.className);
+  ok("and now it is clickable",
+     w.getComputedStyle(chip).pointerEvents === "auto",
+     w.getComputedStyle(chip).pointerEvents);
+
+  // ── Where it sits: above the bar, clear of it ──
+  const cr = chip.getBoundingClientRect(), br = bar.getBoundingClientRect();
+  ok("the chip sits above the player bar", cr.bottom <= br.top + 1,
+     "chip bottom " + Math.round(cr.bottom) + " vs bar top " + Math.round(br.top));
+  ok("it is on screen, not off the edge",
+     cr.top > 0 && cr.left > 0 && cr.right < w.innerWidth,
+     JSON.stringify({ top: cr.top, left: cr.left, right: cr.right, vw: w.innerWidth }));
+
+  // ── Scroll a long way away, then press Follow ──
+  w.scrollTo(0, 4000);
+  const far = await settled(w);
+  ok("the page really did scroll away", far > 2000, String(far));
+
+  chip.click();
+  await settled(w);
+  ok("Follow brought the page back towards the word", w.scrollY < far - 500,
+     "from " + Math.round(far) + " to " + Math.round(w.scrollY));
+  ok("and the chip stood down", !seen(), chip.className);
+
+  // ── The keyboard counts as a scroll gesture too ──
+  w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "PageDown", bubbles: true }));
+  await wait(120);
+  ok("PageDown hands the page over as well", seen(), chip.className);
+
+  // ── A deliberate seek takes control back ──
+  w.__tts.jumpSentence(1);
+  await wait(200);
+  ok("Next sentence resumes following", !seen(), chip.className);
+
+  // ── With nothing being read, a gesture must do nothing ──
+  w.__tts.stop(true);
+  await wait(150);
+  w.dispatchEvent(new w.WheelEvent("wheel", { deltaY: 240, bubbles: true }));
+  await wait(120);
+  ok("scrolling an idle reader shows no chip", !seen(), chip.className);
+
+  say("DONE");
+}
+main().catch((e) => { say("FAIL probe threw -> " + (e && e.message)); say("DONE"); });
+</script>

@@ -136,6 +136,19 @@ const TTS = (function () {
   let handle = null;       // provider handle for the in-flight utterance
   let attachedDocId = null;
 
+  /*
+   * Does the page follow the spoken word? Off the moment the reader scrolls by
+   * hand, back on when they return to the word, press Follow, or move the
+   * playhead. See maybeScroll().
+   */
+  let following = true;
+  /*
+   * Has the spoken word left the comfortable band since the reader took over?
+   * Until it has, a word sitting inside the band means nothing — it was
+   * probably already there. See maybeScroll().
+   */
+  let armed = false;
+
   // CSS Custom Highlight registries.
   let wordHL = null;
   let sentHL = null;
@@ -627,18 +640,127 @@ const TTS = (function () {
     sentHL.clear();
   }
 
-  // Keep the spoken word in a comfortable band rather than yanking the page
-  // on every single word.
-  function maybeScroll() {
-    if (!curWord) return;
+  /*
+   * Keep the spoken word in a comfortable band — but NEVER fight a hand.
+   *
+   * This used to scroll on every word boundary, unconditionally. The voice
+   * reports a word three or four times a second, so scrolling away by hand was
+   * impossible: you got a few hundred milliseconds of freedom and then the page
+   * snapped back to the playhead. "Anytime i try to scroll, it takes me back to
+   * focus on current paragraph" (30 October 2026). Reading ahead of the voice,
+   * glancing back at the paragraph before, or checking a figure further down —
+   * all of it was unreachable while the voice was talking.
+   *
+   * So following is a MODE, not a reflex. A scroll gesture hands control to the
+   * reader and following latches off; it comes back when they ask for it, which
+   * they can do three ways:
+   *
+   *   1. Scroll back until the spoken word is on screen again. Landing on the
+   *      voice is the clearest possible way of saying "carry me along", and it
+   *      needs no button and no explaining.
+   *   2. Press the Follow chip in the player bar, which appears only while
+   *      following is off, and which jumps back to the word.
+   *   3. Move the playhead deliberately — Back/Next, a seek, a double-click on
+   *      a word. Choosing a new place to read from means wanting to see it.
+   *
+   * Nothing here is on a timer. A timed hold (the pattern the Drive screen uses
+   * for its lyric list) still snatches the page back a few seconds later, which
+   * is the same complaint arriving late.
+   */
+  /*
+   * Where the spoken word sits in the viewport, or null if that is unknowable.
+   *
+   * The guard on getBoundingClientRect is not paranoia: jsdom's Range does not
+   * implement it, and the seek path runs headlessly in test/tts-sentencenav —
+   * which is how this was caught. A reader with no measurable word should lose
+   * the auto-scroll, not the ability to seek.
+   */
+  function wordRect() {
+    if (!curWord) return null;
     const r = charToRange(curWord.ds, curWord.de);
-    if (!r) return;
+    if (!r || typeof r.getBoundingClientRect !== "function") return null;
     const rect = r.getBoundingClientRect();
-    if (!rect || (!rect.top && !rect.height)) return;
+    if (!rect || (!rect.top && !rect.height)) return null;
+    return rect;
+  }
+
+  function maybeScroll() {
+    const rect = wordRect();
+    if (!rect) return;
     const h = window.innerHeight;
-    if (rect.top < h * SCROLL_TOP_PAD || rect.bottom > h * SCROLL_BOT_PAD) {
-      window.scrollBy({ top: rect.top - h * 0.4, behavior: "smooth" });
+
+    const outside = rect.top < h * SCROLL_TOP_PAD || rect.bottom > h * SCROLL_BOT_PAD;
+
+    if (!following) {
+      /*
+       * COMING BACK TAKES TWO STEPS, and that is the whole trick.
+       *
+       * A one-step rule — "resume once the word is on screen again", or "once
+       * it is back in the band" — resumes immediately after a SMALL scroll,
+       * because a small scroll leaves the word exactly where the rule is
+       * already satisfied. Nudge the page by twenty pixels and it snaps
+       * straight back: the original complaint with a smaller number on it.
+       * That is not a hypothetical; it is what the first version of this did,
+       * and test/tts-scroll-handoff caught it.
+       *
+       * So a return only counts once the word has LEFT the band since the
+       * hand-off. After that, the word arriving back in the band is
+       * unambiguous: either they scrolled to it, or the voice has caught up
+       * with where they were reading. Carrying on is what they want in both
+       * cases.
+       *
+       * And because resuming can only happen with the word already inside the
+       * band, it never needs to scroll. The handover is silent, every time.
+       */
+      if (outside) { armed = true; return; }
+      if (armed) { following = true; armed = false; updateBar(); }
+      return;
     }
+
+    if (outside) window.scrollBy({ top: rect.top - h * 0.4, behavior: "smooth" });
+  }
+
+  /* Put the spoken word back under the reader's eyes and resume following. */
+  function followNow() {
+    following = true;
+    armed = false;
+    updateBar();
+    const rect = wordRect();
+    if (!rect || !window.scrollBy) return;
+    window.scrollBy({ top: rect.top - window.innerHeight * 0.4, behavior: "smooth" });
+  }
+
+  /*
+   * A scroll gesture means "I am looking somewhere else".
+   *
+   * WHY GESTURES AND NOT THE SCROLL EVENT. Our own smooth scroll fires a stream
+   * of `scroll` events that are indistinguishable from a reader's, so listening
+   * for `scroll` would make the player stop following itself on every word it
+   * scrolled to. A wheel, a touch-drag and a scroll key are inputs the browser
+   * never synthesises, so they can only have come from a hand. That covers a
+   * trackpad, a mouse wheel, a touchscreen and the keyboard.
+   *
+   * The gap this leaves is DRAGGING THE SCROLLBAR ITSELF, which produces no
+   * wheel and no touchmove. On macOS the scrollbar is an overlay that is barely
+   * draggable, so in practice this costs nothing — and said plainly here rather
+   * than left as a silent hole.
+   */
+  function handOffScroll() {
+    if (!following) return;
+    if (!engaged()) return;     // nothing is being read; there is nothing to follow
+    following = false;
+    armed = false;
+    updateBar();
+  }
+
+  const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End"]);
+
+  function initScrollHandoff() {
+    window.addEventListener("wheel", handOffScroll, { passive: true });
+    window.addEventListener("touchmove", handOffScroll, { passive: true });
+    window.addEventListener("keydown", function (e) {
+      if (SCROLL_KEYS.has(e.key)) handOffScroll();
+    }, { passive: true });
   }
 
   // ==========================================================================
@@ -870,6 +992,15 @@ const TTS = (function () {
     const p = provider();
     if (p && p.cancelPrefetch) p.cancelPrefetch();
     if (reachedEnd) { chunkIdx = 0; curWord = null; curSentence = null; }
+    /*
+     * Stopping ends the session — the end of the document, or the close
+     * button — so the next read starts out following again. Pausing does not
+     * come through here, and deliberately so: pause, scroll away to read, then
+     * press play, and the voice should carry on where it was without dragging
+     * the page back. The chip is the way back there.
+     */
+    following = true;
+    armed = false;
     clearPaint();
     updateBar();
     updateEta(true);
@@ -973,6 +1104,12 @@ const TTS = (function () {
     curSentence = sentenceAt(pos);
     paint();
     updateEta(true);
+    /*
+     * Choosing where to read from means wanting to look at it. This also
+     * covers the paused case, where no word boundary will arrive to scroll
+     * for us — Back and Next used to repaint a sentence off screen.
+     */
+    followNow();
     if (playing) {
       if (handle) { handle.stop(); handle = null; }
       speakChunk(pos);
@@ -1487,10 +1624,15 @@ const TTS = (function () {
   // ==========================================================================
 
   let bar = null;
+  // The "Follow" chip. Outside the bar on purpose — see the note in the CSS.
+  let followChip = null;
 
   function buildBar() {
     bar = document.getElementById("tts-bar");
     if (!bar) return;
+
+    followChip = document.getElementById("tts-follow");
+    if (followChip) followChip.addEventListener("click", followNow);
 
     bar.querySelector("#tts-play").addEventListener("click", toggle);
     bar.querySelector("#tts-prev").addEventListener("click", () => jumpSentence(-1));
@@ -1593,6 +1735,14 @@ const TTS = (function () {
     btn.title = playing ? "Pause (Space)" : "Play (Space)";
     bar.querySelector("#tts-rate").textContent = rate + "×";
     bar.classList.toggle("playing", playing);
+
+    /*
+     * The chip is only honest while there is a playhead to go back to. Showing
+     * it when nothing is being read would offer a journey to nowhere.
+     */
+    if (followChip) {
+      followChip.classList.toggle("visible", !following && engaged());
+    }
   }
 
   // ==========================================================================
@@ -1661,6 +1811,8 @@ const TTS = (function () {
     chunkIdx = 0;
     curWord = null;
     curSentence = null;
+    following = true;
+    armed = false;
     if (chunks.length) showBar();
     updateEta(true);
   }
@@ -1939,6 +2091,11 @@ const TTS = (function () {
           e.preventDefault(); cycleRate(-1); toast(rate + "×", 900); break;
         case "]":
           e.preventDefault(); cycleRate(1); toast(rate + "×", 900); break;
+        case "f":
+        case "F":
+          // Back to the voice after reading somewhere else.
+          if (!engaged()) return;
+          e.preventDefault(); followNow(); break;
         case "?":
           e.preventDefault(); toggleHelp(); break;
         case "Escape":
@@ -2010,6 +2167,10 @@ const TTS = (function () {
             <dt><kbd>→</kbd></dt><dd>Next sentence</dd>
             <dt><kbd>⇧</kbd><kbd>←</kbd> <kbd>⇧</kbd><kbd>→</kbd></dt><dd>Back / forward 15 seconds</dd>
             <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Faster / slower</dd>
+            <dt><kbd>F</kbd></dt>
+              <dd>Back to the word being read. Scroll away whenever you like —
+                  the page stops chasing the voice until you come back, either
+                  by scrolling to it or by pressing this.</dd>
             <dt><kbd>D</kbd> <span class="tts-help-hint">or</span> <kbd>⌥</kbd></dt>
               <dd>Dictate — tap to start, tap again to save. Same result as
                   hold-Space, without the holding. Option only counts as a
@@ -2018,6 +2179,8 @@ const TTS = (function () {
             <dt><kbd>?</kbd></dt><dd>Close this</dd>
           </dl>
           <p class="tts-help-foot">
+            Scrolling is always yours: a wheel, a swipe or <kbd>Page Up</kbd> hands
+            the page back to you mid-sentence.
             Arrows take over playback once reading has started — before that they scroll normally.
             Nothing fires unless Folio has focus, so your other apps are untouched.
           </p>
@@ -2040,6 +2203,7 @@ const TTS = (function () {
     }
 
     initClickToSeek();
+    initScrollHandoff();
     initShortcuts();
     initAltTap();
     initRetry();

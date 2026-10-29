@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The Follow chip, as it appears while reading</title>
+<!--
+  Asserts nothing. It stages the one moment that needed a human eye: the reader
+  has scrolled away while the voice is talking, so the chip is up above the
+  player bar. The question an assertion cannot answer is whether those two
+  things read as one control surface or as two things that collided.
+
+  ?theme=dark renders the same scene in dark mode.
+-->
+<style>html,body{margin:0;background:#888}</style>
+<div id="host"></div>
+<script>
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const DOC = "doc_follow_shot";
+
+async function main() {
+  const dark = /theme=dark/.test(location.search);
+  const now = new Date().toISOString();
+  localStorage.setItem("folio_documents", JSON.stringify([
+    { id: DOC, title: "The Long Way Round", icon: "", parentId: null, order: 0,
+      createdAt: now, updatedAt: now }]));
+  const blocks = [{ type: "header", data: { text: "The Long Way Round", level: 1 } }];
+  for (let i = 0; i < 30; i++) {
+    blocks.push({ type: "paragraph", data: { text:
+      "There is a particular kind of attention that only happens when you are " +
+      "being read to and are free to look where you like. The voice goes on " +
+      "ahead; your eye wanders back a paragraph, or down to the figure you half " +
+      "remember, and nothing drags you back. Paragraph " + (i + 1) + "." } });
+  }
+  localStorage.setItem("folio_doc_" + DOC, JSON.stringify({ time: Date.now(), blocks: blocks }));
+  localStorage.setItem("folio_comments_" + DOC, "[]");
+  localStorage.setItem("folio_highlights_" + DOC, "[]");
+  localStorage.setItem("folio_settings", JSON.stringify({ theme: dark ? "dark" : "light" }));
+
+  const f = document.createElement("iframe");
+  f.style.cssText = "width:1280px;height:860px;border:0;display:block";
+  const loaded = new Promise((res) => { f.onload = res; });
+  f.src = "/index.html#/doc/" + DOC;
+  document.getElementById("host").appendChild(f);
+  await loaded;
+  await wait(2500);
+
+  const w = f.contentWindow;
+  w.eval("window.__tts = TTS;");
+  // A playhead part-way down, then a scroll away from it — the exact state the
+  // chip exists for.
+  w.__tts.seekToChar(900);
+  await wait(900);
+  w.dispatchEvent(new w.WheelEvent("wheel", { deltaY: 300, bubbles: true }));
+  await wait(400);
+
+  /*
+   * Freeze every transition before the shutter.
+   *
+   * Chrome's --virtual-time-budget races the page's TIMERS forward but leaves
+   * CSS transitions on the compositor's own clock, so the screenshot landed on
+   * the chip's 0.18s fade at opacity 0 and the first render of this scene came
+   * back with no chip in it at all. The state is right — a live probe confirms
+   * opacity 1 — so the picture, not the page, is what needed fixing.
+   */
+  const style = f.contentDocument.createElement("style");
+  style.textContent = "*,*::before,*::after{transition:none!important;animation:none!important}";
+  f.contentDocument.head.appendChild(style);
+  await wait(200);
+}
+main();
+</script>

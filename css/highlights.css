@@ -222,6 +222,65 @@ mark[data-highlight-id]:hover {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* ── FOLLOW AGAIN ──
+ * Scrolling by hand stops the page chasing the spoken word (see maybeScroll in
+ * js/tts.js). This chip is the way back, and it is only on screen while
+ * following is off.
+ *
+ * It FLOATS ABOVE THE PLAYER rather than sitting inside it. The bar is centred
+ * by translateX(-50%), so anything that appears inside it shifts every control
+ * in it sideways — and a transport that moves out from under a thumb mid-read
+ * is worse than the problem being solved. The 84px matches what the feedback
+ * button lifts to for the same bar, so all three clear each other.
+ *
+ * Shown by opacity rather than display, exactly as the bar itself is, so the
+ * fade actually runs.
+ */
+#tts-follow {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%) translateY(10px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px 7px 11px;
+  border: none;
+  border-radius: 999px;
+  /*
+   * FILLED, not outlined. The first version was paper-coloured with an accent
+   * label, and in dark mode that is the same tone as the page it floats over —
+   * it read as debris left in the middle of a sentence rather than as a
+   * control. It always sits on body text, because that is the only thing above
+   * the player, so it has to announce itself. Accent on paper is what the play
+   * button already does.
+   */
+  background: var(--accent);
+  color: var(--paper);
+  box-shadow: 0 4px 16px var(--shadow), 0 0 0 4px var(--paper);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 171;
+  transition: transform 0.18s cubic-bezier(0.05,0.7,0.1,1),
+              opacity 0.18s, background 0.15s, color 0.15s, border-color 0.15s;
+}
+#tts-follow.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+#tts-follow:hover { background: var(--accent-light); color: var(--paper); }
+#tts-follow:active { transform: translateX(-50%) scale(0.96); }
+
+@media (prefers-reduced-motion: reduce) {
+  #tts-follow { transition: opacity 0.18s; transform: translateX(-50%); }
+  #tts-follow.visible { transform: translateX(-50%); }
+  #tts-follow:active { transform: translateX(-50%); }
+}
 .tts-btn {
   display: flex;
   align-items: center;
@@ -1304,6 +1363,8 @@ body[data-video-doc] #article-wrap {
 
 /* The read-aloud bar is suppressed on a video document, which has its own. */
 #tts-bar.hidden-by-video { display: none !important; }
+/* The chip belongs to that bar, so it goes with it. */
+body:has(#tts-bar.hidden-by-video) #tts-follow { display: none !important; }
 
 /* Import dialog — wider than a plain confirm, since you need to see enough of
    the transcript to tell whether it is the right one before replacing. */
