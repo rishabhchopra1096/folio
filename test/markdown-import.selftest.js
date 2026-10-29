@@ -200,5 +200,74 @@ console.log("\n=== against the user's own document ===");
   }
 }
 
+console.log("\n=== a relative image path resolves when the files came with it ===");
+/*
+ * A Notion export writes its pictures as relative, percent-encoded paths.
+ * Those used to be refused outright, so every picture in an exported document
+ * vanished with no error. The converter now takes a lookup — supplied by
+ * whoever read the folder — and these assertions are what keep the refusal
+ * narrow instead of removing it.
+ */
+{
+  const REL = "Reading%20the%20Market%2024f8e1c0/Untitled.png";
+  const md = `![a diagram](${REL})`;
+  const TINY = "data:image/png;base64,iVBORw0KGgo=";
+
+  const without = S.markdownToBlocks(md).blocks[0];
+  ok("with no lookup it is still refused, as before",
+     !without || without.type !== "image", without && without.type);
+
+  const resolver = { resolveImage: (href) => (href === REL ? TINY : null) };
+  const withIt = S.markdownToBlocks(md, resolver).blocks[0];
+  ok("with a lookup it becomes an image block",
+     withIt && withIt.type === "image", withIt && withIt.type);
+  ok("pointing at what the lookup returned",
+     withIt && withIt.data.url === TINY);
+  ok("and the alt text is still the caption",
+     withIt && withIt.data.caption === "a diagram", withIt && withIt.data.caption);
+
+  const unknown = S.markdownToBlocks("![](Other/missing.png)", resolver).blocks[0];
+  ok("a path the lookup cannot find is refused, not rendered empty",
+     !unknown || unknown.type !== "image", unknown && unknown.type);
+
+  /*
+   * THE ONE THAT MATTERS. An importer must not be able to widen what the
+   * converter will render, or the protocol check above becomes decorative.
+   */
+  const evil = S.markdownToBlocks(md, { resolveImage: () => "javascript:alert(1)" }).blocks[0];
+  ok("a lookup cannot smuggle in a javascript: source",
+     !evil || evil.type !== "image", evil && evil.data && evil.data.url);
+
+  const thrower = S.markdownToBlocks(md, { resolveImage: () => { throw new Error("boom"); } });
+  ok("a lookup that throws loses the picture, not the document",
+     Array.isArray(thrower.blocks));
+
+  const inline = S.markdownToBlocks(`Text with ![](${REL}) inside.`, resolver).blocks[0];
+  ok("a picture mid-sentence still leaves the sentence alone",
+     inline && inline.type === "paragraph", inline && inline.type);
+}
+
+console.log("\n=== imageRefs lists what a document asks for ===");
+{
+  const refs = FolioMarkdown.imageRefs(
+    "# Title\n\n![](pics/one.png)\n\nSome text ![](pics/two.png) here.\n\n" +
+    "![](https://x.com/remote.png)\n\n```\n![](pics/incode.png)\n```\n\n![](pics/one.png)\n"
+  );
+  ok("it finds the relative ones", refs.includes("pics/one.png") && refs.includes("pics/two.png"),
+     JSON.stringify(refs));
+  ok("it leaves http sources alone — nothing to resolve",
+     !refs.some((r) => /^https?:/.test(r)), JSON.stringify(refs));
+  ok("a path inside a code fence is not a picture to go and fetch",
+     !refs.includes("pics/incode.png"), JSON.stringify(refs));
+  ok("the same picture twice is asked for once", refs.filter((r) => r === "pics/one.png").length === 1);
+
+  const inTable = FolioMarkdown.imageRefs("| a | b |\n|---|---|\n| ![](t/cell.png) | x |");
+  ok("a picture inside a table cell is found too", inTable.includes("t/cell.png"),
+     JSON.stringify(inTable));
+
+  const inList = FolioMarkdown.imageRefs("- item ![](l/bullet.png)\n");
+  ok("and inside a list item", inList.includes("l/bullet.png"), JSON.stringify(inList));
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

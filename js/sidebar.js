@@ -578,8 +578,14 @@ const SidebarUI = (function () {
    * The name stays exported from the sidebar so the drag-and-drop path and its
    * test do not have to care that it moved.
    */
-  function markdownToBlocks(md) {
-    return FolioMarkdown.toBlocks(md);
+  /*
+   * `opts` is forwarded, not swallowed. It carries the picture lookup a folder
+   * import supplies (see js/folder-import.js), and the first version of this
+   * forwarder took one argument — so every picture in a Notion export resolved
+   * correctly inside the converter and arrived here as nothing at all.
+   */
+  function markdownToBlocks(md, opts) {
+    return FolioMarkdown.toBlocks(md, opts);
   }
 
 
@@ -661,11 +667,67 @@ const SidebarUI = (function () {
     });
     document.addEventListener("drop", (e) => {
       e.preventDefault();
-      const file = e.dataTransfer.files[0];
-      if (file && /\.(md|txt|markdown)$/i.test(file.name)) {
-        importFile(file);
-      }
+      handleDrop(e.dataTransfer);
     });
+  }
+
+  /*
+   * One drop, two shapes.
+   *
+   * A Notion export is a FOLDER — a markdown file and a subfolder of pictures
+   * — and reading only the markdown out of it loses every picture in the
+   * document. So a drop containing a folder goes to js/folder-import.js, which
+   * walks it and resolves the relative image paths.
+   *
+   * A dropped single file behaves exactly as it always has. That matters:
+   * dragging one .md onto Folio is the oldest way in and nothing here is
+   * allowed to change what it does.
+   *
+   * MUST STAY SYNCHRONOUS DOWN TO fromDrop(). The browser empties
+   * DataTransfer.items the moment this handler returns, so the folder's
+   * entries have to be taken before anything awaits.
+   */
+  function handleDrop(dataTransfer) {
+    if (!dataTransfer) return;
+
+    if (typeof FolioFolderImport !== "undefined") {
+      const pending = FolioFolderImport.fromDrop(dataTransfer);
+      if (pending) {
+        pending.then(finishFolderImport).catch((err) => {
+          console.error("[folio] folder import failed", err);
+          notify("Could not read that folder");
+        });
+        return;
+      }
+    }
+
+    const file = dataTransfer.files && dataTransfer.files[0];
+    if (file && /\.(md|txt|markdown)$/i.test(file.name)) importFile(file);
+  }
+
+  /* Show what arrived, and open the first page so the drop visibly did something. */
+  function finishFolderImport(result) {
+    if (!result || !result.handled) {
+      notify("No markdown file in that folder");
+      return;
+    }
+    renderPageTree();
+    const message = FolioFolderImport.describe(result);
+    if (message) notify(message, result.error ? 7000 : 4000);
+    if (result.pages.length) {
+      window.location.hash = `#/doc/${result.pages[0].id}/edit`;
+    }
+  }
+
+  /*
+   * Say something, wherever there is somewhere to say it.
+   *
+   * The toast lives in js/tts.js, which the drive screen does not load, so this
+   * falls back to the console rather than throwing inside a drop handler.
+   */
+  function notify(message, ms) {
+    if (typeof TTS !== "undefined" && TTS.toast) TTS.toast(message, ms || 4000);
+    else console.log("[folio] " + message);
   }
 
   function importFile(file) {
@@ -673,7 +735,15 @@ const SidebarUI = (function () {
     reader.onload = (ev) => {
       const title = file.name.replace(/\.[^.]+$/, "");
       const editorData = markdownToBlocks(ev.target.result);
-      const meta = FolioStore.createDocument(title, editorData, null);
+      let meta = null;
+      try {
+        meta = FolioStore.createDocument(title, editorData, null);
+      } catch (err) {
+        /* A page saved into a full disk is the 17 October failure. Say so. */
+        notify(err && err.folioQuota ? "Storage is full — that page was not saved"
+                                     : "That page could not be saved", 7000);
+        return;
+      }
       renderPageTree();
       window.location.hash = `#/doc/${meta.id}/edit`;
     };
@@ -777,6 +847,7 @@ const SidebarUI = (function () {
     createSubpage,
     exportDocument,
     markdownToBlocks,
+    handleDrop,
     // Used by the annotation export to render a document block by block.
     blockToMarkdown,
   };

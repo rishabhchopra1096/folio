@@ -69,7 +69,7 @@ const FolioMarkdown = (function () {
    * Without step 2, asterisks and backticks survive as literal characters in
    * the rendered document because Editor.js never parses markdown itself.
    */
-  function markdownToBlocks(md) {
+  function markdownToBlocks(md, opts) {
     if (typeof marked === "undefined") {
       // Fallback: marked failed to load — treat the whole thing as one paragraph
       return { time: Date.now(), blocks: [{ type: "paragraph", data: { text: escapeHtml(md) } }] };
@@ -79,11 +79,89 @@ const FolioMarkdown = (function () {
     const tokens = marked.lexer(md);
 
     for (const token of tokens) {
-      const block = tokenToBlock(token);
+      const block = tokenToBlock(token, opts);
       if (block) blocks.push(block);
     }
 
     return { time: Date.now(), blocks };
+  }
+
+  // ==========================================================================
+  // IMAGES THAT LIVE IN A FOLDER RATHER THAN ON THE WEB
+  // ==========================================================================
+  /*
+   * A Notion export points at its pictures with a relative path:
+   *
+   *     ![](Reading%20the%20Market%2024f8e1c0/Untitled.png)
+   *
+   * That is not a URL this file can do anything with on its own. There is no
+   * folder here — only a string of markdown — so for most of Folio's history
+   * such a path was refused and the picture silently disappeared. On a real
+   * export that is every picture in the document, with no error anywhere.
+   *
+   * The resolution has to come from whoever had the files. An importer that
+   * read a dropped folder passes `opts.resolveImage`, a lookup from relative
+   * path to something renderable; a paste, which has no folder behind it, does
+   * not, and relative paths stay refused there because nothing could honour
+   * them.
+   *
+   * THE REFUSAL IS STILL HERE. Whatever the lookup hands back is checked
+   * against the same list of sources that an inline `![](...)` is, so an
+   * importer cannot widen what this file will render — `javascript:` is still
+   * refused however it arrives.
+   */
+  const SAFE_SRC = /^(data:image\/|blob:|https?:)/;
+
+  function resolveImageSrc(href, opts) {
+    if (!href) return null;
+    if (SAFE_SRC.test(href)) return href;
+    const lookup = opts && opts.resolveImage;
+    if (typeof lookup !== "function") return null;
+    let found = null;
+    try { found = lookup(href); } catch { return null; }
+    return found && SAFE_SRC.test(found) ? found : null;
+  }
+
+  function imageBlock(href, caption, opts) {
+    const url = resolveImageSrc(href, opts);
+    if (!url) return null;
+    return { type: "image", data: { url, caption: caption || "" } };
+  }
+
+  /*
+   * Every picture this document asks for, in the order it asks.
+   *
+   * An importer needs this BEFORE converting, because reading a file is
+   * asynchronous and the conversion above is not. Knowing the list up front
+   * means the pictures can be read and compressed first and the lookup handed
+   * over as a plain synchronous function — which is what keeps toBlocks a pure
+   * function that the tests can call without a browser.
+   *
+   * It also means an export folder holding fifty files only costs whatever the
+   * document actually references.
+   *
+   * Walks the token tree rather than running a regular expression over the
+   * text, so a `![](x.png)` inside a fenced code block is correctly NOT
+   * treated as a picture to go and fetch.
+   */
+  function imageRefs(md) {
+    if (typeof marked === "undefined") return [];
+    const out = [];
+    try { collectImages(marked.lexer(md), out); } catch { return out; }
+    return out;
+  }
+
+  function collectImages(tokens, out) {
+    for (const t of tokens || []) {
+      if (!t || typeof t !== "object") continue;
+      if (t.type === "image" && t.href && !SAFE_SRC.test(t.href) && out.indexOf(t.href) === -1) {
+        out.push(t.href);
+      }
+      if (Array.isArray(t.tokens)) collectImages(t.tokens, out);
+      if (Array.isArray(t.items)) collectImages(t.items, out);
+      if (Array.isArray(t.header)) collectImages(t.header, out);
+      if (Array.isArray(t.rows)) for (const row of t.rows) collectImages(row, out);
+    }
   }
 
   /*
@@ -124,7 +202,7 @@ const FolioMarkdown = (function () {
   }
 
   // Map a single marked lexer token to an Editor.js block (or null to skip)
-  function tokenToBlock(token) {
+  function tokenToBlock(token, opts) {
     switch (token.type) {
       case "heading":
         return {
@@ -143,10 +221,7 @@ const FolioMarkdown = (function () {
         const onlyImage = kids.length === 1 && kids[0].type === "image";
         if (onlyImage) {
           const img = kids[0];
-          if (img.href && /^(data:image\/|https?:)/.test(img.href)) {
-            return { type: "image", data: { url: img.href, caption: img.text || "" } };
-          }
-          return null;
+          return imageBlock(img.href, img.text, opts);
         }
         return { type: "paragraph", data: { text: inlineMd(token.text) } };
       }
@@ -213,12 +288,10 @@ const FolioMarkdown = (function () {
         };
 
       case "image":
-        // Markdown ![alt](url) — only honor data-URL or http(s) sources to
-        // avoid pulling in protocol handlers we don't trust
-        if (token.href && /^(data:image\/|https?:)/.test(token.href)) {
-          return { type: "image", data: { url: token.href, caption: token.text || "" } };
-        }
-        return null;
+        // Markdown ![alt](url). A web or data source is taken as-is; a relative
+        // path needs an importer's lookup (see resolveImageSrc). Anything else
+        // is refused rather than handing an untrusted protocol to the browser.
+        return imageBlock(token.href, token.text, opts);
 
       case "space":
       case "html":
@@ -314,6 +387,7 @@ const FolioMarkdown = (function () {
   // ==========================================================================
   return {
     toBlocks: markdownToBlocks,
+    imageRefs,
   };
 })();
 
