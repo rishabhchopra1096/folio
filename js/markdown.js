@@ -111,21 +111,44 @@ const FolioMarkdown = (function () {
    * refused however it arrives.
    */
   const SAFE_SRC = /^(data:image\/|blob:|https?:)/;
+  /*
+   * A reference to a picture kept outside the page (js/images.js). Matched
+   * strictly rather than by prefix, so nothing that merely starts with the
+   * right four characters is written into a page as though it were one.
+   */
+  const SAFE_REF = /^img_[A-Za-z0-9]{8,40}$/;
 
-  function resolveImageSrc(href, opts) {
+  /*
+   * What a page should store for one picture: { url } or { ref }, or nothing.
+   *
+   * A lookup may hand back either a source string — which is checked against
+   * the same list an inline `![](...)` is — or `{ ref }`, meaning the picture
+   * has been put in IndexedDB and the page only needs its name. Both are
+   * validated here, so an importer still cannot widen what a page may hold.
+   */
+  function resolveImageData(href, opts) {
     if (!href) return null;
-    if (SAFE_SRC.test(href)) return href;
+    if (SAFE_SRC.test(href)) return { url: href };
+
     const lookup = opts && opts.resolveImage;
     if (typeof lookup !== "function") return null;
+
     let found = null;
     try { found = lookup(href); } catch { return null; }
-    return found && SAFE_SRC.test(found) ? found : null;
+    if (!found) return null;
+
+    if (typeof found === "string") return SAFE_SRC.test(found) ? { url: found } : null;
+    if (typeof found === "object") {
+      if (SAFE_REF.test(String(found.ref || ""))) return { ref: String(found.ref) };
+      if (typeof found.url === "string" && SAFE_SRC.test(found.url)) return { url: found.url };
+    }
+    return null;
   }
 
   function imageBlock(href, caption, opts) {
-    const url = resolveImageSrc(href, opts);
-    if (!url) return null;
-    return { type: "image", data: { url, caption: caption || "" } };
+    const found = resolveImageData(href, opts);
+    if (!found) return null;
+    return { type: "image", data: { ...found, caption: caption || "" } };
   }
 
   /*
@@ -289,7 +312,7 @@ const FolioMarkdown = (function () {
 
       case "image":
         // Markdown ![alt](url). A web or data source is taken as-is; a relative
-        // path needs an importer's lookup (see resolveImageSrc). Anything else
+        // path needs an importer's lookup (see resolveImageData). Anything else
         // is refused rather than handing an untrusted protocol to the browser.
         return imageBlock(token.href, token.text, opts);
 
