@@ -972,5 +972,12 @@ const Editor = (function () {
     getInstance,
     lastSaveFailureReason,
     debouncedSave,
+    /*
+     * Shared with js/folder-import.js, so a picture dragged in from a Notion
+     * export is sized and encoded exactly like a pasted screenshot. Two
+     * compressors would mean two answers to "how big is a picture in Folio",
+     * and only one of them would get fixed next time.
+     */
+    compressImage,
   };
 })();
