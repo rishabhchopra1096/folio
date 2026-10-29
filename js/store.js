@@ -619,6 +619,22 @@ const FolioStore = (function () {
     localStorage.removeItem(`folio_highlights_${id}`);
     localStorage.removeItem(`folio_comments_${id}`);
     localStorage.removeItem(`folio_reads_${id}`);
+
+    /*
+     * A page's pictures are not in localStorage any more — they are blobs in
+     * IndexedDB (js/images.js) — so removing its keys no longer removes them.
+     * Deleting them is asynchronous and this function is not, so it is started
+     * and not awaited: every caller here is a user deleting a page, and none
+     * of them has anything to do with the answer.
+     *
+     * Not awaiting means a failure is silent, which is acceptable only because
+     * FolioImages.collectGarbage is the real guarantee: it deletes by what
+     * pages actually reference, so a picture missed here is picked up later
+     * rather than kept for ever.
+     */
+    if (typeof FolioImages !== "undefined" && typeof FolioImages.forget === "function") {
+      try { FolioImages.forget(id); } catch { /* the page is still deleted */ }
+    }
   }
 
   // Count words across all Editor.js blocks

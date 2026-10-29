@@ -608,6 +608,28 @@ const App = (function () {
       });
     }
 
+    /*
+     * Release pictures no page refers to any more, once the app is idle.
+     *
+     * Deleting an image block, or undoing an import, leaves its picture in
+     * IndexedDB with nothing pointing at it. Nothing ever will, so it would
+     * sit in the budget for good.
+     *
+     * ON IDLE AND NOT AT STARTUP: it reads every page to find out what is
+     * referenced, which is exactly the work that should not be competing with
+     * drawing the first screen. The collector itself refuses to delete
+     * anything if it cannot read the pages, and leaves alone anything written
+     * in the last ten minutes, so an import in flight is safe from it.
+     */
+    if (typeof FolioImages !== "undefined") {
+      const sweepLater = () => FolioImages.collectGarbage().catch(() => {});
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(sweepLater, { timeout: 10000 });
+      } else {
+        setTimeout(sweepLater, 5000);
+      }
+    }
+
     // Initialize shortcuts
     initShortcuts();
 

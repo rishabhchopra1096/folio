@@ -261,6 +261,48 @@ const FolioFolderImport = (function () {
   }
 
   /*
+   * A picture, stored wherever there is room for it.
+   *
+   * THE STORE FIRST, ALWAYS. Measured on a real export: 118 screenshots,
+   * 12.71MB on disk, about 17.4MB once base64 has added its third, against
+   * the 10.00MB localStorage allows this origin for everything. Inside the
+   * page that document simply cannot be opened. In IndexedDB it has 250MB and
+   * the base64 third disappears, because a Blob is stored as bytes.
+   *
+   * The page keeps a reference — "img_a3f2c1..." — which costs 36 characters
+   * instead of a megabyte.
+   *
+   * THE FALLBACK IS THE OLD WAY, not an error. Private browsing and some
+   * lockdown modes refuse IndexedDB outright, and in that case a page with
+   * its pictures inline is worth far more than a page with none: it still
+   * reads, it is just subject to the ceiling. Which happened is reported, so
+   * a document that came in the small way is not mistaken for one that did
+   * not.
+   */
+  async function storePicture(file, docId) {
+    if (typeof FolioImages !== "undefined") {
+      try {
+        /*
+         * Compress BEFORE storing, by the same rules as a pasted screenshot:
+         * a 4MB photo is a 4MB photo wherever it is kept, and the budget is
+         * large rather than infinite. compressImage returns a data URL, so it
+         * is turned back into a blob — the cost of reusing one compressor
+         * rather than maintaining two.
+         */
+        const dataUrl = await toDataUrl(file);
+        const ref = await FolioImages.putDataUrl(dataUrl, docId);
+        if (ref) return { ref };
+        /* No room or no store — fall through and keep the picture inline. */
+        return { url: dataUrl, inline: true };
+      } catch (err) {
+        console.warn("[folio] could not store a picture out of the page", err);
+      }
+    }
+    return { url: await toDataUrl(file), inline: true };
+  }
+
+
+  /*
    * Resolve every picture one document asks for.
    *
    * Returns a plain Map, so the conversion that follows stays synchronous. A
@@ -268,25 +310,25 @@ const FolioFolderImport = (function () {
    * losing one image is survivable, losing the document is not — and the count
    * comes back so the caller can say so.
    */
-  async function resolvePictures(markdown, mdPath, assets) {
+  async function resolvePictures(markdown, mdPath, assets, docId) {
     const refs = FolioMarkdown.imageRefs(markdown);
-    const resolved = new Map();
+    const resolved = new Map();   // href -> { ref } or { url }
     let missing = 0;
-    let bytes = 0;
+    let inline = 0;
 
     for (const href of refs) {
       const file = assets.find(href, mdPath);
       if (!file) { missing++; continue; }
       try {
-        const url = await toDataUrl(file);
-        resolved.set(href, url);
-        bytes += url.length;
+        const stored = await storePicture(file, docId);
+        resolved.set(href, stored);
+        if (stored.inline) inline++;
       } catch (err) {
         missing++;
         console.warn("[folio] could not bring in " + href, err);
       }
     }
-    return { resolved, missing, found: resolved.size, asked: refs.length, bytes };
+    return { resolved, missing, inline, found: resolved.size, asked: refs.length };
   }
 
   // ==========================================================================
@@ -358,6 +400,7 @@ const FolioFolderImport = (function () {
     const pages = [];
     let pictures = 0;
     let missing = 0;
+    let inline = 0;
     let stoppedFull = null;
 
     for (const doc of docs) {
@@ -368,6 +411,7 @@ const FolioFolderImport = (function () {
       const pics = await resolvePictures(markdown, doc.path, assets);
       pictures += pics.found;
       missing += pics.missing;
+      inline += pics.inline;
 
       const editorData = FolioMarkdown.toBlocks(markdown, {
         resolveImage: (href) => pics.resolved.get(href) || null,
@@ -379,13 +423,42 @@ const FolioFolderImport = (function () {
         break;
       }
       pages.push(made.meta);
+
+      /*
+       * Tell the picture store which page these belong to, now that the page
+       * exists. It could not be done while storing them: the references ARE
+       * the page's content, so the page cannot exist first. Fire and forget —
+       * ownership only makes deleting a page tidier, and the garbage collector
+       * is the backstop either way.
+       */
+      if (typeof FolioImages !== "undefined") {
+        const refs = [];
+        pics.resolved.forEach((v) => { if (v && v.ref) refs.push(v.ref); });
+        /*
+         * AWAITED, because deleting this page is what releases these pictures
+         * and it can only find the ones that have been claimed. Left
+         * unawaited, a page deleted seconds after import left stragglers
+         * behind — measured at one in 120 — which then waited on the garbage
+         * collector's ten-minute grace instead. It is a single transaction,
+         * so the wait is small.
+         */
+        await FolioImages.assign(refs, made.meta.id);
+      }
     }
+
+    /*
+     * Hold the store under its budget AFTER the import, never before: refusing
+     * a picture to stay under a limit that a sweep would have freed is the
+     * wrong order.
+     */
+    if (typeof FolioImages !== "undefined" && pictures) FolioImages.sweep();
 
     return {
       handled: true,
       pages,
       pictures,
       missing,
+      inline,
       total: docs.length,
       error: stoppedFull,
     };
@@ -446,6 +519,16 @@ const FolioFolderImport = (function () {
       msg += ". " + result.missing +
              (result.missing === 1 ? " picture was" : " pictures were") +
              " not in the folder";
+    }
+    /*
+     * Worth saying, because a document whose pictures had to stay inside the
+     * page is subject to the 10MB ceiling and one whose pictures went to the
+     * picture store is not — and the two look identical on screen until the
+     * day saving stops working.
+     */
+    if (result.inline) {
+      msg += ". " + (result.inline === result.pictures ? "The pictures are" : result.inline + " are") +
+             " stored inside the page, because this browser would not open the picture store";
     }
     if (result.error) {
       msg += result.error.folioQuota
