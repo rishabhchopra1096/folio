@@ -582,21 +582,29 @@ const App = (function () {
       dropzone.addEventListener("dragleave", () => {
         dropzone.classList.remove("drag-over");
       });
+      /*
+       * The same import the sidebar uses, not a second copy of it.
+       *
+       * This handler used to read the dropped file itself, which meant two
+       * import paths with one of them behind: when a dropped FOLDER started
+       * being understood (a Notion export, pictures and all), only the sidebar
+       * learned it, and the welcome screen — the most obvious place to drop
+       * something — would still have silently thrown the pictures away.
+       *
+       * It also never checked the extension, so dropping a PDF here made a
+       * page of binary noise.
+       *
+       * stopPropagation IS LOAD-BEARING. js/sidebar.js also listens for a drop
+       * on the whole document, so a file dropped here was being imported
+       * TWICE — the dropzone's own handler and the document's, each making its
+       * own page. Letting it bubble was a quiet way to get two copies of
+       * everything you dragged onto the welcome screen.
+       */
       dropzone.addEventListener("drop", (e) => {
         e.preventDefault();
+        e.stopPropagation();
         dropzone.classList.remove("drag-over");
-        const file = e.dataTransfer.files[0];
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = (ev) => {
-            const title = file.name.replace(/\.[^.]+$/, "");
-            const editorData = SidebarUI.markdownToBlocks(ev.target.result);
-            const meta = FolioStore.createDocument(title, editorData, null);
-            SidebarUI.renderPageTree();
-            window.location.hash = `#/doc/${meta.id}/edit`;
-          };
-          reader.readAsText(file);
-        }
+        SidebarUI.handleDrop(e.dataTransfer);
       });
     }
 
