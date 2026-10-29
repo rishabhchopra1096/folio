@@ -133,6 +133,54 @@ const FolioStore = (function () {
   }
 
   /*
+   * A PAGE MADE MOSTLY OF PICTURES IS NOT WORTH COMPRESSING.
+   *
+   * The note above was written when no page held an image, and it is still
+   * right about prose: a megabyte of writing compresses to 20KB in 258ms,
+   * which is the whole reason saving works at all. A picture is the opposite
+   * case in both halves. It is stored as base64 of bytes that are ALREADY
+   * compressed — a PNG, a JPEG — so there is nothing left to find, and
+   * lz-string is synchronous, so the attempt blocks the main thread while
+   * somebody is typing.
+   *
+   * Measured here, on this machine, with the compressor this app ships:
+   *
+   *   1MB of prose                 saves 1056KB   costs   258ms
+   *   200KB prose + a 500KB image  saves  220KB   costs   353ms
+   *   200KB prose + a 2MB image    saves  422KB   costs  1318ms
+   *   20KB prose + six 300KB images saves 204KB   costs  1188ms
+   *
+   * Those bottom three run on EVERY debounced save. Over a second of frozen
+   * editor, each time typing pauses, to win about 2% of the storage budget —
+   * and if a keystroke lands inside that second it is dropped.
+   *
+   * So a page whose bytes are mostly picture is stored as it is. The share is
+   * measured rather than guessed because the mixed case is real: a page can be
+   * long prose with one screenshot in it, and that page should still be
+   * compressed. The scan costs 1.8ms on a 2.9MB page, and a page with no
+   * picture in it at all is rejected by one indexOf in half a millisecond.
+   *
+   * THIS IS A SYMPTOM, NOT A CURE. Pictures are in the page because that was
+   * the cheap way to get a Notion export on screen; moving them to IndexedDB
+   * removes both this cost and the ceiling they threaten. See
+   * docs/notion-images/README.md.
+   */
+  const DATA_URL_RE = /data:[a-zA-Z0-9.+-]*\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g;
+  /* Below this, the compressor is fast enough that the question does not arise. */
+  const PICTURE_CHECK_FLOOR = 256 * 1024;
+  /* Above this share, what is left to compress is not worth the wait. */
+  const PICTURE_SHARE_LIMIT = 0.5;
+
+  function mostlyPictures(text) {
+    if (text.length < PICTURE_CHECK_FLOOR) return false;
+    if (text.indexOf("base64,") === -1) return false;
+    let bytes = 0, m;
+    DATA_URL_RE.lastIndex = 0;
+    while ((m = DATA_URL_RE.exec(text)) !== null) bytes += m[0].length;
+    return bytes / text.length >= PICTURE_SHARE_LIMIT;
+  }
+
+  /*
    * Compress, and PROVE IT CAME BACK before handing it over.
    *
    * The verification costs one decompress — about 20ms on the largest page
@@ -144,6 +192,7 @@ const FolioStore = (function () {
    */
   function packValue(key, text) {
     if (!shouldCompress(key) || !lzAvailable()) return text;
+    if (mostlyPictures(text)) return text;
     try {
       const packed = LZ_MARK + LZString.compressToUTF16(text);
       if (unpackValue(packed) !== text) {
